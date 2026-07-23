@@ -1,5 +1,6 @@
 using Docker.DotNet;
 using Microsoft.Extensions.DependencyInjection;
+using Servyx.Domain.Discovery;
 using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;
 
@@ -37,6 +38,7 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<ITransport, DockerTransport>();
         services.AddSingleton<DockerServerDiscovery>();
+        services.AddSingleton<IServerDiscovery>(sp => sp.GetRequiredService<DockerServerDiscovery>());
         services.AddSingleton<IMetricsSource, DockerMetricsSource>();
         services.AddSingleton<ILogStream, DockerLogStream>();
 

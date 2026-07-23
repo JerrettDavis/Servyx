@@ -1,5 +1,6 @@
 using Docker.DotNet;
 using Docker.DotNet.Models;
+using Servyx.Domain.Discovery;
 
 namespace Servyx.Infrastructure.Docker;
 
@@ -19,6 +20,13 @@ public sealed record DiscoveredMount(string Source, string Destination, bool Rea
 /// A container discovered by <see cref="DockerServerDiscovery"/> as a candidate adoption match for a
 /// game definition's docker deployment profile.
 /// </summary>
+/// <param name="EnvironmentVariables">
+/// The container's environment variables exactly as set on the live container, keyed by variable name.
+/// This commonly includes secret-carrying keys such as <c>ADMIN_PASSWORD</c> and
+/// <c>SERVER_PASSWORD</c> for the Palworld deployment. <strong>Callers must never surface a value from
+/// this dictionary — or this dictionary itself — to a view model, the DOM, a log message, or an
+/// exception message without first masking any key known to carry a secret.</strong>
+/// </param>
 public sealed record DiscoveredContainer(
     string ContainerId,
     string ContainerName,
@@ -35,14 +43,19 @@ public sealed record DiscoveredContainer(
     long? MemoryLimitBytes,
     double? CpuLimit,
     string? RestartPolicy,
-    IReadOnlyDictionary<string, string> ComposeLabels);
+    IReadOnlyDictionary<string, string> ComposeLabels,
+    IReadOnlyDictionary<string, string> EnvironmentVariables);
 
 /// <summary>
 /// Discovers existing Docker containers that match a game definition's docker deployment profile, so
 /// they can be adopted into Servyx rather than requiring a fresh container to be created. Matching is
 /// by image repository (ignoring tag/digest) plus a required container mount path — both must match.
+/// Implements the transport-agnostic <see cref="IServerDiscovery"/> abstraction (via explicit interface
+/// implementation) so <c>Servyx.Application</c> can consume discovery without referencing this project;
+/// the concrete <see cref="DiscoverAsync"/> overload below remains the Docker-specific, richer result
+/// shape existing callers and tests already depend on.
 /// </summary>
-public sealed class DockerServerDiscovery
+public sealed class DockerServerDiscovery : IServerDiscovery
 {
     private static readonly string[] ComposeLabelKeys =
     [
@@ -174,6 +187,8 @@ public sealed class DockerServerDiscovery
             .Where(labels.ContainsKey)
             .ToDictionary(key => key, key => labels[key], StringComparer.Ordinal);
 
+        var environmentVariables = ParseEnv(inspect.Config?.Env);
+
         DateTimeOffset? startedAt = null;
         if (DateTimeOffset.TryParse(inspect.State?.StartedAt, out var parsedStartedAt) && parsedStartedAt > DateTimeOffset.UnixEpoch)
         {
@@ -196,8 +211,78 @@ public sealed class DockerServerDiscovery
             MemoryLimitBytes: memoryLimit,
             CpuLimit: cpuLimit,
             RestartPolicy: restartPolicy,
-            ComposeLabels: composeLabels);
+            ComposeLabels: composeLabels,
+            EnvironmentVariables: environmentVariables);
     }
+
+    /// <summary>
+    /// Parses a container's <c>Config.Env</c> list (each entry shaped <c>KEY=VALUE</c>) into a
+    /// dictionary. Entries with no <c>=</c> are skipped rather than throwing, since a malformed entry
+    /// here is a workload quirk, not a Servyx bug.
+    /// </summary>
+    private static IReadOnlyDictionary<string, string> ParseEnv(IList<string>? env)
+    {
+        if (env is null || env.Count == 0)
+        {
+            return new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+
+        var result = new Dictionary<string, string>(env.Count, StringComparer.Ordinal);
+        foreach (var entry in env)
+        {
+            var separatorIndex = entry.IndexOf('=', StringComparison.Ordinal);
+            if (separatorIndex <= 0)
+            {
+                continue;
+            }
+
+            result[entry[..separatorIndex]] = entry[(separatorIndex + 1)..];
+        }
+
+        return result;
+    }
+
+    /// <inheritdoc cref="IServerDiscovery.DiscoverAsync"/>
+    /// <remarks>
+    /// Explicit interface implementation: delegates to the concrete <see cref="DiscoverAsync"/> overload
+    /// above and maps its Docker-specific <see cref="DiscoveredContainer"/> results into the
+    /// transport-agnostic <c>Servyx.Domain.Discovery.DiscoveredServer</c> shape <c>Servyx.Application</c>
+    /// consumes. Fully qualifies the domain-level types below because this file also declares its own
+    /// <see cref="DiscoveredPort"/> and <see cref="DiscoveredMount"/> in the
+    /// <c>Servyx.Infrastructure.Docker</c> namespace, which would otherwise be ambiguous with the
+    /// same-named domain types brought in by the <c>using Servyx.Domain.Discovery;</c> directive.
+    /// </remarks>
+    async Task<IReadOnlyList<Servyx.Domain.Discovery.DiscoveredServer>> IServerDiscovery.DiscoverAsync(
+        string imageRepository,
+        string requiredMountContainerPath,
+        CancellationToken ct)
+    {
+        var containers = await DiscoverAsync(imageRepository, requiredMountContainerPath, ct).ConfigureAwait(false);
+        return containers.Select(ToDomainModel).ToList();
+    }
+
+    private static Servyx.Domain.Discovery.DiscoveredServer ToDomainModel(DiscoveredContainer container) => new(
+        ServerId: container.ContainerId,
+        Name: container.ContainerName,
+        Image: container.Image,
+        ImageDigest: container.ImageDigest,
+        State: container.State,
+        HealthStatus: container.HealthStatus,
+        CreatedAt: container.CreatedAt,
+        StartedAt: container.StartedAt,
+        Ports: container.PublishedPorts
+            .Select(p => new Servyx.Domain.Discovery.DiscoveredPort(p.HostPort, p.ContainerPort, p.Protocol))
+            .ToList(),
+        Mounts: container.Mounts
+            .Select(m => new Servyx.Domain.Discovery.DiscoveredMount(m.Source, m.Destination, m.ReadWrite))
+            .ToList(),
+        NetworkName: container.NetworkName,
+        ContainerIp: container.ContainerIp,
+        MemoryLimitBytes: container.MemoryLimitBytes,
+        CpuLimit: container.CpuLimit,
+        RestartPolicy: container.RestartPolicy,
+        ComposeLabels: container.ComposeLabels,
+        EnvironmentVariables: container.EnvironmentVariables);
 
     private static double? ResolveCpuLimit(HostConfig? hostConfig)
     {
