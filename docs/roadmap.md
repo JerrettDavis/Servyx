@@ -1,0 +1,178 @@
+# Servyx Roadmap
+
+Servyx ships in nine milestones, M1 through M9. The MVP is **M1–M7**; M8 and
+M9 extend the platform to remote/non-Docker targets and to provisioning and
+mods respectively.
+
+## M1 — Read-Only Observation
+
+**Goal:** Connect to and fully observe an existing, live Palworld deployment
+without the ability to change anything.
+
+**Projects touched:** `Servyx.Domain`, `Servyx.Application`, `Servyx.Config`,
+`Servyx.Infrastructure.Docker`, `Servyx.Web`.
+
+**Acceptance criteria:**
+
+- Connects over `npipe` using the `desktop-linux` Docker context.
+- Adopts an existing `palworld-server` container by image repo and the
+  `/palworld` mount.
+- Dashboard shows state, uptime, CPU, memory, ports, mounts, and network.
+- Live log streaming, with backscroll that survives socket drops.
+- `.env` (150 vars) and `compose.yaml` both parse and round-trip byte-exact.
+- The rendered INI parses, and `OptionSettings` decodes into named members.
+- The settings page renders all four `SettingState` columns
+  (Desired/Authoritative/Rendered/Runtime) with drift badges.
+- The saves page lists the world directory, read-only.
+- The backups page lists the image's own `*.tar.gz` files as `Foreign`, with
+  no delete/prune/restore control exposed for them.
+- All power controls and settings fields are disabled, showing a lock badge
+  and a reason.
+
+**Container health must not be conflated with game readiness.** The
+`thijsvanloef/palworld-server-docker` image's own `HEALTHCHECK` calls
+`http://localhost:8212/v1/api/info` without admin credentials, so it gets
+`401 Unauthorized` on every probe (observed `FailingStreak: 293`) and reports
+`unhealthy` while the server runs normally — `/v1/api/players` returns `OK`
+on the same polling cycle. Servyx therefore derives readiness from its own
+declared detectors (log-regex plus an authenticated control-probe fallback),
+never from Docker's health status, and displays Docker health only as a
+separate, clearly labelled signal. Any control-probe used for readiness must
+itself carry authentication, or it is no better than the healthcheck it is
+meant to replace.
+
+**Negative tests are first-class in this milestone:**
+
+- An architecture test asserts every transport is write-guarded.
+- Integration tests assert `ReplaceAsync`, `DeleteAsync`, `StartAsync`,
+  `StopAsync`, and every non-`readOnly` control command throw
+  `WritesDisabledException` before any I/O occurs.
+- A Docker API call-recorder asserts zero mutating Docker calls occur across
+  the entire M1 test run.
+
+## M2 — Read-Only Control Channels
+
+**Goal:** Reach live game state over RCON/REST/A2S without any write path.
+
+**Acceptance criteria:**
+
+- Reachability probing correctly reports `direct-tcp` unavailable for
+  25575/8212 and selects `docker-exec-tool` instead.
+- `ShowPlayers` is parsed into a live player list on a 30-second poll.
+- REST is preferred over RCON when both are available.
+- A2S is queried on 27015.
+- Non-`readOnly` commands are absent from the UI and rejected server-side if
+  attempted.
+- Secrets never appear in logs, console output, audit records, or diffs
+  (asserted by test).
+
+## M3 — Dry-Run Diff Engine
+
+**Goal:** Produce accurate, previewable change plans without ever applying
+them.
+
+**Acceptance criteria:**
+
+- Editing "Max players" produces a plan whose diff touches exactly one line
+  of `.env`, with all 149 other lines byte-identical, plus a consequence
+  list.
+- Changing `PORT` also previews the corresponding `compose.yaml` ports edit
+  and flags `requiresRecreate`.
+- Binding a write to a `Derived` surface is rejected as a definition
+  validation error.
+- `ApplyAsync` throws for every plan in this milestone.
+- Plans transition to `Stale` when any bound surface's hash changes.
+
+## M4 — Writes Enabled
+
+**Goal:** Allow real, guarded, reversible writes.
+
+**Acceptance criteria:**
+
+- Per-server write mode can be flipped, gated by typed confirmation, and the
+  change is audited and reversible.
+- `.env` writes are atomic, take a pre-image snapshot, and support one-click
+  byte-exact revert.
+- Applying a stale plan throws `PlanStaleException` instead of clobbering the
+  surface.
+- Power actions execute through the stop ladder.
+- Container recreation shows the exact `docker create` argv used and asserts
+  volume preservation.
+
+## M5 — Backups
+
+**Goal:** First-class, Servyx-owned backup lifecycle alongside foreign ones.
+
+**Acceptance criteria:**
+
+- On-demand backup quiesces the server via RCON `Save`.
+- Archives include saves, `.env`, `compose.yaml`, and the rendered INI.
+- Archives exclude `data/backups/**`.
+- Retention pruning only ever removes Servyx-owned artifacts; a test asserts
+  foreign tarballs survive every prune path.
+
+## M6 — Minecraft (Proves the Abstraction)
+
+**Goal:** Validate that the role-based configuration model generalizes,
+using a deployment where the truth direction is mirrored relative to
+Palworld.
+
+**Acceptance criteria:**
+
+- An `itzg/minecraft-server` container adopts cleanly — this is the
+  mirror-image case, where env vars are authoritative **and**
+  `server.properties` is directly writable.
+- **No C# changes outside format adapters and the RCON dialect.** If more is
+  required, the abstraction has failed and M6 becomes a refactor milestone
+  instead.
+
+## M7 — Identity, RBAC, Secrets, Audit UI
+
+**Goal:** Everything required before Servyx is bound to anything other than
+loopback.
+
+## M8 — Remote and Non-Docker Targets
+
+**Goal:** Extend beyond local Docker to bare process hosts and SSH targets.
+
+**Acceptance criteria:**
+
+- Bare process hosts and SSH hosts are supported targets.
+- An injection test registers a host literally named `; rm -rf /` and proves
+  the name is never interpreted as a shell fragment.
+
+## M9 — Provisioning, Mods, Plugin SDK
+
+**Goal:** Provision new servers, install mods, and open the platform to
+third-party plugin authors.
+
+**Acceptance criteria:**
+
+- Installer runs in a sandboxed, non-root container with an egress
+  allowlist.
+- Definitions requesting `shell` are refused at `Unverified` trust.
+
+## Open Questions
+
+1. **Does Servyx get authority to recreate containers?** This blocks M4.
+2. **Does Servyx own `compose.yaml`, or only `.env`?** Recommendation: `.env`
+   is fully managed; `compose.yaml` is restricted to the `services.palworld`
+   subtree, with per-change confirmation.
+3. **Should the plaintext `.env` passwords be mirrored into the secret
+   store?**
+4. **Is Windows a production platform, or dev-only?** Recommendation: Linux
+   is the production target; Windows + Docker Desktop is supported for the
+   Docker transport, but treated as a development environment.
+5. **Where does Servyx itself run?** Recommendation: as a host process, since
+   running inside a container would require a root-equivalent Docker socket
+   mount.
+
+Questions 1 and 2 block **M4**, but do **not** block M1–M3.
+
+## Resolved
+
+- The REST API is already enabled in the target's `.env`
+  (`REST_API_ENABLED=True`, port 8212), so M2 can prefer the REST path
+  without requiring any write.
+- Persistence is SQLite with WAL mode by default, with PostgreSQL available
+  as an opt-in alternative.
