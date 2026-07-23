@@ -58,3 +58,561 @@ h1:focus {
 .form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
     text-align: start;
 }
+
+/* ==========================================================================
+   Servyx dashboard shell — shared, page-agnostic building blocks.
+   ========================================================================== */
+
+:root {
+    --svx-bg: #f5f6fa;
+    --svx-surface: #ffffff;
+    --svx-border: #e2e4ea;
+    --svx-text: #1c1f26;
+    --svx-text-muted: #5b5f6b;
+}
+
+*:focus-visible {
+    outline: 2px solid #6d5bff;
+    outline-offset: 2px;
+}
+
+/* -- Page header ----------------------------------------------------------- */
+
+.svx-page-header {
+    margin-bottom: 1.25rem;
+}
+
+.svx-page-header h2 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1.4rem;
+    font-weight: 700;
+    color: var(--svx-text);
+}
+
+.svx-page-description {
+    color: var(--svx-text-muted);
+    max-width: 62ch;
+    margin: 0;
+}
+
+/* -- Cards ------------------------------------------------------------------ */
+
+.svx-card {
+    background: var(--svx-surface);
+    border: 1px solid var(--svx-border);
+    border-radius: 0.75rem;
+    padding: 1.25rem;
+}
+
+.svx-card + .svx-card {
+    margin-top: 1rem;
+}
+
+.svx-card h3 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin: 0 0 0.75rem 0;
+}
+
+/* -- Stat cards (dashboard summary tiles) ----------------------------------- */
+
+.svx-stat-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.stat-card {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.85rem;
+    background: var(--svx-surface);
+    border: 1px solid var(--svx-border);
+    border-radius: 0.75rem;
+    padding: 1rem 1.1rem;
+}
+
+.stat-card-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 0.6rem;
+    background: #efeaff;
+    color: #6d5bff;
+    flex: 0 0 auto;
+}
+
+.stat-card-body {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+}
+
+.stat-card-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--svx-text);
+}
+
+.stat-card-title {
+    font-size: 0.8rem;
+    color: var(--svx-text-muted);
+}
+
+.stat-card-subtext {
+    font-size: 0.72rem;
+    color: var(--svx-text-muted);
+    margin-top: 0.1rem;
+}
+
+/* -- Badges ------------------------------------------------------------------ */
+
+.health-badge, .state-badge, .drift-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    cursor: default;
+}
+
+.health-dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    display: inline-block;
+}
+
+.health-healthy { background: #e5f6ea; color: #1f7a3d; }
+.health-healthy .health-dot { background: #1f9d55; }
+
+.health-unhealthy { background: #fff1de; color: #9a5300; }
+.health-unhealthy .health-dot { background: #d97a06; }
+
+.health-unknown { background: #eef0f4; color: #5b5f6b; }
+.health-unknown .health-dot { background: #9aa0ac; }
+
+.state-running { background: #e5f6ea; color: #1f7a3d; }
+.state-stopped { background: #eef0f4; color: #5b5f6b; }
+.state-starting, .state-stopping { background: #e6f0ff; color: #1657c2; }
+.state-crashed { background: #fdeaea; color: #b31c1c; }
+.state-unknown { background: #eef0f4; color: #5b5f6b; }
+
+.drift-none { background: #eef0f4; color: #5b5f6b; }
+.drift-present { background: #fdeaea; color: #b31c1c; }
+
+.foreign-badge {
+    display: inline-flex;
+    font-size: 0.72rem;
+    font-weight: 700;
+    padding: 0.28rem 0.6rem;
+    border-radius: 999px;
+    background: #eef0f4;
+    color: #5b5f6b;
+    cursor: default;
+}
+
+/* -- Gated controls (always-disabled write paths in Milestone 1) ------------- */
+
+.gated-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: #eef0f4;
+    color: #7a7f8c;
+    border: 1px solid #dfe2e8;
+    border-radius: 0.5rem;
+    padding: 0.45rem 0.85rem;
+    font-size: 0.85rem;
+    cursor: not-allowed;
+}
+
+.gated-button svg {
+    flex: 0 0 auto;
+}
+
+.gated-control {
+    border: 1px dashed #dfe2e8;
+    border-radius: 0.5rem;
+    padding: 0.6rem 0.75rem 0.6rem 2rem;
+    margin: 0;
+    position: relative;
+    background: #fafafc;
+}
+
+.gated-control-lock {
+    position: absolute;
+    left: 0.6rem;
+    top: 0.65rem;
+    color: #9aa0ac;
+}
+
+.gated-control input,
+.gated-control select,
+.gated-control textarea {
+    background: transparent;
+    cursor: not-allowed;
+}
+
+/* -- Sparkline placeholder ---------------------------------------------------- */
+
+.sparkline {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: #6d5bff;
+}
+
+.sparkline-svg {
+    width: 100%;
+    max-width: 140px;
+    height: 32px;
+}
+
+.sparkline-current {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--svx-text);
+    white-space: nowrap;
+}
+
+.sparkline-empty {
+    font-size: 0.8rem;
+    color: var(--svx-text-muted);
+}
+
+/* -- Grid "table" rows (used instead of <table> so a whole row can be one
+   accessible, keyboard-operable <a> without click handlers on non-interactive
+   elements) --------------------------------------------------------------- */
+
+.svx-row-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.svx-row-grid-header, .svx-row-link {
+    display: grid;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.7rem 0.9rem;
+}
+
+.svx-row-grid-header {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--svx-text-muted);
+    padding-bottom: 0.35rem;
+}
+
+.svx-row-link {
+    background: var(--svx-surface);
+    border: 1px solid var(--svx-border);
+    border-radius: 0.6rem;
+    color: inherit;
+    text-decoration: none;
+}
+
+.svx-row-link:hover {
+    border-color: #b8b3ff;
+    background: #faf9ff;
+}
+
+.svx-row-cell-label {
+    font-size: 0.7rem;
+    color: var(--svx-text-muted);
+    display: none;
+}
+
+.svx-ports-cell {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+}
+
+.port-chip {
+    font-size: 0.68rem;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    background: #eef0f4;
+    color: var(--svx-text-muted);
+    border-radius: 0.35rem;
+    padding: 0.15rem 0.4rem;
+    white-space: nowrap;
+}
+
+.port-chip.port-published {
+    background: #e6f0ff;
+    color: #1657c2;
+}
+
+/* -- Empty states -------------------------------------------------------------- */
+
+.svx-empty-state {
+    text-align: center;
+    padding: 3rem 1.5rem;
+    color: var(--svx-text-muted);
+    background: var(--svx-surface);
+    border: 1px dashed var(--svx-border);
+    border-radius: 0.75rem;
+}
+
+.svx-empty-state h3 {
+    color: var(--svx-text);
+    margin-bottom: 0.4rem;
+}
+
+/* -- Tabs ----------------------------------------------------------------------- */
+
+.svx-tablist {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--svx-border);
+    margin-bottom: 1.25rem;
+    overflow-x: auto;
+}
+
+.svx-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.65rem 0.9rem;
+    font-size: 0.9rem;
+    color: var(--svx-text-muted);
+    cursor: pointer;
+    white-space: nowrap;
+}
+
+.svx-tab:hover {
+    color: var(--svx-text);
+}
+
+.svx-tab[aria-selected="true"] {
+    color: #6d5bff;
+    border-bottom-color: #6d5bff;
+    font-weight: 600;
+}
+
+/* -- Settings four-column table -------------------------------------------------- */
+
+.settings-group {
+    margin-bottom: 1.5rem;
+}
+
+.settings-group h3 {
+    font-size: 0.95rem;
+    font-weight: 700;
+    margin-bottom: 0.6rem;
+}
+
+.settings-grid-header, .settings-row {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr 1fr 1fr 1fr 1.2fr;
+    gap: 0.6rem;
+    align-items: center;
+    padding: 0.55rem 0.7rem;
+}
+
+.settings-grid-header {
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--svx-text-muted);
+}
+
+.settings-row {
+    background: var(--svx-surface);
+    border: 1px solid var(--svx-border);
+    border-radius: 0.5rem;
+    margin-bottom: 0.4rem;
+}
+
+.settings-row.has-drift {
+    border-color: #f2b8b8;
+    background: #fffaf9;
+}
+
+.settings-value {
+    font-size: 0.85rem;
+    color: var(--svx-text);
+    word-break: break-word;
+}
+
+.settings-value-muted {
+    color: var(--svx-text-muted);
+}
+
+.settings-label {
+    display: flex;
+    flex-direction: column;
+}
+
+.settings-label-key {
+    font-size: 0.72rem;
+    color: var(--svx-text-muted);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+@media (max-width: 900px) {
+    .settings-grid-header {
+        display: none;
+    }
+
+    .settings-row {
+        grid-template-columns: 1fr;
+    }
+
+    .settings-row > div::before {
+        content: attr(data-col-label);
+        display: block;
+        font-size: 0.68rem;
+        text-transform: uppercase;
+        color: var(--svx-text-muted);
+        margin-bottom: 0.1rem;
+    }
+}
+
+.svx-dl {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.75rem 1.5rem;
+    margin: 0;
+}
+
+.svx-dl > div {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+}
+
+.svx-dl dt {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--svx-text-muted);
+}
+
+.svx-dl dd {
+    margin: 0;
+    font-size: 0.9rem;
+    color: var(--svx-text);
+}
+
+.svx-subheading {
+    font-size: 0.85rem;
+    font-weight: 700;
+    margin: 1rem 0 0.5rem 0;
+    color: var(--svx-text-muted);
+}
+
+.games-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 1rem;
+}
+
+.game-card-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+}
+
+.game-card-header h3 {
+    margin: 0;
+}
+
+.trust-badge {
+    font-size: 0.68rem;
+    font-weight: 700;
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+}
+
+.trust-builtin { background: #e5f6ea; color: #1f7a3d; }
+.trust-verified { background: #e6f0ff; color: #1657c2; }
+.trust-unverified { background: #fff1de; color: #9a5300; }
+
+.game-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    margin: 0.5rem 0;
+}
+
+.deployment-profile-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.deployment-profile-list li {
+    border-left: 3px solid #dfe2e8;
+    padding-left: 0.6rem;
+}
+
+.deployment-profile-list p {
+    margin: 0.15rem 0 0 0;
+    font-size: 0.8rem;
+}
+
+.gated-button-compact {
+    padding: 0.3rem 0.55rem;
+    font-size: 0.72rem;
+}
+
+/* -- Console log viewport ------------------------------------------------------- */
+
+.console-viewport {
+    background: #0e1020;
+    color: #d7dae6;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 0.8rem;
+    border-radius: 0.6rem;
+    padding: 0.85rem 1rem;
+    height: 360px;
+    overflow-y: auto;
+}
+
+.console-line {
+    white-space: pre-wrap;
+    line-height: 1.5;
+}
+
+.console-line-warn {
+    color: #f0b95c;
+}
+
+.console-timestamp {
+    color: #6b7086;
+    margin-right: 0.5rem;
+}
+
+@media (max-width: 768px) {
+    .svx-stat-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .svx-row-grid-header {
+        display: none;
+    }
+
+    .svx-row-link {
+        grid-template-columns: 1fr !important;
+        gap: 0.2rem;
+    }
+
+    .svx-row-cell-label {
+        display: inline;
+    }
+}

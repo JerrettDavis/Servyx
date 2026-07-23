@@ -1,0 +1,70 @@
+@page "/servers"
+@inject IDashboardDataService Data
+
+<PageTitle>Servers - Servyx</PageTitle>
+
+<div class="svx-page-header">
+    <h2>Servers</h2>
+    <p class="svx-page-description">Every server Servyx has adopted on a reachable host, read-only.</p>
+</div>
+
+@if (_loading)
+{
+    <p>Loading servers…</p>
+}
+else if (_servers.Count == 0)
+{
+    <div class="svx-empty-state">
+        <h3>No servers adopted yet</h3>
+        <p>Adopting an existing container is the first step in Milestone 1.</p>
+    </div>
+}
+else
+{
+    <div class="svx-row-grid" role="list" aria-label="Servers">
+        <div class="svx-row-grid-header" style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;" aria-hidden="true">
+            <span>Name</span>
+            <span>Game</span>
+            <span>State</span>
+            <span>Health</span>
+            <span>Players</span>
+            <span>Uptime</span>
+            <span>Host</span>
+            <span>Ports</span>
+        </div>
+
+        @foreach (var server in _servers)
+        {
+            <a class="svx-row-link" role="listitem" href="@($"servers/{server.Id}")"
+               style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;">
+                <span data-col-label="Name"><strong>@server.Name</strong></span>
+                <span data-col-label="Game">@server.Game</span>
+                <span data-col-label="State"><StateBadge State="@server.State" /></span>
+                <span data-col-label="Health"><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
+                <span data-col-label="Players">@server.PlayersOnline / @server.PlayersMax</span>
+                <span data-col-label="Uptime">@FormatUptime(server.Uptime)</span>
+                <span data-col-label="Host">@server.Host</span>
+                <span data-col-label="Ports" class="svx-ports-cell">
+                    @foreach (var port in server.Ports)
+                    {
+                        <span class="port-chip @(port.Published ? "port-published" : "")" title="@port.Purpose">@port.Label</span>
+                    }
+                </span>
+            </a>
+        }
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private IReadOnlyList<ServerSummary> _servers = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _servers = await Data.GetServersAsync();
+        _loading = false;
+    }
+
+    private static string FormatUptime(TimeSpan? uptime)
+        => uptime is null ? "—" : $"{(int)uptime.Value.TotalHours}h {uptime.Value.Minutes}m";
+}

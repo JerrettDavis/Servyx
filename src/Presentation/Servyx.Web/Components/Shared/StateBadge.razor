@@ -1,0 +1,10 @@
+@using Servyx.Domain.Lifecycle
+
+<span class="badge state-badge state-@State.ToString().ToLowerInvariant()">
+    @State
+</span>
+
+@code {
+    [Parameter, EditorRequired]
+    public ServerState State { get; set; }
+}

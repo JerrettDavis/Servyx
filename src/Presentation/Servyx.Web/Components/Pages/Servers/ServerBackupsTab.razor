@@ -1,0 +1,51 @@
+@* No delete/prune/restore controls are rendered here — not even disabled ones — for foreign backups.
+   Servyx does not own these archives and must never appear to offer control over their lifecycle. *@
+
+@if (Backups.Count == 0)
+{
+    <div class="svx-empty-state">
+        <h3>No backups found</h3>
+        <p>Servyx-owned backup creation arrives in Milestone 5.</p>
+    </div>
+}
+else
+{
+    <p class="svx-page-description" style="margin-bottom:1rem;">
+        These archives were created by the container's own daily cron job, independently of Servyx.
+    </p>
+
+    <div class="svx-row-grid" role="list" aria-label="Backups">
+        <div class="svx-row-grid-header" style="grid-template-columns: 2fr 1fr 1fr 1fr;" aria-hidden="true">
+            <span>File</span>
+            <span>Created</span>
+            <span>Size</span>
+            <span>Ownership</span>
+        </div>
+
+        @foreach (var backup in Backups)
+        {
+            <div class="svx-row-link" role="listitem" style="grid-template-columns: 2fr 1fr 1fr 1fr;">
+                <span data-col-label="File"><code>@backup.FileName</code></span>
+                <span data-col-label="Created">@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                <span data-col-label="Size">@FormatSize(backup.SizeBytes)</span>
+                <span data-col-label="Ownership">
+                    <span class="badge foreign-badge" tabindex="0"
+                          title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
+                        Foreign
+                    </span>
+                </span>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<BackupEntry> Backups { get; set; } = [];
+
+    private static string FormatSize(long bytes)
+    {
+        double mb = bytes / 1024.0 / 1024.0;
+        return mb >= 1024 ? $"{mb / 1024.0:0.0} GB" : $"{mb:0.0} MB";
+    }
+}

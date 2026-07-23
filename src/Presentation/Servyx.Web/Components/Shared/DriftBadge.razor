@@ -1,0 +1,49 @@
+@using Servyx.Domain.Configuration
+
+@if (Drift == DriftKind.None)
+{
+    <span class="badge drift-badge drift-none">No drift</span>
+}
+else
+{
+    @foreach (var label in Labels())
+    {
+        <span class="badge drift-badge drift-present" title="@DriftExplanation">@label</span>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public DriftKind Drift { get; set; }
+
+    [Parameter]
+    public bool PendingRegeneration { get; set; }
+
+    private const string DriftExplanation =
+        "This setting's value disagrees across the columns Servyx tracks for it. See docs/architecture.md, \"SettingState\".";
+
+    private IEnumerable<string> Labels()
+    {
+        if (Drift.HasFlag(DriftKind.DesiredVsAuthoritative))
+        {
+            yield return "DesiredVsAuthoritative";
+        }
+
+        if (Drift.HasFlag(DriftKind.AuthoritativeVsRendered))
+        {
+            yield return PendingRegeneration
+                ? "AuthoritativeVsRendered — restart required"
+                : "AuthoritativeVsRendered";
+        }
+
+        if (Drift.HasFlag(DriftKind.RenderedVsRuntime))
+        {
+            yield return "RenderedVsRuntime";
+        }
+
+        if (Drift.HasFlag(DriftKind.Unreadable))
+        {
+            yield return "Unreadable";
+        }
+    }
+}

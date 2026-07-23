@@ -1,0 +1,32 @@
+@* A button that is always disabled in Milestone 1, with a lock icon and an explanatory tooltip.
+   No page should hand-roll a disabled mutating control — use this (or <GatedControl> for
+   non-button inputs) everywhere instead, so a write path can never be left un-gated by accident. *@
+
+<button type="button"
+        class="btn gated-button @CssClass"
+        disabled
+        title="@Reason"
+        aria-label="@AriaLabel"
+        data-testid="gated-button">
+    <Icon Name="lock" Size="14" />
+    <span class="gated-button-text">@ChildContent</span>
+</button>
+
+@code {
+    /// <summary>The standard, product-wide explanation for why every mutating control is disabled in M1.</summary>
+    public const string DefaultReason = "Servyx is in read-only mode. Writes are enabled per-server in Milestone 4.";
+
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    [Parameter]
+    public string Reason { get; set; } = DefaultReason;
+
+    [Parameter]
+    public string? Label { get; set; }
+
+    [Parameter]
+    public string CssClass { get; set; } = string.Empty;
+
+    private string AriaLabel => string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}";
+}

@@ -1,0 +1,72 @@
+@if (Detail is null)
+{
+    <div class="svx-empty-state"><h3>No overview data</h3></div>
+}
+else
+{
+    <div class="svx-card">
+        <h3>Power</h3>
+        <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+            <GatedButton Label="Start">Start</GatedButton>
+            <GatedButton Label="Restart">Restart</GatedButton>
+            <GatedButton Label="Stop">Stop</GatedButton>
+            <GatedButton Label="Kill">Kill</GatedButton>
+        </div>
+    </div>
+
+    <div class="svx-card">
+        <h3>Status</h3>
+        <dl class="svx-dl">
+            <div><dt>State</dt><dd><StateBadge State="@Detail.Summary.State" /></dd></div>
+            <div><dt>Health</dt><dd><HealthBadge Health="@Detail.Summary.Health" Tooltip="@Detail.Summary.HealthTooltip" /></dd></div>
+            <div><dt>Uptime</dt><dd>@FormatUptime(Detail.Summary.Uptime)</dd></div>
+            <div><dt>Image</dt><dd><code>@Detail.Image</code></dd></div>
+        </dl>
+    </div>
+
+    <div class="svx-card">
+        <h3>Network</h3>
+        <dl class="svx-dl">
+            <div><dt>Network</dt><dd>@Detail.Network</dd></div>
+            <div><dt>Container IP</dt><dd>@Detail.IpAddress</dd></div>
+        </dl>
+
+        <h4 class="svx-subheading">Ports</h4>
+        <div class="svx-row-grid" role="list" aria-label="Ports">
+            @foreach (var port in Detail.Summary.Ports)
+            {
+                <div class="svx-row-link" role="listitem" style="grid-template-columns: 1fr 1fr 1fr;">
+                    <span data-col-label="Port">@port.Port/@port.Protocol.ToUpperInvariant()</span>
+                    <span data-col-label="Purpose">@port.Purpose</span>
+                    <span data-col-label="Published">
+                        @if (port.Published)
+                        {
+                            <span class="port-chip port-published">Published to host</span>
+                        }
+                        else
+                        {
+                            <span class="port-chip">Not published to host</span>
+                        }
+                    </span>
+                </div>
+            }
+        </div>
+    </div>
+
+    <div class="svx-card">
+        <h3>Storage &amp; limits</h3>
+        <dl class="svx-dl">
+            <div><dt>Mount</dt><dd><code>@Detail.MountHostPath</code> → <code>@Detail.MountContainerPath</code></dd></div>
+            <div><dt>Memory limit</dt><dd>@Detail.MemoryLimit</dd></div>
+            <div><dt>CPU limit</dt><dd>@Detail.CpuLimit</dd></div>
+        </dl>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public ServerDetail? Detail { get; set; }
+
+    private static string FormatUptime(TimeSpan? uptime)
+        => uptime is null ? "—" : $"{(int)uptime.Value.TotalHours}h {uptime.Value.Minutes}m";
+}

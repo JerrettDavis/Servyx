@@ -1,0 +1,24 @@
+@* Wraps arbitrary form content (inputs, selects, groups of both) in a native <fieldset disabled>,
+   which disables every nested control per standard HTML semantics, plus a lock icon and tooltip.
+   Use this for settings-form fields; use <GatedButton> for standalone action buttons. *@
+
+<fieldset class="gated-control @CssClass" disabled title="@Reason" aria-label="@AriaLabel" data-testid="gated-control">
+    <span class="gated-control-lock" aria-hidden="true"><Icon Name="lock" Size="13" /></span>
+    @ChildContent
+</fieldset>
+
+@code {
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    [Parameter]
+    public string Reason { get; set; } = GatedButton.DefaultReason;
+
+    [Parameter]
+    public string? Label { get; set; }
+
+    [Parameter]
+    public string CssClass { get; set; } = string.Empty;
+
+    private string AriaLabel => string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}";
+}

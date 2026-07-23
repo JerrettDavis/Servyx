@@ -1,0 +1,25 @@
+<div class="stat-card">
+    <div class="stat-card-icon" aria-hidden="true"><Icon Name="@Icon" Size="20" /></div>
+    <div class="stat-card-body">
+        <span class="stat-card-value">@Value</span>
+        <span class="stat-card-title">@Title</span>
+        @if (!string.IsNullOrWhiteSpace(SubText))
+        {
+            <span class="stat-card-subtext">@SubText</span>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public string Title { get; set; } = string.Empty;
+
+    [Parameter, EditorRequired]
+    public string Value { get; set; } = string.Empty;
+
+    [Parameter]
+    public string? SubText { get; set; }
+
+    [Parameter]
+    public string Icon { get; set; } = "dashboard";
+}

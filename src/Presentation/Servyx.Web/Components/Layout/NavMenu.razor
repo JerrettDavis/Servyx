@@ -1,30 +1,47 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">Servyx.Web</a>
-    </div>
+@implements IDisposable
+@inject NavigationManager Nav
+
+<div class="svx-brand">
+    <span class="svx-brand-mark" aria-hidden="true">S</span>
+    <span class="svx-brand-word">Servyx</span>
 </div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+<nav class="svx-nav" aria-label="Primary">
+    <ul class="svx-nav-list">
+        @foreach (var entry in NavCatalog.Entries)
+        {
+            var href = entry.Href;
+            var isActive = IsActive(href);
+            <li class="svx-nav-item">
+                <NavLink href="@href" Match="@(href == "" ? NavLinkMatch.All : NavLinkMatch.Prefix)"
+                         class="svx-nav-link" ActiveClass="svx-nav-link-active"
+                         aria-current="@(isActive ? "page" : null)" title="@entry.Label">
+                    <Icon Name="@entry.Icon" Size="18" />
+                    <span class="svx-nav-label">@entry.Label</span>
+                </NavLink>
+            </li>
+        }
+    </ul>
+</nav>
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="nav flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
-            </NavLink>
-        </div>
+@code {
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+    }
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="bi bi-plus-square-fill-nav-menu" aria-hidden="true"></span> Counter
-            </NavLink>
-        </div>
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+        => InvokeAsync(StateHasChanged);
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="weather">
-                <span class="bi bi-list-nested-nav-menu" aria-hidden="true"></span> Weather
-            </NavLink>
-        </div>
-    </nav>
-</div>
+    private bool IsActive(string href)
+    {
+        var relative = Nav.ToBaseRelativePath(Nav.Uri).TrimEnd('/');
+        return href == "" ? relative.Length == 0 : relative.Equals(href, StringComparison.OrdinalIgnoreCase)
+            || relative.StartsWith(href + "/", StringComparison.OrdinalIgnoreCase);
+    }
 
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+    }
+}

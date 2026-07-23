@@ -1,19 +1,43 @@
-﻿@inherits LayoutComponentBase
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject NavigationManager Nav
+@inject IDashboardDataService Data
 
-<div class="page">
-    <div class="sidebar">
+<div class="svx-shell">
+    <input type="checkbox" id="svx-sidebar-toggle" class="svx-sidebar-toggle-input" />
+
+    <aside class="svx-sidebar">
         <NavMenu />
-    </div>
+    </aside>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+    <label for="svx-sidebar-toggle" class="svx-sidebar-scrim" aria-hidden="true"></label>
 
-        <article class="content px-4">
+    <div class="svx-main">
+        <header class="svx-topbar">
+            <label for="svx-sidebar-toggle" class="svx-menu-toggle" aria-label="Toggle navigation menu">
+                <Icon Name="menu" Size="20" />
+            </label>
+
+            <h1 class="svx-page-title">@_pageTitle</h1>
+
+            <div class="svx-topbar-right">
+                <span class="svx-readonly-badge" tabindex="0"
+                      title="Milestone 1 is strictly read-only against live servers. No write reaches a managed workload until Milestone 4 enables it explicitly.">
+                    <Icon Name="lock" Size="14" />
+                    READ-ONLY MODE
+                </span>
+
+                <span class="svx-connection svx-connection-@_connectionCss" tabindex="0" title="@_connectionTooltip">
+                    <span class="svx-connection-dot" aria-hidden="true"></span>
+                    Docker host: @_connectionLabel
+                </span>
+            </div>
+        </header>
+
+        <main class="svx-content">
             @Body
-        </article>
-    </main>
+        </main>
+    </div>
 </div>
 
 <div id="blazor-error-ui" data-nosnippet>
@@ -21,3 +45,53 @@
     <a href="." class="reload">Reload</a>
     <span class="dismiss">🗙</span>
 </div>
+
+@code {
+    private string _pageTitle = "Servyx";
+    private ConnectionStatus _status = ConnectionStatus.Connected;
+
+    private string _connectionCss => _status switch
+    {
+        ConnectionStatus.Connected => "connected",
+        ConnectionStatus.Degraded => "degraded",
+        _ => "disconnected",
+    };
+
+    private string _connectionLabel => _status switch
+    {
+        ConnectionStatus.Connected => "Connected",
+        ConnectionStatus.Degraded => "Degraded",
+        _ => "Disconnected",
+    };
+
+    private string _connectionTooltip => _status switch
+    {
+        ConnectionStatus.Connected => "Reachable over the npipe transport using the desktop-linux Docker context.",
+        ConnectionStatus.Degraded => "The Docker host is reachable but responding slowly or with partial data.",
+        _ => "The Docker host is not reachable. Server data shown may be stale.",
+    };
+
+    protected override async Task OnInitializedAsync()
+    {
+        _status = await Data.GetDockerConnectionStatusAsync();
+        UpdateTitle();
+        Nav.LocationChanged += OnLocationChanged;
+    }
+
+    private void OnLocationChanged(object? sender, Microsoft.AspNetCore.Components.Routing.LocationChangedEventArgs e)
+    {
+        UpdateTitle();
+        InvokeAsync(StateHasChanged);
+    }
+
+    private void UpdateTitle()
+    {
+        var relative = Nav.ToBaseRelativePath(Nav.Uri);
+        _pageTitle = NavCatalog.TitleFor(relative);
+    }
+
+    public void Dispose()
+    {
+        Nav.LocationChanged -= OnLocationChanged;
+    }
+}

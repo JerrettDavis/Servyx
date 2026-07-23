@@ -1,0 +1,50 @@
+@using Servyx.Web.Models
+@* A minimal inline sparkline placeholder. Real time-series wiring lands with the metrics source
+   in a later milestone; this establishes the shape (IReadOnlyList<SparklinePoint>) now. *@
+
+<div class="sparkline" role="img" aria-label="@AriaLabel">
+    @if (Points is { Count: > 1 })
+    {
+        <svg viewBox="0 0 100 32" preserveAspectRatio="none" class="sparkline-svg">
+            <polyline points="@BuildPoints()" fill="none" stroke="currentColor" stroke-width="2" />
+        </svg>
+        <span class="sparkline-current">@Points[^1].Value.ToString("0.#")@Unit</span>
+    }
+    else
+    {
+        <span class="sparkline-empty">No data yet</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SparklinePoint> Points { get; set; } = [];
+
+    [Parameter]
+    public string Label { get; set; } = "Metric";
+
+    [Parameter]
+    public string Unit { get; set; } = "%";
+
+    private string AriaLabel => Points is { Count: > 0 }
+        ? $"{Label} sparkline, current value {Points[^1].Value:0.#}{Unit}"
+        : $"{Label} sparkline, no data yet";
+
+    private string BuildPoints()
+    {
+        var max = Math.Max(1, Points.Max(p => p.Value));
+        var min = Points.Min(p => p.Value);
+        var range = Math.Max(0.01, max - min);
+        var step = 100.0 / (Points.Count - 1);
+
+        var coords = new List<string>(Points.Count);
+        for (var i = 0; i < Points.Count; i++)
+        {
+            var x = i * step;
+            var y = 30 - ((Points[i].Value - min) / range * 28);
+            coords.Add($"{x.ToString(System.Globalization.CultureInfo.InvariantCulture)},{y.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+        }
+
+        return string.Join(' ', coords);
+    }
+}

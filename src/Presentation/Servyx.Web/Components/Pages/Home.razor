@@ -1,7 +1,102 @@
-﻿@page "/"
+@page "/"
+@inject IDashboardDataService Data
 
-<PageTitle>Home</PageTitle>
+<PageTitle>Dashboard - Servyx</PageTitle>
 
-<h1>Hello, world!</h1>
+<div class="svx-page-header">
+    <h2>Dashboard</h2>
+    <p class="svx-page-description">
+        A read-only overview of every server Servyx has adopted on this Docker host.
+    </p>
+</div>
 
-Welcome to your new app.
+@if (_loading)
+{
+    <p>Loading dashboard…</p>
+}
+else if (_summary is null)
+{
+    <div class="svx-empty-state">
+        <h3>No data available</h3>
+        <p>Servyx could not load dashboard data.</p>
+    </div>
+}
+else
+{
+    <div class="svx-stat-grid">
+        <StatCard Title="Servers online" Value="@($"{_summary.ServersOnline} / {_summary.ServersTotal}")" Icon="servers" />
+        <StatCard Title="Total players" Value="@($"{_summary.TotalPlayers} / {_summary.TotalPlayerCapacity}")" Icon="users" />
+        <StatCard Title="Foreign backups" Value="@_summary.ForeignBackupsCount.ToString()" Icon="backups"
+                   SubText="Created by each container's own tooling" />
+        <StatCard Title="Alerts" Value="@_summary.AlertsCount.ToString()" Icon="audit"
+                   SubText="@(_summary.AlertsCount > 0 ? "1 container reporting unhealthy" : "All clear")" />
+    </div>
+
+    <div class="svx-card">
+        <h3>Cluster resource usage</h3>
+        <div class="svx-stat-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));">
+            <div>
+                <div class="settings-label-key">CPU (aggregate)</div>
+                <Sparkline Points="@_summary.CpuSparkline" Label="CPU" Unit="%" />
+            </div>
+            <div>
+                <div class="settings-label-key">Memory (aggregate)</div>
+                <Sparkline Points="@_summary.MemorySparkline" Label="Memory" Unit="%" />
+            </div>
+        </div>
+    </div>
+
+    <div class="svx-card">
+        <h3>Servers</h3>
+
+        @if (_servers.Count == 0)
+        {
+            <div class="svx-empty-state">
+                <h3>No servers adopted yet</h3>
+                <p>Adopting an existing container is the first step in Milestone 1.</p>
+            </div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Servers">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;" aria-hidden="true">
+                    <span>Name</span>
+                    <span>Game</span>
+                    <span>State</span>
+                    <span>Health</span>
+                    <span>Players</span>
+                    <span>Uptime</span>
+                </div>
+
+                @foreach (var server in _servers)
+                {
+                    <a class="svx-row-link" role="listitem" href="@($"servers/{server.Id}")"
+                       style="grid-template-columns: 1.4fr 0.9fr 0.9fr 0.9fr 0.9fr 1fr;">
+                        <span><strong>@server.Name</strong></span>
+                        <span>@server.Game</span>
+                        <span><StateBadge State="@server.State" /></span>
+                        <span><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
+                        <span>@server.PlayersOnline / @server.PlayersMax</span>
+                        <span>@FormatUptime(server.Uptime)</span>
+                    </a>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private DashboardSummary? _summary;
+    private IReadOnlyList<ServerSummary> _servers = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _summary = await Data.GetDashboardSummaryAsync();
+        _servers = await Data.GetServersAsync();
+        _loading = false;
+    }
+
+    private static string FormatUptime(TimeSpan? uptime)
+        => uptime is null ? "—" : $"{(int)uptime.Value.TotalHours}h {uptime.Value.Minutes}m";
+}

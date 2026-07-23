@@ -1,0 +1,71 @@
+@page "/games"
+@inject IDashboardDataService Data
+
+<PageTitle>Games - Servyx</PageTitle>
+
+<div class="svx-page-header">
+    <h2>Games</h2>
+    <p class="svx-page-description">
+        Bundled game definitions. Adding support for a new game is a data-only exercise — see
+        <code>definitions/*.yaml</code> — not a code change.
+    </p>
+</div>
+
+@if (_loading)
+{
+    <p>Loading games…</p>
+}
+else if (_games.Count == 0)
+{
+    <div class="svx-empty-state">
+        <h3>No game definitions found</h3>
+    </div>
+}
+else
+{
+    <div class="games-grid">
+        @foreach (var game in _games)
+        {
+            <div class="svx-card game-card">
+                <div class="game-card-header">
+                    <h3>@game.Name</h3>
+                    <span class="badge trust-badge trust-@game.Trust.ToString().ToLowerInvariant()">@game.Trust</span>
+                </div>
+                <p class="settings-value-muted">Version @game.Version</p>
+
+                <div class="game-tags">
+                    @foreach (var tag in game.Tags)
+                    {
+                        <span class="port-chip">@tag</span>
+                    }
+                </div>
+
+                <h4 class="svx-subheading">Deployment profiles</h4>
+                <ul class="deployment-profile-list">
+                    @foreach (var profile in game.DeploymentProfiles)
+                    {
+                        <li>
+                            <strong>@profile.Id</strong> <span class="settings-value-muted">(@profile.Kind)</span>
+                            <p class="settings-value-muted">@profile.Description</p>
+                        </li>
+                    }
+                </ul>
+
+                <p class="settings-value-muted">
+                    Mods: @(game.ModsSupported ? "Supported" : "Not supported for this game")
+                </p>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private IReadOnlyList<GameCardSummary> _games = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _games = await Data.GetGamesAsync();
+        _loading = false;
+    }
+}

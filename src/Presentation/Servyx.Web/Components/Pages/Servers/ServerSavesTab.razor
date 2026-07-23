@@ -1,0 +1,54 @@
+@if (Saves is null)
+{
+    <div class="svx-empty-state">
+        <h3>No save data found</h3>
+        <p>The world directory could not be read.</p>
+    </div>
+}
+else
+{
+    <div class="svx-card">
+        <h3>World</h3>
+        <dl class="svx-dl">
+            <div><dt>World ID</dt><dd><code>@Saves.WorldId</code></dd></div>
+            <div><dt>@Saves.LevelFileName</dt><dd>@FormatSize(Saves.LevelFileSizeBytes)</dd></div>
+            <div><dt>@Saves.LevelMetaFileName</dt><dd>@FormatSize(Saves.LevelMetaFileSizeBytes)</dd></div>
+        </dl>
+    </div>
+
+    <div class="svx-card">
+        <h3>Player saves (@Saves.PlayerFiles.Count)</h3>
+
+        @if (Saves.PlayerFiles.Count == 0)
+        {
+            <div class="svx-empty-state"><h3>No players have joined this world yet</h3></div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Player save files">
+                <div class="svx-row-grid-header" style="grid-template-columns: 2fr 1fr;" aria-hidden="true">
+                    <span>File</span>
+                    <span>Size</span>
+                </div>
+                @foreach (var file in Saves.PlayerFiles)
+                {
+                    <div class="svx-row-link" role="listitem" style="grid-template-columns: 2fr 1fr;">
+                        <span data-col-label="File"><code>@file.FileName</code></span>
+                        <span data-col-label="Size">@FormatSize(file.SizeBytes)</span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public SaveInfo? Saves { get; set; }
+
+    private static string FormatSize(long bytes)
+    {
+        double mb = bytes / 1024.0 / 1024.0;
+        return mb >= 1 ? $"{mb:0.0} MB" : $"{bytes / 1024.0:0.#} KB";
+    }
+}

@@ -1,0 +1,68 @@
+@if (Settings.Count == 0)
+{
+    <div class="svx-empty-state">
+        <h3>No settings catalogue for this server</h3>
+        <p>The bundled game definition did not declare any bindable settings.</p>
+    </div>
+}
+else
+{
+    <p class="svx-page-description" style="margin-bottom:1rem;">
+        Every setting shows four columns, mirroring <code>Servyx.Domain.Configuration.SettingState</code>:
+        <strong>Desired</strong> (Servyx's intent), <strong>Authoritative</strong> (the current <code>.env</code>),
+        <strong>Rendered</strong> (the generated INI), and <strong>Runtime</strong> (the live server). All fields
+        are disabled — Milestone 1 is strictly read-only.
+    </p>
+
+    @foreach (var group in Settings.GroupBy(s => s.Group))
+    {
+        <div class="settings-group">
+            <h3>@group.Key</h3>
+
+            <div class="settings-grid-header" aria-hidden="true">
+                <span>Setting</span>
+                <span>Desired</span>
+                <span>Authoritative (.env)</span>
+                <span>Rendered (INI)</span>
+                <span>Runtime</span>
+                <span>Drift</span>
+            </div>
+
+            @foreach (var row in group)
+            {
+                <div class="settings-row @(row.HasDrift ? "has-drift" : "")" data-testid="setting-row" data-setting-key="@row.Key">
+                    <div class="settings-label" data-col-label="Setting">
+                        <span>@row.Label</span>
+                        <span class="settings-label-key">@row.Key</span>
+                    </div>
+
+                    <div data-col-label="Desired">
+                        <GatedControl Label="@($"Desired value for {row.Label}")">
+                            <div style="display:flex; gap:0.4rem; align-items:center;">
+                                <input type="@(row.IsSecret ? "password" : "text")" class="form-control form-control-sm"
+                                       value="@row.Desired" aria-label="@($"Desired value for {row.Label}")" />
+                                @if (row.IsSecret)
+                                {
+                                    <GatedButton Label="Reveal" CssClass="gated-button-compact">Reveal</GatedButton>
+                                }
+                            </div>
+                        </GatedControl>
+                    </div>
+
+                    <div data-col-label="Authoritative (.env)" class="settings-value">@row.Authoritative</div>
+                    <div data-col-label="Rendered (INI)" class="settings-value settings-value-muted">@row.Rendered</div>
+                    <div data-col-label="Runtime" class="settings-value settings-value-muted">@row.Runtime</div>
+
+                    <div data-col-label="Drift">
+                        <DriftBadge Drift="@row.Drift" PendingRegeneration="@row.PendingRegeneration" />
+                    </div>
+                </div>
+            }
+        </div>
+    }
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<SettingRow> Settings { get; set; } = [];
+}

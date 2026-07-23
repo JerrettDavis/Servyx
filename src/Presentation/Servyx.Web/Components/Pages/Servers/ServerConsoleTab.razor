@@ -1,0 +1,57 @@
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="svx-card">
+    <h3>Console</h3>
+
+    <div class="console-viewport" @ref="_viewportRef" role="log" aria-label="Server console output" aria-live="polite">
+        @if (Logs.Count == 0)
+        {
+            <div class="console-line">No log lines available.</div>
+        }
+        else
+        {
+            @foreach (var line in Logs)
+            {
+                <div class="console-line @(line.Level == "WARN" ? "console-line-warn" : "")">
+                    <span class="console-timestamp">@line.Timestamp.ToString("HH:mm:ss")</span>@line.Message
+                </div>
+            }
+        }
+    </div>
+
+    <div style="margin-top:0.75rem;">
+        <GatedControl Label="Console command input">
+            <div style="display:flex; gap:0.5rem;">
+                <input type="text" class="form-control" placeholder="Send an RCON command…" aria-label="Console command input" />
+                <button type="button" class="btn btn-secondary">Send</button>
+            </div>
+        </GatedControl>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<LogLine> Logs { get; set; } = [];
+
+    private ElementReference _viewportRef;
+    private bool _scrolled;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (Logs.Count > 0 && !_scrolled)
+        {
+            _scrolled = true;
+            try
+            {
+                await JS.InvokeVoidAsync("servyxConsole.scrollToBottom", _viewportRef);
+            }
+            catch (JSException)
+            {
+                // Best-effort autoscroll; not critical to the read-only console view.
+            }
+        }
+    }
+
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}

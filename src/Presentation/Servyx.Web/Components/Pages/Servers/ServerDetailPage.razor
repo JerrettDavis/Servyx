@@ -1,0 +1,103 @@
+@page "/servers/{Id}"
+@inject IDashboardDataService Data
+
+<PageTitle>@(_detail?.Summary.Name ?? "Server") - Servyx</PageTitle>
+
+@if (_loading)
+{
+    <p>Loading server…</p>
+}
+else if (_detail is null)
+{
+    <div class="svx-empty-state">
+        <h3>Server not found</h3>
+        <p>No adopted server matches "@Id".</p>
+    </div>
+}
+else
+{
+    <div class="svx-page-header">
+        <h2>@_detail.Summary.Name</h2>
+        <p class="svx-page-description">@_detail.Summary.Game · @_detail.Image</p>
+    </div>
+
+    <div class="svx-tablist" role="tablist" aria-label="Server detail sections" @onkeydown="OnTabListKeyDown">
+        @foreach (var tab in Tabs)
+        {
+            <button type="button" class="svx-tab" role="tab" id="@($"tab-{tab}")"
+                    aria-selected="@(_activeTab == tab ? "true" : "false")"
+                    aria-controls="@($"panel-{tab}")"
+                    tabindex="@(_activeTab == tab ? 0 : -1)"
+                    @onclick="() => SelectTab(tab)">
+                @tab
+            </button>
+        }
+    </div>
+
+    <div role="tabpanel" id="@($"panel-{_activeTab}")" aria-labelledby="@($"tab-{_activeTab}")">
+        @switch (_activeTab)
+        {
+            case "Overview":
+                <ServerOverviewTab Detail="@_detail" />
+                break;
+            case "Console":
+                <ServerConsoleTab Logs="@_logs" />
+                break;
+            case "Settings":
+                <ServerSettingsTab Settings="@_settings" />
+                break;
+            case "Saves":
+                <ServerSavesTab Saves="@_saves" />
+                break;
+            case "Backups":
+                <ServerBackupsTab Backups="@_backups" />
+                break;
+        }
+    </div>
+}
+
+@code {
+    private static readonly string[] Tabs = ["Overview", "Console", "Settings", "Saves", "Backups"];
+
+    [Parameter]
+    public string Id { get; set; } = string.Empty;
+
+    private bool _loading = true;
+    private string _activeTab = "Overview";
+
+    private ServerDetail? _detail;
+    private IReadOnlyList<SettingRow> _settings = [];
+    private IReadOnlyList<LogLine> _logs = [];
+    private SaveInfo? _saves;
+    private IReadOnlyList<BackupEntry> _backups = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _detail = await Data.GetServerDetailAsync(Id);
+        _settings = await Data.GetServerSettingsAsync(Id);
+        _logs = await Data.GetServerLogsAsync(Id);
+        _saves = await Data.GetServerSavesAsync(Id);
+        _backups = await Data.GetServerBackupsAsync(Id);
+        _loading = false;
+    }
+
+    private void SelectTab(string tab) => _activeTab = tab;
+
+    private void OnTabListKeyDown(KeyboardEventArgs e)
+    {
+        var index = Array.IndexOf(Tabs, _activeTab);
+        if (index < 0)
+        {
+            return;
+        }
+
+        if (e.Key == "ArrowRight")
+        {
+            _activeTab = Tabs[(index + 1) % Tabs.Length];
+        }
+        else if (e.Key == "ArrowLeft")
+        {
+            _activeTab = Tabs[(index - 1 + Tabs.Length) % Tabs.Length];
+        }
+    }
+}
