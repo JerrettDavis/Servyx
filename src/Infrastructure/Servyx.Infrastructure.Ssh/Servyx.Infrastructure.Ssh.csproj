@@ -7,7 +7,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <PackageReference Include="SSH.NET" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application, for the same reason
+         Servyx.Infrastructure.Docker does: Application's purpose is to consume ITransport/IConnector via
+         DI, so a reference the other way would create a cycle. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
   </ItemGroup>
 
 </Project>

@@ -17,6 +17,12 @@
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
     <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
     <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.10" />
+    <PackageVersion Include="SSH.NET" Version="2025.1.0" />
+
+    <!-- Transitive pins for SSH.NET: bump the floor it declares to whatever is actually current, since
+         these are exactly the kind of crypto-adjacent transitives NuGet audit escalates on. -->
+    <PackageVersion Include="BouncyCastle.Cryptography" Version="2.6.2" />
+    <PackageVersion Include="System.Formats.Asn1" Version="8.0.2" />
 
     <!-- Transitive pins: bump known-vulnerable versions pulled in by the above -->
     <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.4" />
@@ -48,6 +54,8 @@
     <PackageVersion Include="bunit" Version="2.7.2" />
     <PackageVersion Include="TinyBDD" Version="0.19.30" />
     <PackageVersion Include="TinyBDD.Xunit" Version="0.19.30" />
+    <PackageVersion Include="Testcontainers" Version="4.13.0" />
+    <PackageVersion Include="Xunit.SkippableFact" Version="1.5.61" />
 
     <!-- E2E testing (Servyx.E2E.Tests only). Microsoft.Playwright.Xunit's PageTest/ContextTest base
          classes were evaluated but not used: their IAsyncLifetime.InitializeAsync launches the browser

@@ -53,6 +53,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Servyx.Config", "src\Infras
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Servyx.Config.Tests", "tests\Infrastructure\Servyx.Config.Tests\Servyx.Config.Tests.csproj", "{E35F4364-8BAF-4A8E-9773-9A5B64131350}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Servyx.Infrastructure.Ssh.Tests", "tests\Infrastructure\Servyx.Infrastructure.Ssh.Tests\Servyx.Infrastructure.Ssh.Tests.csproj", "{8347A549-7548-4894-A9C2-877DB945ADAD}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -255,6 +257,18 @@ Global
 		{E35F4364-8BAF-4A8E-9773-9A5B64131350}.Release|x64.Build.0 = Release|Any CPU
 		{E35F4364-8BAF-4A8E-9773-9A5B64131350}.Release|x86.ActiveCfg = Release|Any CPU
 		{E35F4364-8BAF-4A8E-9773-9A5B64131350}.Release|x86.Build.0 = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|x64.Build.0 = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Debug|x86.Build.0 = Debug|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|x64.ActiveCfg = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|x64.Build.0 = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|x86.ActiveCfg = Release|Any CPU
+		{8347A549-7548-4894-A9C2-877DB945ADAD}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -283,5 +297,6 @@ Global
 		{E6D33209-29F2-45D1-BDFB-22A9AD083626} = {0AB3BF05-4346-4AA6-1389-037BE0695223}
 		{C61F4B8B-C54E-4002-BA1C-D326B731384A} = {9048EB7F-3875-A59E-E36B-5BD4C6F2A282}
 		{E35F4364-8BAF-4A8E-9773-9A5B64131350} = {2CDFC2B4-03A0-2A52-1000-A892D95DD3FA}
+		{8347A549-7548-4894-A9C2-877DB945ADAD} = {2CDFC2B4-03A0-2A52-1000-A892D95DD3FA}
 	EndGlobalSection
 EndGlobal
