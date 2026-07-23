@@ -1,7 +1,12 @@
+using System.Runtime.CompilerServices;
+
+[assembly: InternalsVisibleTo("Servyx.Infrastructure.Docker.Tests")]
+
 namespace Servyx.Infrastructure.Docker;
 
 /// <summary>
-/// Placeholder marker type. Business logic for this project lands in a future milestone.
+/// Assembly marker type, used by test discovery and reflection-based wiring that needs a stable type
+/// reference into this assembly.
 /// </summary>
 public static class AssemblyMarker
 {
