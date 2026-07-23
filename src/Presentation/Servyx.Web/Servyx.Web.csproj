@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <BlazorDisableThrowNavigationException>true</BlazorDisableThrowNavigationException>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
+    <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+</Project>
