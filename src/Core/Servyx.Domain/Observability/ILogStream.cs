@@ -1,3 +1,5 @@
+using Servyx.Domain.Transport;
+
 namespace Servyx.Domain.Observability;
 
 /// <summary>
@@ -8,7 +10,8 @@ namespace Servyx.Domain.Observability;
 /// <param name="Offset">Monotonically increasing position of this line in the server's console index.</param>
 /// <param name="Text">The line's text.</param>
 /// <param name="Timestamp">When the line was produced.</param>
-public sealed record ConsoleLine(long Offset, string Text, DateTimeOffset Timestamp);
+/// <param name="Stream">Which stream (stdout/stderr) the line came from.</param>
+public sealed record ConsoleLine(long Offset, string Text, DateTimeOffset Timestamp, OutputStream Stream);
 
 /// <summary>Options controlling how much backscroll to replay when following console output.</summary>
 /// <param name="MaxBacklogLines">Maximum number of historical lines to replay before following new output.</param>

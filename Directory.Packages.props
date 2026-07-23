@@ -11,7 +11,10 @@
     <!-- Infrastructure -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
+    <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
 
     <!-- Transitive pins: bump known-vulnerable versions pulled in by the above -->
     <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.4" />
@@ -19,6 +22,10 @@
     <PackageVersion Include="SQLitePCLRaw.lib.e_sqlite3" Version="3.0.4" />
     <PackageVersion Include="SQLitePCLRaw.provider.e_sqlite3" Version="3.0.4" />
     <PackageVersion Include="AngleSharp" Version="1.5.2" />
+    <!-- Newtonsoft.Json: floor of 13.0.4 is required by Servyx.AppHost's Aspire.Hosting.AppHost
+         dependency; Docker.DotNet only requires >= 13.0.1 for its netstandard2.0/2.1 targets, so
+         13.0.4 satisfies both (same netstandard2.0 targets, no assembly-identity change from 13.0.x). -->
+    <PackageVersion Include="Newtonsoft.Json" Version="13.0.4" />
 
     <!-- Aspire ServiceDefaults -->
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.6.0" />
