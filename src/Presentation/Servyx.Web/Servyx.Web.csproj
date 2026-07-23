@@ -8,11 +8,26 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <!-- Milestone 1 UI binds only to Servyx.Domain abstractions and a local mock data service.
-         Servyx.Infrastructure.Docker is under concurrent development by another agent and is
-         deliberately not referenced here. -->
+    <PackageReference Include="YamlDotNet" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Servyx.Web now wires the dashboard to real data: it consumes Servyx.Application's use-case
+         layer and registers Servyx.Infrastructure.Docker's implementations behind it. Servyx.Domain is
+         still referenced directly for the shared enums (ServerState) that both mock and live view
+         models are built on. -->
     <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+    <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
     <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Bundled game definition, copied to the output directory so it can be loaded at runtime without
+         reaching outside the published app's own directory tree. -->
+    <None Include="..\..\..\definitions\palworld-docker.yaml" Link="definitions\palworld-docker.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>
