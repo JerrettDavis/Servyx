@@ -89,7 +89,18 @@ public sealed class DockerExecutionTarget : IExecutionTarget
                 return new FileStat(false, false, null, null, null);
             }
 
-            return new FileStat(true, IsDirectoryMode(stat.Mode), stat.Size, stat.Mtime, null);
+            return new FileStat(true, IsDirectoryMode(stat.Mode), stat.Size, stat.Mtime, null)
+            {
+                Mode = (int)(stat.Mode & PosixPermissionBitsMask),
+                IsSymlink = IsSymlinkMode(stat.Mode),
+
+                // Docker's archive-stat header (the statOnly:true response GetPathStatAsync returns) is
+                // Go's os.FileMode plus size/mtime/name only — unlike a full tar entry (as read by
+                // ListDirectoryAsync/OpenReadAsync below), it carries no uid/gid/owner-name and no mount
+                // metadata. Populating those here would require fetching the whole archive
+                // (statOnly:false) on every stat call, which this read-only milestone does not do, so
+                // Owner/Group/Uid/Gid/IsReadOnlyMount stay at their FileStat defaults (null/false).
+            };
         }
         catch (DockerApiException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
@@ -295,6 +306,15 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     /// directory flag (<c>os.ModeDir</c>).
     /// </summary>
     private static bool IsDirectoryMode(uint mode) => (mode & 0x8000_0000u) != 0;
+
+    /// <summary>The low 9 bits of a Go <c>os.FileMode</c> value, which carry POSIX <c>rwxrwxrwx</c> permission bits.</summary>
+    private const uint PosixPermissionBitsMask = 0x1FFu;
+
+    /// <summary>
+    /// Whether a raw stat mode value denotes a symbolic link. Go serializes <c>os.ModeSymlink</c> at bit
+    /// position 27 (<c>1&lt;&lt;27</c>) of <c>os.FileMode</c>.
+    /// </summary>
+    private static bool IsSymlinkMode(uint mode) => (mode & 0x0800_0000u) != 0;
 
     private string ToContainerPath(TargetPath path)
     {
