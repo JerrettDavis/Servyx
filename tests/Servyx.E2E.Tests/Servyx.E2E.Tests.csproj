@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Real-browser E2E against the Blazor Server app, run against Servyx:DataSource=Mock so it needs
+         no Docker daemon and is deterministic. Tagged "e2e" and NOT part of the default `dotnet test
+         Servyx.sln` run — see docs/testing.md for why (Playwright browsers are a heavyweight, optional
+         prerequisite) and for the exact filter commands. -->
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="Microsoft.Playwright" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Presentation\Servyx.Web\Servyx.Web.csproj" />
+  </ItemGroup>
+
+</Project>

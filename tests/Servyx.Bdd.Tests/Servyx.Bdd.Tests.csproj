@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Fast, daemon-free, NSubstitute-backed BDD scenarios expressing product guarantees. Every
+         scenario in this project is tagged "unit" (via [Scenario(name, "unit")]) so it stays part of the
+         default, hermetic `dotnet test` run alongside the plain [Fact]/[Theory] suites — see
+         docs/testing.md for the full filter reference. -->
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="FluentAssertions" />
+    <PackageReference Include="TinyBDD" />
+    <PackageReference Include="TinyBDD.Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Core\Servyx.Domain\Servyx.Domain.csproj" />
+    <ProjectReference Include="..\..\src\Core\Servyx.Application\Servyx.Application.csproj" />
+    <ProjectReference Include="..\..\src\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+  </ItemGroup>
+
+</Project>

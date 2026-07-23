@@ -11,10 +11,12 @@
     <!-- Infrastructure -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
     <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
+    <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.10" />
 
     <!-- Transitive pins: bump known-vulnerable versions pulled in by the above -->
     <PackageVersion Include="SQLitePCLRaw.core" Version="3.0.4" />
@@ -46,5 +48,17 @@
     <PackageVersion Include="bunit" Version="2.7.2" />
     <PackageVersion Include="TinyBDD" Version="0.19.30" />
     <PackageVersion Include="TinyBDD.Xunit" Version="0.19.30" />
+
+    <!-- E2E testing (Servyx.E2E.Tests only). Microsoft.Playwright.Xunit's PageTest/ContextTest base
+         classes were evaluated but not used: their IAsyncLifetime.InitializeAsync launches the browser
+         itself and throws straight through xunit if it's missing, which would fail (not skip) every test
+         in an environment without browsers installed. Servyx.E2E.Tests instead uses a plain
+         IAsyncLifetime fixture (PlaywrightFixture) that catches a missing-browser failure once and lets
+         every scenario skip itself cleanly — see docs/testing.md. Microsoft.AspNetCore.Mvc.Testing's
+         WebApplicationFactory was also evaluated and not used: it cannot host Blazor Server for a real
+         browser (no real socket), and forcing a real Kestrel IServer through it fought framework
+         internals rather than testing the app — see the comment on ServyxAppProcess for the full
+         reasoning. Servyx.E2E.Tests launches Servyx.Web as a real subprocess instead. -->
+    <PackageVersion Include="Microsoft.Playwright" Version="1.61.0" />
   </ItemGroup>
 </Project>
