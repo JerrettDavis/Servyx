@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Microsoft.Playwright;
 using Xunit.Abstractions;
 using static Microsoft.Playwright.Assertions;
@@ -27,14 +26,12 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
     /// </summary>
     /// <returns>
     /// <see langword="true"/> once the tab is confirmed selected. <see langword="false"/> if it never
-    /// switched within a few retries — <b>as of this writing, that is the actual, reproducible outcome</b>:
-    /// no component in Servyx.Web's render tree (<c>App.razor</c>, <c>Routes.razor</c>, or any page)
-    /// currently opts into <c>@@rendermode InteractiveServer</c>, despite
-    /// <c>Program.cs</c> calling <c>.AddInteractiveServerRenderMode()</c> (which only makes the render
-    /// mode *available*, not applied). The whole app therefore renders as static SSR only right now, and
-    /// every <c>@@onclick</c> handler anywhere — not just these tabs — is currently inert. This was
-    /// discovered by writing this E2E scenario; it is a real product gap, not a test bug, and is called
-    /// out in the test-run report rather than being silently swallowed. See docs/testing.md.
+    /// switches within the retry window — this should not happen now that <c>App.razor</c> applies
+    /// <c>@@rendermode InteractiveServer</c> to both <c>HeadOutlet</c> and <c>Routes</c>, and
+    /// <c>Program.cs</c> maps <c>.AddInteractiveServerRenderMode()</c> accordingly, so every
+    /// <c>@@onclick</c> handler — including these tab switchers — is wired up server-side. If this ever
+    /// returns <see langword="false"/> again, treat it as a genuine interactivity regression (see
+    /// <see cref="FailTabNeverSwitched"/>), not a test flake.
     /// </returns>
     private async Task<bool> ClickTabAsync(string tabName)
     {
@@ -57,24 +54,19 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         return false;
     }
 
-    /// <summary>Skips the calling scenario cleanly when tab-switching isn't functional yet (see <see cref="ClickTabAsync"/>).</summary>
-    private void SkipIfTabNeverSwitched(string tabName)
-    {
-        Log(
-            $"SKIPPED: the '{tabName}' tab never became selected after repeated clicks. Servyx.Web does " +
-            $"not currently apply @rendermode InteractiveServer anywhere in its render tree, so no " +
-            $"@onclick handler — including this tab switcher — is wired up yet; this is a real product " +
-            $"gap this E2E scenario surfaced, not a flaky test. Skipping cleanly so the suite stays green " +
-            $"until interactivity is enabled. See docs/testing.md.");
-    }
+    /// <summary>
+    /// Fails the calling scenario loudly when tab-switching isn't functional (see
+    /// <see cref="ClickTabAsync"/>). Unlike missing browsers, a tab that never switches is not an
+    /// environment problem — it means server-side interactivity is broken — so this must never be a skip
+    /// or a silent pass.
+    /// </summary>
+    private static void FailTabNeverSwitched(string tabName) =>
+        Assert.Fail($"The '{tabName}' tab never became selected after repeated clicks — interactivity is not working.");
 
-    [Fact]
+    [SkippableFact]
     public async Task Dashboard_SidebarShowsAllNineNavigationEntries()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync("/");
 
@@ -82,13 +74,10 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         await Expect(navLinks).ToHaveCountAsync(9);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task NavigatingToServers_MarksItCurrent_AndShowsTheSeededServer()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync("/");
         await Page.Locator("a.svx-nav-link[href='servers']").ClickAsync();
@@ -97,13 +86,10 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         await Expect(Page.Locator($"a.svx-row-link[href='servers/{SeededServerId}']")).ToContainTextAsync(SeededServerName);
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task ServerDetail_RendersStateAndHealthAsSeparateBadges()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync($"/servers/{SeededServerId}");
 
@@ -118,19 +104,15 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         await Expect(healthBadge).ToHaveClassAsync(new System.Text.RegularExpressions.Regex("health-unhealthy"));
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task SettingsTab_ShowsFourColumns_DriftBadgeOnTheDriftedSetting_AndMaskedSecrets()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync($"/servers/{SeededServerId}");
         if (!await ClickTabAsync("Settings"))
         {
-            SkipIfTabNeverSwitched("Settings");
-            return;
+            FailTabNeverSwitched("Settings");
         }
 
         var playersRow = Page.Locator("div.settings-row[data-setting-key='PLAYERS']");
@@ -147,13 +129,10 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         await Expect(passwordRow.Locator("[data-col-label='Authoritative (.env)']")).ToContainTextAsync("********");
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task EveryPowerControl_IsDisabled_AndExplainsWhy()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync($"/servers/{SeededServerId}");
 
@@ -170,19 +149,15 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         }
     }
 
-    [Fact]
+    [SkippableFact]
     public async Task BackupsTab_ListsForeignBackups_WithNoDestructiveControlPresent()
     {
-        if (SkipIfBrowsersUnavailable())
-        {
-            return;
-        }
+        SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync($"/servers/{SeededServerId}");
         if (!await ClickTabAsync("Backups"))
         {
-            SkipIfTabNeverSwitched("Backups");
-            return;
+            FailTabNeverSwitched("Backups");
         }
 
         var foreignBadges = Page.Locator(".foreign-badge");

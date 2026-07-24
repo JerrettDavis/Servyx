@@ -42,22 +42,17 @@ public abstract class E2ETestBase(PlaywrightFixture fixture, ITestOutputHelper o
     protected void Log(string message) => output.WriteLine(message);
 
     /// <summary>
-    /// Call as the first line of every <c>[Fact]</c>. Returns <see langword="true"/> (and logs why) when
-    /// Playwright's Chromium binary is not available in this environment, so the caller can
-    /// <c>return;</c> immediately — the scenario is skipped cleanly rather than failing the whole suite.
+    /// Call as the first line of every <c>[SkippableFact]</c>. Issues a genuine xUnit <c>Skip</c> (not a
+    /// silent pass) when Playwright's Chromium binary is not available in this environment — an
+    /// environment problem, not an application defect, so it must be reported as SKIPPED rather than
+    /// PASSED or FAILED.
     /// </summary>
-    protected bool SkipIfBrowsersUnavailable()
+    protected void SkipIfBrowsersUnavailable()
     {
-        if (Fixture.BrowsersAvailable)
-        {
-            return false;
-        }
-
-        output.WriteLine(
-            $"SKIPPED: Playwright's Chromium browser is not installed/available in this environment " +
+        Skip.IfNot(
+            Fixture.BrowsersAvailable,
+            $"Playwright's Chromium browser is not installed/available in this environment " +
             $"({Fixture.SkipReason}). Run `pwsh bin/Debug/net10.0/playwright.ps1 install chromium` in " +
-            $"tests/Servyx.E2E.Tests and re-run to execute this scenario for real. Skipping cleanly so " +
-            $"the suite stays green.");
-        return true;
+            $"tests/Servyx.E2E.Tests and re-run to execute this scenario for real.");
     }
 }

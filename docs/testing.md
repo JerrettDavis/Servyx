@@ -8,7 +8,7 @@ directory.
 
 | Layer | Project(s) | Speed | Needs Docker? | What belongs here |
 |---|---|---|---|---|
-| Plain unit tests | `Servyx.Domain.Tests`, `Servyx.Application.Tests`, `Servyx.Infrastructure.Tests`, `Servyx.Infrastructure.Docker.Tests`, `Servyx.Config.Tests`, and the non-`Integration` tests in `Servyx.Infrastructure.Ssh.Tests` | Milliseconds | No | Pure logic and algorithms: value-object behavior, a single method's edge cases, calculations (e.g. `DockerCpuPercentCalculator`), parsing. `[Fact]`/`[Theory]` + FluentAssertions `.Should()`. No behavioral narrative needed — these test *how*, not *why*. `Servyx.Infrastructure.Docker.Tests` talks to a substituted `IDockerClient`/`IDockerEnvironment`, never a real daemon. `Servyx.Infrastructure.Tests`' secret-store and host-key-store tests write only under a per-test, GUID-named directory beneath `Path.GetTempPath()` — never outside it (note: those temp files/directories are not deleted afterwards, so they do accumulate in the OS temp folder over many runs; this is a hygiene nit, not a hermeticity violation). |
+| Plain unit tests | `Servyx.Domain.Tests`, `Servyx.Application.Tests`, `Servyx.Infrastructure.Tests`, `Servyx.Infrastructure.Docker.Tests`, `Servyx.Config.Tests`, and the non-`Integration` tests in `Servyx.Infrastructure.Ssh.Tests` | Milliseconds | No | Pure logic and algorithms: value-object behavior, a single method's edge cases, calculations (e.g. `DockerCpuPercentCalculator`), parsing. `[Fact]`/`[Theory]` + AwesomeAssertions `.Should()`. No behavioral narrative needed — these test *how*, not *why*. `Servyx.Infrastructure.Docker.Tests` talks to a substituted `IDockerClient`/`IDockerEnvironment`, never a real daemon. `Servyx.Infrastructure.Tests`' secret-store and host-key-store tests write only under a per-test, GUID-named directory beneath `Path.GetTempPath()` — never outside it (note: those temp files/directories are not deleted afterwards, so they do accumulate in the OS temp folder over many runs; this is a hygiene nit, not a hermeticity violation). |
 | BDD scenarios | `Servyx.Bdd.Tests` | Milliseconds | No | **Product guarantees** expressed as `Given/When/Then` behavior, grouped by `[Feature]`: read-only safety, path sandboxing, container adoption, configuration drift, secret protection, graceful degradation, observability correctness. Fast and NSubstitute-backed like unit tests, but the point is the *readable scenario*, not the assertion mechanics — this is where you'd point a new contributor to understand what Servyx promises and why. Uses TinyBDD (see below). |
 | bUnit component tests | `Servyx.Web.Tests` | Milliseconds | No | Blazor component rendering in isolation: does this component render the right markup for these inputs, does a masked secret ever reach rendered HTML, is a gated control actually disabled. Fast because there's no real browser for almost all of these — but cannot exercise real user interaction (clicks that require a live SignalR circuit), real navigation, or anything CSS/layout-dependent. **One exception**: `Integration/InteractiveRenderModeTests.cs` in this project is not a bUnit test — it launches the real `Servyx.Web` app as a subprocess and issues a real loopback HTTP request to it (no Docker, no external network, just `127.0.0.1`), as a regression guard for a real outage bUnit structurally cannot detect (see the doc comment on that class). It runs by default; it is fast (well under a second) and does not warrant opt-in gating, but it is the one test in the default run that is not purely in-process. |
 | Container-backed integration tests | `Servyx.Infrastructure.Ssh.Tests` (the `[Trait("Category", "Integration")]` tests under `Integration/`) | Tens of seconds | **Yes** — starts a real `linuxserver/openssh-server` container per test via Testcontainers | Real, non-mocked round trips against an actual SSH/SFTP server: password and key auth, host-key TOFU pinning and rejection, atomic file writes, exec argument quoting, the exec-only shell-fallback file channel. These need a genuine SSH server on the other end and are deliberately excluded from the default run — see "Container-backed integration tests" below. |
@@ -170,11 +170,13 @@ browser binaries. The suite is designed to **stay green regardless**:
 3. Run `dotnet test tests/Servyx.E2E.Tests`.
 
 If step 2 wasn't run, or fails (no network, restricted environment, etc.),
-every E2E scenario detects that Chromium never launched and **skips itself
-cleanly** with an explanatory message instead of failing — see
+every E2E scenario detects that Chromium never launched and reports a genuine
+xUnit **Skip** (via `[SkippableFact]` + `Skip.IfNot`), with an explanatory
+message, instead of failing or silently passing — see
 `PlaywrightFixture`/`E2ETestBase.SkipIfBrowsersUnavailable` in
-`tests/Servyx.E2E.Tests`. The suite reports all scenarios as passed either
-way; check the test output for whether they ran for real or skipped.
+`tests/Servyx.E2E.Tests`. Check the test output to see whether each scenario
+ran for real, was skipped (missing browsers — an environment problem), or
+failed (a real product defect).
 
 ### How the app is hosted for E2E
 
@@ -200,19 +202,15 @@ elements that only exist after render — never a fixed `Task.Delay`, and never
 `WaitUntil.NetworkIdle` (Blazor Server's persistent WebSocket keeps the
 network permanently "busy," making `NetworkIdle` never fire reliably).
 
-### A real product gap this E2E suite surfaced
+### Interactive render mode
 
 Two scenarios (`SettingsTab_...`, `BackupsTab_...`) need to click a detail-page
-tab button to switch panels. As of this writing, **no component in
-Servyx.Web's render tree currently applies `@rendermode InteractiveServer`**
-— `Program.cs` calls `.AddInteractiveServerRenderMode()`, which only makes
-the render mode *available*, but nothing opts into it. The whole app
-therefore renders as static SSR only, and every `@onclick` handler anywhere
-(not just these tabs) is currently inert in a real browser. Both scenarios
-detect this (the tab never becomes selected after several retries) and skip
-themselves with a message pointing here, rather than failing or — worse —
-silently passing on a page that never actually switched tabs. This is a real
-finding about the running app, not a test-authoring bug; fixing it (adding
-`@rendermode InteractiveServer` somewhere in the render tree, e.g. on
-`<Routes>` in `App.razor`) is out of scope for the BDD/E2E harness work that
-produced this document.
+tab button to switch panels, which requires a live SignalR circuit. `App.razor`
+applies `@rendermode InteractiveServer` to both `<HeadOutlet>` and `<Routes>`,
+and `Program.cs` maps `.AddInteractiveServerRenderMode()` accordingly, so
+`@onclick` handlers across the app — including these tab switchers — are wired
+up server-side once the circuit connects. If a tab ever fails to become
+selected after several retries, that is treated as a genuine interactivity
+regression: the scenario fails loudly (`Assert.Fail`, not a skip or a silent
+pass) so a real break in server-side interactivity is never mistaken for an
+environment issue.
