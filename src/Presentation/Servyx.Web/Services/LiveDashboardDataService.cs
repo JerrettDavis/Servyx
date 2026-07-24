@@ -99,8 +99,10 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         return new DashboardSummary(
             ServersOnline: servers.Count(s => s.State == ServerState.Running),
             ServersTotal: servers.Count,
-            TotalPlayers: 0, // Not yet read: requires an authenticated RCON/REST session (M2 scope).
-            TotalPlayerCapacity: 0,
+            // Not yet read: requires an authenticated RCON/REST session (M2 scope). null means "not
+            // sampled", never a fabricated 0 — see ServerSummary.PlayersOnline's remarks.
+            TotalPlayers: null,
+            TotalPlayerCapacity: null,
             ForeignBackupsCount: 0, // Backup adoption is out of scope for this milestone's wiring.
             AlertsCount: servers.Count(s => s.Health == ContainerHealth.Unhealthy),
             CpuSparkline: cpuPoints,
@@ -230,8 +232,11 @@ public sealed class LiveDashboardDataService : IDashboardDataService
             State: s.State,
             Health: health,
             HealthTooltip: s.HealthDetail ?? DefaultHealthTooltip(health),
-            PlayersOnline: 0, // Not yet read: requires an authenticated RCON/REST session (M2 scope).
-            PlayersMax: 0,
+            // Not yet read: requires an authenticated RCON/REST session (M2 scope). The Docker API has no
+            // notion of "players", so null ("not sampled") is honest here — 0 would fabricate an empty
+            // server. See ServerSummary.PlayersOnline's remarks.
+            PlayersOnline: null,
+            PlayersMax: null,
             Uptime: s.StartedAt is null ? null : DateTimeOffset.UtcNow - s.StartedAt.Value,
             Host: s.Host,
             Ports: s.Ports.Select(p => new PortBinding(p.ContainerPort, p.Protocol, PurposeFor(p.ContainerPort), p.Published)).ToList());

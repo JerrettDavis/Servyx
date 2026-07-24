@@ -34,6 +34,13 @@ public sealed record PortBinding(int Port, string Protocol, string Purpose, bool
 }
 
 /// <summary>Row shown in the dashboard/server list.</summary>
+/// <param name="PlayersOnline">
+/// Current player count, or <see langword="null"/> when it has not been sampled (e.g. the live Docker
+/// path, which cannot read player counts without an RCON/REST session — see
+/// <c>DockerMetricsSource</c>). <see langword="null"/> is not "zero players"; render it as an explicit
+/// "not sampled" indicator (e.g. "—"), never as <c>0</c>.
+/// </param>
+/// <param name="PlayersMax">Capacity paired with <paramref name="PlayersOnline"/>; <see langword="null"/> for the same reason.</param>
 public sealed record ServerSummary(
     string Id,
     string Name,
@@ -41,8 +48,8 @@ public sealed record ServerSummary(
     ServerState State,
     ContainerHealth Health,
     string HealthTooltip,
-    int PlayersOnline,
-    int PlayersMax,
+    int? PlayersOnline,
+    int? PlayersMax,
     TimeSpan? Uptime,
     string Host,
     IReadOnlyList<PortBinding> Ports);
@@ -62,11 +69,16 @@ public sealed record ServerDetail(
 public sealed record SparklinePoint(DateTimeOffset Timestamp, double Value);
 
 /// <summary>Top-of-dashboard summary tiles.</summary>
+/// <param name="TotalPlayers">
+/// Aggregate current player count across adopted servers, or <see langword="null"/> when it has not
+/// been sampled (see <see cref="ServerSummary.PlayersOnline"/>). Never fabricated as <c>0</c>.
+/// </param>
+/// <param name="TotalPlayerCapacity">Aggregate capacity paired with <paramref name="TotalPlayers"/>; <see langword="null"/> for the same reason.</param>
 public sealed record DashboardSummary(
     int ServersOnline,
     int ServersTotal,
-    int TotalPlayers,
-    int TotalPlayerCapacity,
+    int? TotalPlayers,
+    int? TotalPlayerCapacity,
     int ForeignBackupsCount,
     int AlertsCount,
     IReadOnlyList<SparklinePoint> CpuSparkline,
