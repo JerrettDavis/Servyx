@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- Scoped to false here (unlike the solution-wide Directory.Build.props default of true) because
+         Reqnroll's MSBuild code generator emits *.feature.cs into this project's own nullable context,
+         and that generated code is not guaranteed to be warning-clean under this repo's analyzer set.
+         Fixing generator output is out of scope for this suite; treating its warnings as build-breaking
+         errors here would make every feature-file edit a build hazard for reasons outside this project's
+         own source. -->
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <NoWarn>$(NoWarn);CS8600;CS8602;CS8603;CS8604;CS8618;CS8625;CS1591;xUnit1013;CS0219</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Xunit.SkippableFact" />
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="Microsoft.Playwright" />
+    <PackageReference Include="Reqnroll" />
+    <PackageReference Include="Reqnroll.xUnit" />
+    <PackageReference Include="Reqnroll.Tools.MsBuild.Generation" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Servyx.E2E.Tests\Servyx.E2E.Tests.csproj" />
+  </ItemGroup>
+
+</Project>
