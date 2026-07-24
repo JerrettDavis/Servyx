@@ -1,5 +1,4 @@
 using System.Text;
-using FluentAssertions;
 using Servyx.Domain.Secrets;
 using Servyx.Infrastructure.Secrets;
 

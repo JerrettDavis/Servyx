@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Infrastructure.Ssh;
 
 namespace Servyx.Infrastructure.Ssh.Tests;

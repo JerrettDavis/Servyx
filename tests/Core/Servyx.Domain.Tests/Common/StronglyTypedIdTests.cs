@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Domain.Common;
 
 namespace Servyx.Domain.Tests.Common;

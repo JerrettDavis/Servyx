@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Domain.Transport;
 using TinyBDD;
 using TinyBDD.Xunit;

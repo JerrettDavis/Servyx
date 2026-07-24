@@ -1,6 +1,5 @@
 using Docker.DotNet;
 using Docker.DotNet.Models;
-using FluentAssertions;
 using NSubstitute;
 using Servyx.Infrastructure.Docker;
 using TinyBDD;

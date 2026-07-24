@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Domain.Secrets;
 
 namespace Servyx.Domain.Tests.Secrets;

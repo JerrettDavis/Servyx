@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using FluentAssertions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Discovery;

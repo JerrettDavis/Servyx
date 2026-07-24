@@ -1,4 +1,3 @@
-using FluentAssertions;
 using NSubstitute;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Transport;

@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Infrastructure.Docker;
 
 namespace Servyx.Infrastructure.Docker.Tests;

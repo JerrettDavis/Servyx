@@ -1,5 +1,4 @@
 using DotNet.Testcontainers.Containers;
-using FluentAssertions;
 using Renci.SshNet;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Secrets;

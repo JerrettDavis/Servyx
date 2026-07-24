@@ -1,5 +1,4 @@
 using Docker.DotNet;
-using FluentAssertions;
 using NSubstitute;
 using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;

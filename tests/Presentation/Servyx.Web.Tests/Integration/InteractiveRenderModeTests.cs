@@ -1,6 +1,5 @@
 using System.Diagnostics;
 using System.Net.Sockets;
-using FluentAssertions;
 
 namespace Servyx.Web.Tests.Integration;
 

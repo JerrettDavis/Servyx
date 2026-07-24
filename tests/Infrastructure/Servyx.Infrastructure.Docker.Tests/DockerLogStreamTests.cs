@@ -1,6 +1,5 @@
 using Docker.DotNet;
 using Docker.DotNet.Models;
-using FluentAssertions;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Servyx.Domain.Observability;

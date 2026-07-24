@@ -1,4 +1,3 @@
-using FluentAssertions;
 using Servyx.Domain.Transport;
 
 namespace Servyx.Domain.Tests.Transport;
