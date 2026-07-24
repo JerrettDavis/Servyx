@@ -10,6 +10,10 @@ public class DashboardTests : BunitContext
     public DashboardTests()
     {
         Services.AddSingleton<IDashboardDataService, MockDashboardDataService>();
+        // Home.razor persists/rehydrates via PersistentComponentState (see fix 6's remarks there); bUnit
+        // does not register the real Blazor-runtime implementation, so a fake is required for the
+        // component to render at all outside a live circuit.
+        AddBunitPersistentComponentState();
     }
 
     [Fact]

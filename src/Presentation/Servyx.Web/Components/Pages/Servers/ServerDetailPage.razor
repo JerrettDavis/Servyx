@@ -1,5 +1,7 @@
 @page "/servers/{Id}"
+@implements IDisposable
 @inject IDashboardDataService Data
+@inject PersistentComponentState ApplicationState
 
 <PageTitle>@(_detail?.Summary.Name ?? "Server") - Servyx</PageTitle>
 
@@ -70,16 +72,55 @@ else
     private IReadOnlyList<LogLine> _logs = [];
     private SaveInfo? _saves;
     private IReadOnlyList<BackupEntry> _backups = [];
+    private PersistingComponentStateSubscription _persistingSubscription;
 
+    /// <summary>
+    /// See <c>Home.razor</c>'s identical pattern for why this avoids issuing all five Docker-backed calls
+    /// twice per page load across the prerender + interactive-circuit passes of
+    /// <c>@@rendermode="InteractiveServer"</c>. Keys are namespaced with <see cref="Id"/> so a stale entry
+    /// from a different server can never be mistakenly rehydrated.
+    /// </summary>
     protected override async Task OnInitializedAsync()
     {
-        _detail = await Data.GetServerDetailAsync(Id);
-        _settings = await Data.GetServerSettingsAsync(Id);
-        _logs = await Data.GetServerLogsAsync(Id);
-        _saves = await Data.GetServerSavesAsync(Id);
-        _backups = await Data.GetServerBackupsAsync(Id);
+        _persistingSubscription = ApplicationState.RegisterOnPersisting(PersistData);
+
+        if (ApplicationState.TryTakeFromJson<ServerDetail?>(StateKey("Detail"), out var restoredDetail)
+            && ApplicationState.TryTakeFromJson<IReadOnlyList<SettingRow>>(StateKey("Settings"), out var restoredSettings)
+            && ApplicationState.TryTakeFromJson<IReadOnlyList<LogLine>>(StateKey("Logs"), out var restoredLogs)
+            && ApplicationState.TryTakeFromJson<SaveInfo?>(StateKey("Saves"), out var restoredSaves)
+            && ApplicationState.TryTakeFromJson<IReadOnlyList<BackupEntry>>(StateKey("Backups"), out var restoredBackups))
+        {
+            _detail = restoredDetail;
+            _settings = restoredSettings ?? [];
+            _logs = restoredLogs ?? [];
+            _saves = restoredSaves;
+            _backups = restoredBackups ?? [];
+        }
+        else
+        {
+            _detail = await Data.GetServerDetailAsync(Id);
+            _settings = await Data.GetServerSettingsAsync(Id);
+            _logs = await Data.GetServerLogsAsync(Id);
+            _saves = await Data.GetServerSavesAsync(Id);
+            _backups = await Data.GetServerBackupsAsync(Id);
+        }
+
         _loading = false;
     }
+
+    private Task PersistData()
+    {
+        ApplicationState.PersistAsJson(StateKey("Detail"), _detail);
+        ApplicationState.PersistAsJson(StateKey("Settings"), _settings);
+        ApplicationState.PersistAsJson(StateKey("Logs"), _logs);
+        ApplicationState.PersistAsJson(StateKey("Saves"), _saves);
+        ApplicationState.PersistAsJson(StateKey("Backups"), _backups);
+        return Task.CompletedTask;
+    }
+
+    private string StateKey(string suffix) => $"ServerDetailPage.{Id}.{suffix}";
+
+    public void Dispose() => _persistingSubscription.Dispose();
 
     private void SelectTab(string tab) => _activeTab = tab;
 

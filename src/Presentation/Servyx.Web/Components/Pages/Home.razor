@@ -1,5 +1,7 @@
 @page "/"
+@implements IDisposable
 @inject IDashboardDataService Data
+@inject PersistentComponentState ApplicationState
 
 <PageTitle>Dashboard - Servyx</PageTitle>
 
@@ -25,11 +27,11 @@ else
 {
     <div class="svx-stat-grid">
         <StatCard Title="Servers online" Value="@($"{_summary.ServersOnline} / {_summary.ServersTotal}")" Icon="servers" />
-        <StatCard Title="Total players" Value="@($"{_summary.TotalPlayers} / {_summary.TotalPlayerCapacity}")" Icon="users" />
+        <StatCard Title="Total players" Value="@FormatPlayers(_summary.TotalPlayers, _summary.TotalPlayerCapacity)" Icon="users" />
         <StatCard Title="Foreign backups" Value="@_summary.ForeignBackupsCount.ToString()" Icon="backups"
                    SubText="Created by each container's own tooling" />
         <StatCard Title="Alerts" Value="@_summary.AlertsCount.ToString()" Icon="audit"
-                   SubText="@(_summary.AlertsCount > 0 ? "1 container reporting unhealthy" : "All clear")" />
+                   SubText="@FormatAlertsSubText(_summary.AlertsCount)" />
     </div>
 
     <div class="svx-card">
@@ -76,7 +78,7 @@ else
                         <span>@server.Game</span>
                         <span><StateBadge State="@server.State" /></span>
                         <span><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
-                        <span>@server.PlayersOnline / @server.PlayersMax</span>
+                        <span>@FormatPlayers(server.PlayersOnline, server.PlayersMax)</span>
                         <span>@FormatUptime(server.Uptime)</span>
                     </a>
                 }
@@ -86,17 +88,65 @@ else
 }
 
 @code {
+    private const string SummaryStateKey = "Home.Summary";
+    private const string ServersStateKey = "Home.Servers";
+
     private bool _loading = true;
     private DashboardSummary? _summary;
     private IReadOnlyList<ServerSummary> _servers = [];
+    private PersistingComponentStateSubscription _persistingSubscription;
 
+    /// <summary>
+    /// With <c>@@rendermode="InteractiveServer"</c> applied globally on <c>&lt;Routes /&gt;</c>
+    /// (<c>App.razor</c>), this component runs <see cref="OnInitializedAsync"/> twice per request: once
+    /// during static prerendering and again on the interactive circuit. Persisting the Docker-backed data
+    /// gathered during prerender into <see cref="PersistentComponentState"/> and rehydrating it here
+    /// avoids re-issuing both Docker queries a second time for the same page load.
+    /// </summary>
     protected override async Task OnInitializedAsync()
     {
-        _summary = await Data.GetDashboardSummaryAsync();
-        _servers = await Data.GetServersAsync();
+        _persistingSubscription = ApplicationState.RegisterOnPersisting(PersistData);
+
+        if (ApplicationState.TryTakeFromJson<DashboardSummary>(SummaryStateKey, out var restoredSummary)
+            && ApplicationState.TryTakeFromJson<IReadOnlyList<ServerSummary>>(ServersStateKey, out var restoredServers))
+        {
+            _summary = restoredSummary;
+            _servers = restoredServers ?? [];
+        }
+        else
+        {
+            _summary = await Data.GetDashboardSummaryAsync();
+            _servers = await Data.GetServersAsync();
+        }
+
         _loading = false;
     }
 
+    private Task PersistData()
+    {
+        ApplicationState.PersistAsJson(SummaryStateKey, _summary);
+        ApplicationState.PersistAsJson(ServersStateKey, _servers);
+        return Task.CompletedTask;
+    }
+
+    public void Dispose() => _persistingSubscription.Dispose();
+
     private static string FormatUptime(TimeSpan? uptime)
         => uptime is null ? "—" : $"{(int)uptime.Value.TotalHours}h {uptime.Value.Minutes}m";
+
+    /// <summary>
+    /// Renders a player count pair, distinguishing "not sampled" (either value is <see langword="null"/>
+    /// — the live Docker path cannot read player counts without RCON/REST, see
+    /// <c>ServerSummary.PlayersOnline</c>'s remarks) from a real "0 online" measurement. Never renders
+    /// "0 / 0" for data that was never actually read.
+    /// </summary>
+    private static string FormatPlayers(int? online, int? max)
+        => online is null || max is null ? "—" : $"{online} / {max}";
+
+    private static string FormatAlertsSubText(int alertsCount) => alertsCount switch
+    {
+        0 => "All clear",
+        1 => "1 container reporting unhealthy",
+        _ => $"{alertsCount} containers reporting unhealthy",
+    };
 }
