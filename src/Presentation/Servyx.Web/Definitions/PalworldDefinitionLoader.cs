@@ -59,7 +59,17 @@ public static class PalworldDefinitionLoader
         }
     }
 
-    /// <summary>Parses the <c>metadata</c> and first <c>deployments</c> entry's <c>detect</c>/<c>image</c> blocks. Exposed internally for direct unit testing.</summary>
+    /// <summary>
+    /// Parses the <c>metadata</c> block and the <c>docker</c>-kind entry of <c>deployments</c> for its
+    /// <c>detect</c>/<c>image</c> blocks. Exposed internally for direct unit testing.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// No entry in <c>deployments</c> has <c>kind: docker</c>. Selecting by <c>kind</c> rather than by
+    /// list position means a reordered or docker-profile-less definition fails with this named,
+    /// diagnosable exception — which <see cref="TryLoad"/> logs at Warning before falling back to
+    /// <c>AdoptionCriteria.PalworldDefault</c> — instead of an opaque <see cref="InvalidCastException"/>
+    /// or <see cref="KeyNotFoundException"/> from indexing the wrong profile.
+    /// </exception>
     internal static PalworldDefinitionInfo Parse(string yaml)
     {
         var deserializer = new DeserializerBuilder().Build();
@@ -67,9 +77,13 @@ public static class PalworldDefinitionLoader
 
         var metadata = AsMap(root["metadata"]);
         var deployments = (List<object>)root["deployments"];
-        var firstDeployment = AsMap(deployments[0]);
-        var detect = AsMap(firstDeployment["detect"]);
-        var image = AsMap(firstDeployment["image"]);
+        var dockerDeployment = deployments
+            .Select(AsMap)
+            .FirstOrDefault(d => d.TryGetValue("kind", out var kind) && string.Equals(kind as string, "docker", StringComparison.Ordinal))
+            ?? throw new InvalidOperationException(
+                "No entry in the bundled game definition's 'deployments' list has 'kind: docker'; cannot resolve adoption criteria.");
+        var detect = AsMap(dockerDeployment["detect"]);
+        var image = AsMap(dockerDeployment["image"]);
         var requiredMounts = (List<object>)detect["requiredMounts"];
         var firstMount = AsMap(requiredMounts[0]);
 
