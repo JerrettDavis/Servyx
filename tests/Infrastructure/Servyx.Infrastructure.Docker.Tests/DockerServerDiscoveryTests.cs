@@ -219,6 +219,102 @@ public class DockerServerDiscoveryTests
             Labels = new Dictionary<string, string>(),
         };
 
+    /// <summary>
+    /// Regression guard: Docker's <c>ListContainersAsync</c> reports one <see cref="Port"/> entry per
+    /// host IP binding, so a single published port appears twice in the raw list — once for the IPv4
+    /// wildcard (<c>0.0.0.0</c>) and once for the IPv6 wildcard (<c>[::]</c>). <see cref="DiscoveredContainer.PublishedPorts"/>
+    /// must collapse these into one logical port per container-port/protocol pair, in first-seen order,
+    /// rather than surfacing the duplicate to every UI consumer (port chips in the servers list and
+    /// server detail page).
+    /// </summary>
+    [Fact]
+    public async Task DiscoverAsync_deduplicates_ports_published_on_both_ipv4_and_ipv6()
+    {
+        var container = new ContainerListResponse
+        {
+            ID = "container-id-dup",
+            Names = ["/palworld-server"],
+            Image = "thijsvanloef/palworld-server-docker:latest",
+            State = "running",
+            Ports =
+            [
+                new Port { IP = "0.0.0.0", PrivatePort = 8211, PublicPort = 8211, Type = "udp" },
+                new Port { IP = "::", PrivatePort = 8211, PublicPort = 8211, Type = "udp" },
+                new Port { IP = "0.0.0.0", PrivatePort = 27015, PublicPort = 27015, Type = "udp" },
+                new Port { IP = "::", PrivatePort = 27015, PublicPort = 27015, Type = "udp" },
+                new Port { PrivatePort = 25575, PublicPort = 0, Type = "tcp" },
+            ],
+            Mounts =
+            [
+                new MountPoint { Source = @"D:\Games\Palworld\data", Destination = "/palworld", RW = true },
+            ],
+            Labels = new Dictionary<string, string>(),
+        };
+
+        var (client, containers) = CreateClientSubstitute();
+        containers.ListContainersAsync(Arg.Any<ContainersListParameters>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IList<ContainerListResponse>>([container]));
+        containers.InspectContainerAsync("container-id-dup", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(InspectFor("container-id-dup")));
+
+        var discovery = new DockerServerDiscovery(client);
+
+        var results = await discovery.DiscoverAsync(ExpectedRepo, RequiredMount);
+
+        var result = results.Should().ContainSingle().Which;
+        result.PublishedPorts.Should().HaveCount(3, "the two IPv4/IPv6 duplicates per port must collapse to one entry each");
+        result.PublishedPorts.Select(p => (p.ContainerPort, p.Protocol)).Should().BeEquivalentTo(
+            [(8211, "udp"), (27015, "udp"), (25575, "tcp")],
+            options => options.WithStrictOrdering());
+        result.PublishedPorts.Should().Contain(p => p.ContainerPort == 8211 && p.HostPort == 8211 && p.Protocol == "udp");
+        result.PublishedPorts.Should().Contain(p => p.ContainerPort == 27015 && p.HostPort == 27015 && p.Protocol == "udp");
+        result.PublishedPorts.Should().Contain(p => p.ContainerPort == 25575 && p.HostPort == null);
+    }
+
+    /// <summary>
+    /// The dedup key is the (container port, protocol) pair, not the port number alone: the same port
+    /// number published for both <c>tcp</c> and <c>udp</c> (a real, distinct pair of bindings, not a
+    /// Docker-reported duplicate) must survive as two separate <see cref="DiscoveredPort"/> entries.
+    /// </summary>
+    [Fact]
+    public async Task DiscoverAsync_keeps_the_same_port_number_when_published_on_different_protocols()
+    {
+        var container = new ContainerListResponse
+        {
+            ID = "container-id-dual-protocol",
+            Names = ["/palworld-server"],
+            Image = "thijsvanloef/palworld-server-docker:latest",
+            State = "running",
+            Ports =
+            [
+                new Port { IP = "0.0.0.0", PrivatePort = 8211, PublicPort = 8211, Type = "tcp" },
+                new Port { IP = "::", PrivatePort = 8211, PublicPort = 8211, Type = "tcp" },
+                new Port { IP = "0.0.0.0", PrivatePort = 8211, PublicPort = 8211, Type = "udp" },
+                new Port { IP = "::", PrivatePort = 8211, PublicPort = 8211, Type = "udp" },
+            ],
+            Mounts =
+            [
+                new MountPoint { Source = @"D:\Games\Palworld\data", Destination = "/palworld", RW = true },
+            ],
+            Labels = new Dictionary<string, string>(),
+        };
+
+        var (client, containers) = CreateClientSubstitute();
+        containers.ListContainersAsync(Arg.Any<ContainersListParameters>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IList<ContainerListResponse>>([container]));
+        containers.InspectContainerAsync("container-id-dual-protocol", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(InspectFor("container-id-dual-protocol")));
+
+        var discovery = new DockerServerDiscovery(client);
+
+        var results = await discovery.DiscoverAsync(ExpectedRepo, RequiredMount);
+
+        var result = results.Should().ContainSingle().Which;
+        result.PublishedPorts.Should().HaveCount(2, "8211/tcp and 8211/udp are two distinct bindings, not IPv4/IPv6 duplicates of each other");
+        result.PublishedPorts.Should().Contain(p => p.ContainerPort == 8211 && p.HostPort == 8211 && p.Protocol == "tcp");
+        result.PublishedPorts.Should().Contain(p => p.ContainerPort == 8211 && p.HostPort == 8211 && p.Protocol == "udp");
+    }
+
     private static ContainerInspectResponse InspectFor(string id) => new()
     {
         ID = id,

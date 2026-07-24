@@ -160,8 +160,14 @@ public sealed class DockerServerDiscovery : IServerDiscovery
     {
         var name = container.Names?.FirstOrDefault()?.TrimStart('/') ?? inspect.Name?.TrimStart('/') ?? container.ID;
 
+        // ListContainersAsync reports one Port entry per host IP binding, so a single published port
+        // typically appears twice — once for the IPv4 wildcard (0.0.0.0) and once for the IPv6 wildcard
+        // ([::]). Both entries carry the same container port/protocol, so de-duplicating on that pair
+        // (keeping the first-seen entry, order preserved) collapses them into the single logical port
+        // binding every consumer (port chips in the servers list and server detail page) should show.
         var ports = (container.Ports ?? [])
             .Select(p => new DiscoveredPort(p.PublicPort == 0 ? null : p.PublicPort, p.PrivatePort, p.Type ?? "tcp"))
+            .DistinctBy(p => (p.ContainerPort, p.Protocol))
             .ToList();
 
         var mounts = (container.Mounts ?? [])
