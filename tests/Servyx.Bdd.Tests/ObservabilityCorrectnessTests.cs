@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Discovery;
@@ -73,7 +74,8 @@ public class ObservabilityCorrectnessTests(ITestOutputHelper output) : TinyBddXu
                     Substitute.For<IMetricsSource>(),
                     Substitute.For<ILogStream>(),
                     Substitute.For<ITransport>(),
-                    AdoptionCriteria.PalworldDefault);
+                    AdoptionCriteria.PalworldDefault,
+                    NullLogger<ServerQueryService>.Instance);
             })
             .When("the server list is resolved", async Task<ServerSummary> (queryService) => (await queryService.GetAdoptedServersAsync()).Single())
             .Then("state is reported as Running", summary => Task.FromResult(summary.State == Servyx.Domain.Lifecycle.ServerState.Running))

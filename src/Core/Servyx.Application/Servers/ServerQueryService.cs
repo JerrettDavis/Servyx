@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Lifecycle;
 using Servyx.Domain.Observability;
@@ -53,6 +54,7 @@ public sealed class ServerQueryService : IServerQueryService
     private readonly ILogStream _logStream;
     private readonly ITransport _transport;
     private readonly AdoptionCriteria _criteria;
+    private readonly ILogger<ServerQueryService> _logger;
 
     /// <summary>Creates a <see cref="ServerQueryService"/> operating against the given Domain abstractions.</summary>
     public ServerQueryService(
@@ -60,19 +62,22 @@ public sealed class ServerQueryService : IServerQueryService
         IMetricsSource metricsSource,
         ILogStream logStream,
         ITransport transport,
-        AdoptionCriteria criteria)
+        AdoptionCriteria criteria,
+        ILogger<ServerQueryService> logger)
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(metricsSource);
         ArgumentNullException.ThrowIfNull(logStream);
         ArgumentNullException.ThrowIfNull(transport);
         ArgumentNullException.ThrowIfNull(criteria);
+        ArgumentNullException.ThrowIfNull(logger);
 
         _discovery = discovery;
         _metricsSource = metricsSource;
         _logStream = logStream;
         _transport = transport;
         _criteria = criteria;
+        _logger = logger;
     }
 
     /// <inheritdoc />
@@ -140,8 +145,16 @@ public sealed class ServerQueryService : IServerQueryService
         {
             // Expected: this is our own cts.Cancel() unwinding the stream after the first sample.
         }
-        catch (Exception)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            // Consistent with every other method on this class: the caller's own cancellation is not a
+            // degraded/transport-failure condition, so it propagates rather than being logged as a
+            // Warning and swallowed into a quiet null — see TryDiscoverAsync/ReadRecentLogsAsync.
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to sample metrics for server '{ServerId}'.", serverId);
             return null;
         }
 
@@ -210,8 +223,9 @@ public sealed class ServerQueryService : IServerQueryService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            _logger.LogWarning(ex, "Failed to read logs for server '{ServerId}'.", serverId);
             return [];
         }
     }
@@ -227,9 +241,12 @@ public sealed class ServerQueryService : IServerQueryService
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception ex)
         {
-            // Daemon unreachable, permission denied, etc. — an honest empty list, not a crash.
+            // Daemon unreachable, permission denied, etc. — an honest empty list, not a crash. Logged so
+            // an operator can tell "zero servers" apart from "the query failed" (see LiveDashboardDataService,
+            // whose own catch blocks can never observe this failure once it is degraded to an empty list here).
+            _logger.LogWarning(ex, "Failed to discover adopted servers for image repository '{ImageRepository}'.", _criteria.ImageRepository);
             return [];
         }
     }

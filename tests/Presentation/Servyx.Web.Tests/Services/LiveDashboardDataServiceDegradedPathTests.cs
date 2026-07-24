@@ -36,7 +36,8 @@ public class LiveDashboardDataServiceDegradedPathTests : BunitContext
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             transport,
-            AdoptionCriteria.PalworldDefault);
+            AdoptionCriteria.PalworldDefault,
+            NullLogger<ServerQueryService>.Instance);
 
         return new LiveDashboardDataService(queryService, NullLogger<LiveDashboardDataService>.Instance);
     }
@@ -65,6 +66,9 @@ public class LiveDashboardDataServiceDegradedPathTests : BunitContext
     public void Home_RendersHonestEmptyState_InsteadOfThrowing_WhenNoServerIsAdopted()
     {
         Services.AddSingleton<IDashboardDataService>(CreateUnreachableDataService());
+        // Home.razor persists/rehydrates via PersistentComponentState (fix 6); bUnit needs the fake
+        // registered for the component to render at all outside a live circuit.
+        AddBunitPersistentComponentState();
 
         var act = () => Render<Home>();
 

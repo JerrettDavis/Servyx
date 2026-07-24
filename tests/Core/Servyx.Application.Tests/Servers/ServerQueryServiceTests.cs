@@ -1,4 +1,6 @@
 using System.Runtime.CompilerServices;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Discovery;
@@ -41,12 +43,14 @@ public class ServerQueryServiceTests
         IMetricsSource? metrics = null,
         ILogStream? logs = null,
         ITransport? transport = null,
-        AdoptionCriteria? criteria = null) => new(
+        AdoptionCriteria? criteria = null,
+        ILogger<ServerQueryService>? logger = null) => new(
         discovery ?? Substitute.For<IServerDiscovery>(),
         metrics ?? Substitute.For<IMetricsSource>(),
         logs ?? Substitute.For<ILogStream>(),
         transport ?? Substitute.For<ITransport>(),
-        criteria ?? Criteria);
+        criteria ?? Criteria,
+        logger ?? NullLogger<ServerQueryService>.Instance);
 
     [Fact]
     public async Task GetAdoptedServersAsync_maps_discovered_containers_to_summaries()
@@ -273,6 +277,55 @@ public class ServerQueryServiceTests
         sample.Should().BeNull();
     }
 
+    /// <summary>
+    /// Regression guard for the observability fix: a swallowed metrics failure must never be silent — an
+    /// operator needs a Warning-level log entry (with the causing exception attached) to distinguish "no
+    /// metrics available" from "the query failed", even though the degraded <see langword="null"/> return
+    /// is intentionally preserved.
+    /// </summary>
+    [Fact]
+    public async Task GetMetricsSampleAsync_LogsWarning_WithTheException_WhenTheStreamFails()
+    {
+        var metrics = Substitute.For<IMetricsSource>();
+        metrics.StreamAsync("container-1", Arg.Any<CancellationToken>()).Returns(ThrowingSampleStream());
+        var logger = new RecordingLogger<ServerQueryService>();
+
+        var sut = CreateService(metrics: metrics, logger: logger);
+
+        await sut.GetMetricsSampleAsync("container-1");
+
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning
+            && e.Exception != null && e.Exception.Message == "simulated stats failure"
+            && e.Message.Contains("container-1"));
+    }
+
+    /// <summary>
+    /// Regression guard: a genuine caller cancellation (the caller's own <c>ct</c> being cancelled, as
+    /// opposed to <see cref="GetMetricsSampleAsync"/>'s own internal <c>cts.Cancel()</c> after the first
+    /// sample) must propagate as <see cref="OperationCanceledException"/> — consistent with every other
+    /// method on this class — rather than falling through to the generic catch, which would both log a
+    /// spurious Warning and swallow the cancellation into a misleading <see langword="null"/> return.
+    /// </summary>
+    [Fact]
+    public async Task GetMetricsSampleAsync_PropagatesCancellation_WithNoWarningLogged_WhenTheCallerCancels()
+    {
+        var metrics = Substitute.For<IMetricsSource>();
+        metrics.StreamAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(callInfo => NeverEndingStream(callInfo.ArgAt<CancellationToken>(1)));
+        var logger = new RecordingLogger<ServerQueryService>();
+
+        var sut = CreateService(metrics: metrics, logger: logger);
+
+        using var callerCts = new CancellationTokenSource();
+        var task = sut.GetMetricsSampleAsync("container-1", callerCts.Token);
+        await callerCts.CancelAsync();
+
+        var act = async () => await task;
+
+        await act.Should().ThrowAsync<OperationCanceledException>();
+        logger.Entries.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task FollowLogsAsync_yields_lines_from_the_underlying_stream()
     {
@@ -342,6 +395,56 @@ public class ServerQueryServiceTests
         result.Should().BeEmpty();
     }
 
+    /// <summary>Regression guard: see <see cref="GetMetricsSampleAsync_LogsWarning_WithTheException_WhenTheStreamFails"/>.</summary>
+    [Fact]
+    public async Task ReadRecentLogsAsync_LogsWarning_WithTheException_WhenTheStoreFails()
+    {
+        var logs = Substitute.For<ILogStream>();
+        logs.ReadAsync("container-1", 0, 50, Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<ConsoleLine>>>(_ => throw new InvalidOperationException("container not found"));
+        var logger = new RecordingLogger<ServerQueryService>();
+
+        var sut = CreateService(logs: logs, logger: logger);
+
+        await sut.ReadRecentLogsAsync("container-1", 50);
+
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning
+            && e.Exception != null && e.Exception.Message == "container not found"
+            && e.Message.Contains("container-1"));
+    }
+
+    /// <summary>Regression guard: see <see cref="GetMetricsSampleAsync_LogsWarning_WithTheException_WhenTheStreamFails"/>.</summary>
+    [Fact]
+    public async Task GetAdoptedServersAsync_LogsWarning_WithTheException_WhenDiscoveryThrows()
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<DiscoveredServer>>>(_ => throw new InvalidOperationException("daemon unreachable"));
+        var logger = new RecordingLogger<ServerQueryService>();
+
+        var sut = CreateService(discovery: discovery, logger: logger);
+
+        await sut.GetAdoptedServersAsync();
+
+        logger.Entries.Should().ContainSingle(e => e.Level == LogLevel.Warning
+            && e.Exception != null && e.Exception.Message == "daemon unreachable");
+    }
+
+    /// <summary>Minimal <see cref="ILogger{T}"/> test double that records every log entry, so assertions can
+    /// verify level, exception, and formatted message without NSubstitute's generic-method verification
+    /// pitfalls against <see cref="ILogger.Log{TState}"/>.</summary>
+    private sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public List<(LogLevel Level, EventId EventId, Exception? Exception, string Message)> Entries { get; } = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, eventId, exception, formatter(state, exception)));
+    }
+
     private static async IAsyncEnumerable<ResourceSample> SingleSample(ResourceSample sample)
     {
         await Task.Yield();
@@ -352,6 +455,20 @@ public class ServerQueryServiceTests
     {
         await Task.Yield();
         throw new InvalidOperationException("simulated stats failure");
+#pragma warning disable CS0162 // Unreachable code detected: required so the compiler treats this as an iterator method.
+        yield break;
+#pragma warning restore CS0162
+    }
+
+    /// <summary>
+    /// A stream that never produces a sample and never completes on its own — it only ever ends via the
+    /// <paramref name="ct"/> passed in by the caller being cancelled (mirroring a real long-lived stats
+    /// connection), so tests can distinguish genuine caller cancellation from
+    /// <see cref="ServerQueryService.GetMetricsSampleAsync"/>'s own internal single-shot cancellation.
+    /// </summary>
+    private static async IAsyncEnumerable<ResourceSample> NeverEndingStream([EnumeratorCancellation] CancellationToken ct)
+    {
+        await Task.Delay(Timeout.Infinite, ct).ConfigureAwait(false);
 #pragma warning disable CS0162 // Unreachable code detected: required so the compiler treats this as an iterator method.
         yield break;
 #pragma warning restore CS0162

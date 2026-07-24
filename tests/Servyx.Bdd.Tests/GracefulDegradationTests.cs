@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Discovery;
@@ -35,7 +36,8 @@ public class GracefulDegradationTests(ITestOutputHelper output) : TinyBddXunitBa
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             transport,
-            AdoptionCriteria.PalworldDefault);
+            AdoptionCriteria.PalworldDefault,
+            NullLogger<ServerQueryService>.Instance);
     }
 
     [Scenario("The server list degrades to empty rather than throwing when the daemon is unreachable", "unit")]
@@ -72,7 +74,8 @@ public class GracefulDegradationTests(ITestOutputHelper output) : TinyBddXunitBa
                     Substitute.For<IMetricsSource>(),
                     Substitute.For<ILogStream>(),
                     Substitute.For<ITransport>(),
-                    AdoptionCriteria.PalworldDefault);
+                    AdoptionCriteria.PalworldDefault,
+                    NullLogger<ServerQueryService>.Instance);
             })
             .When("an operation is cancelled", async Task<Exception?> (queryService) =>
             {

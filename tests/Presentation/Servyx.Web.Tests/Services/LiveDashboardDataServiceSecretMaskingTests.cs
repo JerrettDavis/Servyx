@@ -37,7 +37,8 @@ public class LiveDashboardDataServiceSecretMaskingTests : BunitContext
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             Substitute.For<ITransport>(),
-            AdoptionCriteria.PalworldDefault);
+            AdoptionCriteria.PalworldDefault,
+            NullLogger<ServerQueryService>.Instance);
 
         var dataService = new LiveDashboardDataService(queryService, NullLogger<LiveDashboardDataService>.Instance);
 

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Discovery;
@@ -33,7 +34,8 @@ public class SecretProtectionTests(ITestOutputHelper output) : TinyBddXunitBase(
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             Substitute.For<ITransport>(),
-            AdoptionCriteria.PalworldDefault);
+            AdoptionCriteria.PalworldDefault,
+            NullLogger<ServerQueryService>.Instance);
     }
 
     private static DiscoveredServer BuildDiscoveredServer(IReadOnlyDictionary<string, string> environmentVariables) => new(
