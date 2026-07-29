@@ -622,4 +622,219 @@ public class ProvisioningDashboardUpdateTests
         (await ledger.ListIntendedAsync(ProvisionerId)).Should().BeEmpty();
         (await dashboard.ListLedgerEntriesAsync()).Should().BeEmpty();
     }
+
+    // ---------------------------------------------------------------------------------------------------
+    // The destructive applier — the token half of the gate the DigitalOcean rebuild path sits behind.
+    // ---------------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// A provisioner shaped like the DigitalOcean droplet adapter: a maintainer that can also execute a plan
+    /// which destroys data. The substitute records every call, so "the adapter was never reached" is an
+    /// invocation count here rather than a message match — the same standard the rest of this file holds to.
+    /// </summary>
+    private static IProvisioner DestructiveApplier(UpdatePlan? plan = null, UpdateExecutionResult? execution = null)
+    {
+        // Materialised before any Returns() call: building a substitute inside Returns() clobbers
+        // NSubstitute's "last call" context, exactly as Maintainer above notes.
+        var plannedResult = Task.FromResult<UpdatePlan?>(plan ?? Plan(DataImpact.Destroyed));
+        var executionResult = Task.FromResult(
+            execution ?? new UpdateExecutionResult.Completed(Resource(), "The droplet was rebuilt."));
+        var createdOperation = Operation();
+
+        var provisioner = Substitute.For<IProvisioner, IMaintainer, IDestructiveUpdateApplier>();
+        provisioner.ProvisionerId.Returns(ProvisionerId);
+        provisioner.Capabilities.Returns(ProvisioningCapabilities.Create | ProvisioningCapabilities.UpdateInPlace);
+        provisioner.CreateOperation(Arg.Any<ProvisioningRequest>()).Returns(createdOperation);
+
+        ((IMaintainer)provisioner)
+            .PlanUpdateAsync(Arg.Any<ResourceHandle>(), Arg.Any<ProvisioningRequest>(), Arg.Any<CancellationToken>())
+            .Returns(plannedResult);
+
+        ((IDestructiveUpdateApplier)provisioner)
+            .ApplyDestructiveUpdateAsync(
+                Arg.Any<ResourceHandle>(),
+                Arg.Any<UpdatePlan>(),
+                Arg.Any<string>(),
+                Arg.Any<DataImpact?>(),
+                Arg.Any<CancellationToken>())
+            .Returns(executionResult);
+
+        return provisioner;
+    }
+
+    [Fact]
+    public async Task A_destroying_plan_with_no_acknowledgement_never_reaches_the_destructive_applier()
+    {
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier();
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, dataImpactAcknowledgement: null);
+
+        result.Should().BeOfType<UpdateApplyResult.RequiresAcknowledgement>()
+            .Which.PlanDataImpact.Should().Be(DataImpact.Destroyed);
+
+        // The count, not the message: an adapter that was called has already begun destroying data, whatever
+        // this method went on to return.
+        await ((IDestructiveUpdateApplier)provisioner).DidNotReceive().ApplyDestructiveUpdateAsync(
+            Arg.Any<ResourceHandle>(),
+            Arg.Any<UpdatePlan>(),
+            Arg.Any<string>(),
+            Arg.Any<DataImpact?>(),
+            Arg.Any<CancellationToken>());
+
+        provisioner.DidNotReceive().CreateOperation(Arg.Any<ProvisioningRequest>());
+        (await ledger.ListIntendedAsync(ProvisionerId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task An_at_risk_token_never_reaches_the_destructive_applier_for_a_destroying_plan()
+    {
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier();
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, DataImpactAcknowledgement.AtRisk());
+
+        result.Should().BeOfType<UpdateApplyResult.RequiresAcknowledgement>();
+
+        await ((IDestructiveUpdateApplier)provisioner).DidNotReceive().ApplyDestructiveUpdateAsync(
+            Arg.Any<ResourceHandle>(),
+            Arg.Any<UpdatePlan>(),
+            Arg.Any<string>(),
+            Arg.Any<DataImpact?>(),
+            Arg.Any<CancellationToken>());
+
+        (await ledger.ListIntendedAsync(ProvisionerId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_stale_plan_never_reaches_the_destructive_applier_even_when_correctly_acknowledged()
+    {
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier(Plan(DataImpact.Destroyed, OtherPlanHash));
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, DataImpactAcknowledgement.Destroyed());
+
+        result.Should().BeOfType<UpdateApplyResult.Stale>();
+
+        await ((IDestructiveUpdateApplier)provisioner).DidNotReceive().ApplyDestructiveUpdateAsync(
+            Arg.Any<ResourceHandle>(),
+            Arg.Any<UpdatePlan>(),
+            Arg.Any<string>(),
+            Arg.Any<DataImpact?>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Only_a_matching_destroyed_token_reaches_the_destructive_applier_and_it_carries_that_impact()
+    {
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier();
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, DataImpactAcknowledgement.Destroyed());
+
+        result.Should().BeOfType<UpdateApplyResult.Applied>()
+            .Which.DataImpact.Should().Be(DataImpact.Destroyed);
+
+        // Exactly one call, carrying the approved hash the caller supplied and the impact the token named —
+        // never a value the plan could have supplied on its own behalf.
+        await ((IDestructiveUpdateApplier)provisioner).Received(1).ApplyDestructiveUpdateAsync(
+            Handle,
+            Arg.Is<UpdatePlan>(p => p != null && p.PlanHash == UpdatePlanHash),
+            UpdatePlanHash,
+            DataImpact.Destroyed,
+            Arg.Any<CancellationToken>());
+
+        // The destructive path writes no write-ahead row and creates nothing, so there is nothing to sweep.
+        provisioner.DidNotReceive().CreateOperation(Arg.Any<ProvisioningRequest>());
+        (await ledger.ListIntendedAsync(ProvisionerId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_refusal_from_the_destructive_applier_is_surfaced_as_a_failure_with_no_ledger_row()
+    {
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier(
+            execution: new UpdateExecutionResult.Refused("Nothing was sent to DigitalOcean."));
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, DataImpactAcknowledgement.Destroyed());
+
+        var failed = result.Should().BeOfType<UpdateApplyResult.Failed>().Which;
+        failed.Message.Should().Contain("Nothing was sent to DigitalOcean.");
+        failed.LedgerRowId.Should().Be(Guid.Empty);
+        failed.Compensated.Should().BeTrue();
+
+        (await ledger.ListIntendedAsync(ProvisionerId)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_still_running_destructive_update_is_a_failure_result_carrying_its_own_words()
+    {
+        // TimedOut is not Completed, so it is never reported as Applied — and the adapter's message, which is
+        // the thing that tells an operator "still reimaging" rather than "reimage failed", travels verbatim.
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier(
+            execution: new UpdateExecutionResult.TimedOut("The rebuild was NOT confirmed. Do NOT resubmit."));
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, DataImpactAcknowledgement.Destroyed());
+
+        result.Should().NotBeOfType<UpdateApplyResult.Applied>();
+        result.Should().BeOfType<UpdateApplyResult.Failed>()
+            .Which.Message.Should().Contain("Do NOT resubmit");
+    }
+
+    [Fact]
+    public async Task A_preserving_plan_never_reaches_the_destructive_applier()
+    {
+        // The destructive member is not an alternative route for ordinary updates: a Preserved plan carries
+        // no token, and without one this branch is unreachable.
+        var ledger = new InMemoryProvisioningLedger();
+        var provisioner = DestructiveApplier(Plan(DataImpact.Preserved));
+        var dashboard = new ProvisioningDashboardService([provisioner], ledger, new ProvisioningExecutor(ledger));
+
+        var result = await dashboard.ApplyUpdateAsync(
+            ProvisionerId, Handle, Desired, UpdatePlanHash, dataImpactAcknowledgement: null, jobId: "job-42");
+
+        result.Should().BeOfType<UpdateApplyResult.Applied>();
+
+        await ((IDestructiveUpdateApplier)provisioner).DidNotReceive().ApplyDestructiveUpdateAsync(
+            Arg.Any<ResourceHandle>(),
+            Arg.Any<UpdatePlan>(),
+            Arg.Any<string>(),
+            Arg.Any<DataImpact?>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void The_destructive_applier_takes_no_force_flag_and_no_acknowledgement_default()
+    {
+        var apply = typeof(IDestructiveUpdateApplier)
+            .GetMethod(nameof(IDestructiveUpdateApplier.ApplyDestructiveUpdateAsync))
+            .Should().NotBeNull().And.Subject.As<MethodInfo>();
+
+        var parameters = apply.GetParameters();
+
+        parameters.Select(p => p.Name ?? string.Empty)
+            .Any(n => n.Contains("force", StringComparison.OrdinalIgnoreCase)
+                || n.Contains("override", StringComparison.OrdinalIgnoreCase))
+            .Should().BeFalse("no force/override flag may exist anywhere on the destructive path");
+
+        var acknowledgement = parameters.Single(p => p.ParameterType == typeof(DataImpact?));
+        acknowledgement.HasDefaultValue.Should().BeFalse(
+            "an adapter must be told what was acknowledged rather than inheriting a default");
+
+        // The plan hash still travels as its own argument, so the acknowledgement cannot stand in for it.
+        parameters.Should().Contain(p => p.ParameterType == typeof(string));
+    }
 }

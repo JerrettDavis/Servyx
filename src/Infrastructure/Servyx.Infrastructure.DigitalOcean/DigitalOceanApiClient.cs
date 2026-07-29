@@ -213,6 +213,59 @@ internal sealed class DigitalOceanApiClient
                 + "second resize submitted against a droplet already being resized is a second mutation, not a retry.");
     }
 
+    /// <summary>
+    /// Submits a <em>rebuild</em> of one droplet — the action that reimages its boot disk — and returns the
+    /// action DigitalOcean created to track it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This deletes everything on the droplet.</strong> A rebuild replaces the boot disk's contents
+    /// with a fresh copy of the image: the installed game, its configuration and every save file are gone and
+    /// cannot be recovered from the droplet afterwards. The droplet keeps its id and its address; nothing
+    /// else about it survives. Nothing in this assembly calls this method without an approved plan hash and a
+    /// separately-supplied acknowledgement of <c>DataImpact.Destroyed</c> having both been checked
+    /// first — see <c>DigitalOceanDropletProvisioner.Rebuild.cs</c>.
+    /// </para>
+    /// <para>
+    /// <strong>The returned action is a receipt, not an outcome.</strong> As with
+    /// <see cref="ResizeDropletAsync"/>, DigitalOcean answers this POST while the rebuild is still queued —
+    /// and a rebuild takes minutes. Nothing may treat a successful return from this method as a completed
+    /// rebuild; that is what <see cref="PollActionAsync"/> is for.
+    /// </para>
+    /// <para>
+    /// <strong>This method cannot resize.</strong> The body is a
+    /// <see cref="RebuildDropletActionRequest"/>, whose <c>type</c> is a get-only <c>rebuild</c> and which
+    /// carries no <c>size</c> member at all — just as <see cref="ResizeDropletAsync"/>'s body is a
+    /// <see cref="ResizeDropletActionRequest"/> that cannot become a rebuild. Neither method takes an action
+    /// type, so no argument at either call site can turn one operation into the other.
+    /// </para>
+    /// </remarks>
+    internal async Task<DropletActionResource> RebuildDropletAsync(long dropletId, string imageRef, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(imageRef);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            string.Create(CultureInfo.InvariantCulture, $"v2/droplets/{dropletId}/actions"))
+        {
+            Content = JsonContent.Create(
+                new RebuildDropletActionRequest { Image = imageRef },
+                options: SerializerOptions),
+        };
+
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, "rebuild a droplet", ct).ConfigureAwait(false);
+
+        var envelope = await ReadAsync<DropletActionEnvelope>(response, ct).ConfigureAwait(false);
+        return envelope?.Action
+            ?? throw new DigitalOceanApiException(
+                response.StatusCode,
+                "DigitalOcean accepted the droplet rebuild request but returned no action object, so Servyx has no "
+                + "action id to poll and cannot tell whether the rebuild ran. Do NOT resubmit: a rebuild that was "
+                + "accepted is already erasing the boot disk, and a second one erases it again. Read the droplet and "
+                + "the account's actions at DigitalOcean before doing anything else.");
+    }
+
     /// <summary>Reads one action by id, or <see langword="null"/> if the provider does not report it.</summary>
     internal async Task<DropletActionResource?> GetActionAsync(long actionId, CancellationToken ct)
     {

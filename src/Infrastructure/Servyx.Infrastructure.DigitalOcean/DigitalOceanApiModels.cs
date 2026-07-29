@@ -214,6 +214,38 @@ internal sealed class ResizeDropletActionRequest
     public bool Disk => false;
 }
 
+/// <summary>
+/// The body sent to <c>POST /v2/droplets/{id}/actions</c> to <em>rebuild</em> a droplet — the action that
+/// reimages its boot disk and deletes everything stored on it.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong><c>type</c> is a property with no setter that returns <c>rebuild</c>, exactly as
+/// <see cref="ResizeDropletActionRequest"/>'s returns <c>resize</c>, and the pair of them is the whole
+/// mechanism keeping the two operations apart.</strong> DigitalOcean's droplet actions all share one
+/// endpoint; the only thing distinguishing the request that changes a droplet's CPU allocation from the
+/// request that erases its disk is that string. Because neither type can be assigned one, there is no
+/// expression in this assembly that turns a resize into a rebuild or a rebuild into a resize — not by a
+/// mistaken argument, not by a mistaken branch, and not by a caller that reached the wrong method.
+/// </para>
+/// <para>
+/// The two bodies are also disjoint in their remaining members, so neither can be mistaken for the other on
+/// the wire even if the type string were somehow wrong: this type has no <c>size</c> and no <c>disk</c>
+/// member, and the resize body has no <c>image</c> member. A rebuild body therefore cannot express the
+/// irreversible disk-growing resize either, because it has nothing to express it with.
+/// </para>
+/// </remarks>
+internal sealed class RebuildDropletActionRequest
+{
+    /// <summary>Always <c>rebuild</c>. Not settable, so no other action type can be issued through this body.</summary>
+    [JsonPropertyName("type")]
+    public string Type => "rebuild";
+
+    /// <summary>The image slug or image id to reimage the droplet from.</summary>
+    [JsonPropertyName("image")]
+    public required string Image { get; init; }
+}
+
 /// <summary>The body sent to <c>POST /v2/droplets</c>.</summary>
 /// <remarks>
 /// <c>user_data</c> is null unless the caller supplied cloud-init of their own — nothing in this assembly

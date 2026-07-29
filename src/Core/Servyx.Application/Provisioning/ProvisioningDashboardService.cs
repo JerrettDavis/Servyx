@@ -234,6 +234,32 @@ public sealed class ProvisioningDashboardService : IProvisioningDashboard
             return new UpdateApplyResult.NoChangeRequired(current.PlanHash);
         }
 
+        // Step 3 (destructive) — a plan that does not preserve data, executed by an adapter that says it can
+        // execute one. This branch is reachable only with an acknowledgement in hand: the Satisfies check
+        // above has already refused every non-preserving plan whose token is missing or names a different
+        // impact, and the null test below is belt-and-braces so the impact handed on cannot be inferred from
+        // anything but the token. Note what is *not* passed: current.DataImpact. Handing the adapter the
+        // plan's own claim would be an acknowledgement of whatever the plan happens to say, which is no
+        // acknowledgement at all — the value that travels is the one a human separately named.
+        if (current.DataImpact != DataImpact.Preserved
+            && dataImpactAcknowledgement is not null
+            && provisioner is IDestructiveUpdateApplier destructiveApplier)
+        {
+            var destructiveExecution = await destructiveApplier
+                .ApplyDestructiveUpdateAsync(
+                    handle, current, approvedPlanHash, dataImpactAcknowledgement.Acknowledged, ct)
+                .ConfigureAwait(false);
+
+            // Reported exactly as the in-place branch below reports its own outcomes, and for the same
+            // reasons: no write-ahead row is written on this path and no resource is created, so there is
+            // nothing for a sweep to resolve and nothing that could have been orphaned.
+            return destructiveExecution is UpdateExecutionResult.Completed destructiveCompleted
+                ? new UpdateApplyResult.Applied(
+                    destructiveCompleted.Resource, current.PlanHash, current.Strategy, current.DataImpact)
+                : new UpdateApplyResult.Failed(
+                    destructiveExecution.Message, ledgerRowId: Guid.Empty, compensated: true);
+        }
+
         // Step 3 — if the adapter can genuinely apply an update to the resource that already exists, that is
         // what an update means and that is what runs. The type test is the capability check, exactly as it is
         // for IMaintainer above, and it sits *after* every refusal: there is no path to an IUpdateApplier that
