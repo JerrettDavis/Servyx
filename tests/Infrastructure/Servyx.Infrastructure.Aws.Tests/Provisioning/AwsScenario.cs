@@ -78,10 +78,19 @@ internal sealed class AwsScenario
     };
 
     /// <summary>Builds a provisioner over this scenario's API double and secret store.</summary>
+    /// <param name="withCredentials">Whether to seed the secret store with the fake AWS key pair.</param>
+    /// <param name="sshUsername">The username produced descriptors authenticate as.</param>
+    /// <param name="region">The region the provisioner acts on.</param>
+    /// <param name="statePollAttempts">
+    /// How many lifecycle-state reads the instance-type change path makes per step before giving up. Only the
+    /// update-execution suite varies it; every other test builds a provisioner that never polls a state at all,
+    /// so the default is the same small number the address poll uses and the wait is zero-length either way.
+    /// </param>
     internal AwsEc2Provisioner Provisioner(
         bool withCredentials = true,
         string sshUsername = AwsEc2Provisioner.DefaultSshUsername,
-        string region = Region)
+        string region = Region,
+        int statePollAttempts = 3)
     {
         if (withCredentials)
         {
@@ -99,7 +108,9 @@ internal sealed class AwsScenario
             sshUsername: sshUsername,
             timeProvider: TimeProvider.System,
             addressPollInterval: TimeSpan.Zero,
-            addressPollAttempts: 3);
+            addressPollAttempts: 3,
+            statePollInterval: TimeSpan.Zero,
+            statePollAttempts: statePollAttempts);
     }
 
     /// <summary>A provisioning request for a Palworld-sized instance, mirroring a cloud deployment profile.</summary>

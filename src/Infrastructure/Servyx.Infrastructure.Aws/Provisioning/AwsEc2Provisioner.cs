@@ -137,14 +137,24 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// inbound traffic, so a game port a caller asked for is not merely un-opened, it is actively closed.
 /// </para>
 /// <para>
-/// <strong>Maintenance is implemented, and it is planning-only.</strong> <see cref="IMaintainer"/> lives in
-/// <c>AwsEc2Provisioner.Maintenance.cs</c>: it detects drift against a recorded handle and produces an
-/// <see cref="UpdatePlan"/>, issuing nothing but <c>DescribeInstances</c> reads. It does <em>not</em> apply
-/// one — there is no <c>ModifyInstanceAttribute</c>, no <c>StopInstances</c> and no <c>TerminateInstances</c>
-/// on any planning path, and no executor in this solution applies an <see cref="UpdatePlan"/> from this
-/// adapter. Read that file's remarks for the one thing that makes EC2's answers different from every sibling
+/// <strong>Maintenance is implemented, and planning is still read-only.</strong> <see cref="IMaintainer"/>
+/// lives in <c>AwsEc2Provisioner.Maintenance.cs</c>: it detects drift against a recorded handle and produces an
+/// <see cref="UpdatePlan"/>, issuing nothing but <c>DescribeInstances</c> reads — there is no
+/// <c>ModifyInstanceAttribute</c>, no <c>StopInstances</c> and no <c>TerminateInstances</c> on any planning
+/// path. Read that file's remarks for the one thing that makes EC2's answers different from every sibling
 /// adapter's: this adapter sends no <c>BlockDeviceMapping</c>, so what a replacement costs a caller's data is
 /// decided by a <c>DeleteOnTermination</c> flag Servyx never set and can only read back.
+/// </para>
+/// <para>
+/// <strong>Exactly one of the operations that planning describes can also be carried out.</strong>
+/// <see cref="IUpdateApplier"/> lives in <c>AwsEc2Provisioner.InstanceType.cs</c> and executes an approved
+/// instance-type change — the one difference whose <see cref="DataImpact"/> is
+/// <see cref="DataImpact.Preserved"/>, and the only one whose EC2 route keeps the instance and its EBS volumes.
+/// It is three calls, not one: <c>StopInstances</c>, <c>ModifyInstanceAttribute</c>, <c>StartInstances</c>, each
+/// polled to an observed conclusion. <strong>The image change is deliberately not executable by that path</strong>
+/// — it is a terminate-and-launch whose impact is <see cref="DataImpact.Destroyed"/> or
+/// <see cref="DataImpact.AtRisk"/>, and it is refused there without a single mutating request, exactly as the
+/// droplet rebuild and the Azure VM replacement were before they got reviewed changes of their own.
 /// </para>
 /// </remarks>
 public sealed partial class AwsEc2Provisioner : IProvisioner
@@ -196,6 +206,8 @@ public sealed partial class AwsEc2Provisioner : IProvisioner
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _addressPollInterval;
     private readonly int _addressPollAttempts;
+    private readonly TimeSpan _statePollInterval;
+    private readonly int _statePollAttempts;
 
     /// <summary>
     /// Creates a provisioner acting on one AWS region as the identity whose key pair is stored at
@@ -230,6 +242,16 @@ public sealed partial class AwsEc2Provisioner : IProvisioner
     /// <param name="addressPollInterval">How long to wait between address polls. Defaults to five seconds.</param>
     /// <param name="addressPollAttempts">How many address polls to make before giving up. Defaults to 60.</param>
     /// <param name="endpoint">Override for the regional EC2 endpoint. Defaults to <c>https://ec2.{region}.amazonaws.com/</c>.</param>
+    /// <param name="statePollInterval">
+    /// How long to wait between reads while waiting for an instance to reach a lifecycle state during an
+    /// approved instance-type change. Defaults to five seconds. See
+    /// <c>AwsEc2Provisioner.InstanceType.cs</c>: a type change stops the instance, and the wait for
+    /// <c>stopped</c> is what makes the subsequent attribute write legal rather than merely attempted.
+    /// </param>
+    /// <param name="statePollAttempts">
+    /// How many state reads to make before giving up on a stop or a start. Defaults to 60, so the default
+    /// wait is five minutes per step. Running out is never reported as a success.
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="region"/> or <paramref name="sshUsername"/> is blank.</exception>
     public AwsEc2Provisioner(
         HttpClient httpClient,
@@ -242,11 +264,14 @@ public sealed partial class AwsEc2Provisioner : IProvisioner
         TimeProvider? timeProvider = null,
         TimeSpan? addressPollInterval = null,
         int addressPollAttempts = 60,
-        Uri? endpoint = null)
+        Uri? endpoint = null,
+        TimeSpan? statePollInterval = null,
+        int statePollAttempts = 60)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(region);
         ArgumentException.ThrowIfNullOrWhiteSpace(sshUsername);
         ArgumentOutOfRangeException.ThrowIfLessThan(addressPollAttempts, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(statePollAttempts, 1);
 
         _region = region;
         _sshCredentialUrn = sshCredentialUrn;
@@ -257,6 +282,8 @@ public sealed partial class AwsEc2Provisioner : IProvisioner
         _timeProvider = timeProvider ?? TimeProvider.System;
         _addressPollInterval = addressPollInterval ?? TimeSpan.FromSeconds(5);
         _addressPollAttempts = addressPollAttempts;
+        _statePollInterval = statePollInterval ?? TimeSpan.FromSeconds(5);
+        _statePollAttempts = statePollAttempts;
 
         _api = new Ec2QueryApiClient(
             httpClient,
@@ -305,10 +332,15 @@ public sealed partial class AwsEc2Provisioner : IProvisioner
     /// recorded — including whether the machine still exists at all, which on EC2 is a state rather than a 404.
     /// </para>
     /// <para>
-    /// <strong>Planning a type change is not <see cref="ProvisioningCapabilities.Resize"/>.</strong> That bit
-    /// stays absent, and the distinction is the point: this adapter can describe the stop/modify/start sequence
-    /// in detail and still issues no <c>ModifyInstanceAttribute</c> call anywhere in the assembly. A caller must
-    /// be able to tell "can tell me what a resize would do" from "will resize it".
+    /// <strong><see cref="ProvisioningCapabilities.Resize"/> stays absent even though a type change can now be
+    /// executed.</strong> That is an understatement, and it is the safe direction of one:
+    /// <see cref="IUpdateApplier"/> — implemented in <c>AwsEc2Provisioner.InstanceType.cs</c> — will carry out
+    /// an approved instance-type change, so a caller establishes that ability by the type test the interface
+    /// exists for, which is checkable, rather than by reading a flag. The flag describes a broader promise
+    /// (resizing on request, including the disk and image changes this adapter refuses to issue at all) that
+    /// this adapter still does not make. Claiming it would overstate what a caller can ask for; leaving it
+    /// absent understates only what a caller can already discover — the same call the DigitalOcean adapter made
+    /// when its resize landed.
     /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>

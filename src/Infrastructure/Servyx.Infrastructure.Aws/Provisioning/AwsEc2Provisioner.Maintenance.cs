@@ -83,8 +83,16 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// <para>
 /// <strong>Nothing here executes.</strong> Every call on both paths is a <c>DescribeInstances</c> GET. There is
 /// no <c>ModifyInstanceAttribute</c>, no <c>StopInstances</c>, no <c>TerminateInstances</c> and no
-/// <c>RunInstances</c> anywhere in this file, and no executor anywhere in this solution applies an
-/// <see cref="UpdatePlan"/> produced by it. Producing a plan here changes nothing, whatever the plan says.
+/// <c>RunInstances</c> anywhere in this file. Producing a plan here changes nothing, whatever the plan says.
+/// </para>
+/// <para>
+/// <strong>One kind of plan produced here can afterwards be carried out, and it is not the image change.</strong>
+/// <c>AwsEc2Provisioner.InstanceType.cs</c> implements <see cref="IUpdateApplier"/> for a lone instance-type
+/// change — the <see cref="DataImpact.Preserved"/> case argued above, and the only one whose EC2 route keeps the
+/// instance and every volume in its block device mapping. It re-reads that mapping off the live instance before
+/// it stops anything, so the preservation claim it acts on is the enumerated one from this file rather than an
+/// assumption carried in the plan. Every other plan shape this file can produce — the image change, the region
+/// refusal, a bundled retag — is refused there without a mutating request.
 /// </para>
 /// </remarks>
 public sealed partial class AwsEc2Provisioner : IMaintainer
