@@ -95,7 +95,7 @@ else
         <div class="svx-card" data-testid="backup-server-picker">
             <h3>Server</h3>
 
-            @if (_servers.Count == 0)
+            @if (_catalog.Servers.Count == 0)
             {
                 <p class="svx-page-description" data-testid="no-servers">
                     No adopted server was found, so there is nothing to back up.
@@ -103,12 +103,54 @@ else
             }
             else
             {
+                @if (_catalog.HasCollisions)
+                {
+                    @* Reported, never resolved. Both entries are still in the picker below — dropping either
+                       would make this page decide which machine a restore overwrites, silently. *@
+                    <div class="svx-empty-state" data-testid="server-name-collision" role="alert">
+                        <h3>Two servers answer to the same name</h3>
+                        <p>
+                            A configured SSH-hosted server shares an identifier with a Docker-discovered one.
+                            <strong>Both are listed below</strong>, each labelled with its kind, because
+                            Servyx will not pick one for you.
+                        </p>
+                        <ul class="svx-deploy-stages">
+                            @foreach (var collision in _catalog.Collisions)
+                            {
+                                <li data-testid="server-name-collision-entry"
+                                    data-collision-shadows="@collision.ShadowsRouting.ToString().ToLowerInvariant()">
+                                    <code>@collision.Value</code> —
+                                    @if (collision.ShadowsRouting)
+                                    {
+                                        <text>
+                                            this is also the Docker-discovered server's <strong>id</strong>, so
+                                            every backup call for it is routed to the SSH provider and the
+                                            Docker-hosted server of that id cannot be acted on from this page.
+                                            Rename one of the two in configuration.
+                                        </text>
+                                    }
+                                    else
+                                    {
+                                        <text>
+                                            this is also the name of the Docker-discovered server
+                                            <code>@collision.DockerServerId</code>. The two route correctly —
+                                            their ids differ — but only the labels below tell them apart.
+                                        </text>
+                                    }
+                                </li>
+                            }
+                        </ul>
+                    </div>
+                }
+
                 <label>
                     Server
                     <select @onchange="OnServerChangedAsync" data-testid="server-select">
-                        @foreach (var server in _servers)
+                        @foreach (var server in _catalog.Servers)
                         {
-                            <option value="@server.Id" selected="@(server.Id == _selectedServerId)">@server.Name</option>
+                            <option value="@server.Id" selected="@(server.Id == _selectedServerId)"
+                                    data-kind="@server.KindId"
+                                    data-collides="@(server.Collides ? "true" : null)">@_catalog.OptionLabel(server)</option>
                         }
                     </select>
                 </label>
@@ -135,7 +177,7 @@ else
             }
         </div>
 
-        @if (_servers.Count > 0)
+        @if (_catalog.Servers.Count > 0)
         {
             <div class="svx-card" data-testid="backup-list-section">
                 <h3>Archives</h3>
@@ -475,7 +517,7 @@ else
     // ── Open-gate state ───────────────────────────────────────────────────────────────────────────
     private IBackupDashboard? _dashboard;
     private WritableServers _writableServers = WritableServers.None;
-    private IReadOnlyList<ServerSummary> _servers = [];
+    private BackupServerCatalog _catalog = BackupServerCatalog.Empty;
     private string _selectedServerId = string.Empty;
     private string _selectedServerName = string.Empty;
     private bool _writable;
@@ -521,13 +563,18 @@ else
             return;
         }
 
-        _servers = await Data.GetServersAsync();
-        if (_servers.Count == 0)
+        // Same resolution as above and for the same reason: with the gate closed no SshBackupWiringOptions is
+        // registered, and Merge treats null and None identically — Docker's list, in order, untouched.
+        _catalog = BackupServerCatalog.Merge(
+            await Data.GetServersAsync(),
+            Services.GetService(typeof(SshBackupWiringOptions)) as SshBackupWiringOptions);
+
+        if (_catalog.Servers.Count == 0)
         {
             return;
         }
 
-        await SelectServerAsync(_servers[0].Id);
+        await SelectServerAsync(_catalog.Servers[0].Id);
     }
 
     private Task OnServerChangedAsync(ChangeEventArgs e) => SelectServerAsync(e.Value?.ToString() ?? string.Empty);
@@ -536,7 +583,7 @@ else
     {
         _selectedServerId = serverId;
 
-        var server = _servers.FirstOrDefault(s => s.Id == serverId);
+        var server = _catalog.Find(serverId);
         _selectedServerName = server?.Name ?? serverId;
         _writable = _writableServers.IsWritable(serverId, server?.Name);
 
