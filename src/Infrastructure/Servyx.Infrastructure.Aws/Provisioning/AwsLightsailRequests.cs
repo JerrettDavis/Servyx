@@ -68,4 +68,43 @@ internal static class AwsLightsailRequests
 
         return body;
     }
+
+    /// <summary>
+    /// Builds the <c>TagResource</c> request body that retags an instance which already exists.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Every tag the instance is to carry, not merely the ones that changed.</strong> Lightsail's
+    /// <c>TagResource</c> adds or overwrites the tags named in the request and leaves the rest alone, so a
+    /// request carrying only the changed keys would still be correct — and would still be the wrong shape here.
+    /// Sending the whole canonical set makes the write idempotent in the ownership marks: after this request the
+    /// instance provably carries <c>servyx.managed</c>, its instance id, its job id and its connector id at their
+    /// live values, whatever the plan asked for and whatever the instance looked like beforehand. The orphan
+    /// sweep finds billing instances by exactly those keys, so "provably carries" is worth an extra few bytes.
+    /// </para>
+    /// <para>
+    /// Sorted for the same reason <see cref="CreateInstances"/> sorts its tags: a request whose parameter order
+    /// varied run to run would sign two different payloads for one logical change.
+    /// </para>
+    /// </remarks>
+    /// <param name="resourceName">The Lightsail instance name — its identity, and what <c>TagResource</c> keys on.</param>
+    /// <param name="tags">The full tag set the instance is to carry, canonical keys included.</param>
+    internal static JsonObject TagResource(string resourceName, IReadOnlyDictionary<string, string> tags)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceName);
+        ArgumentNullException.ThrowIfNull(tags);
+
+        var tagsArray = new JsonArray();
+
+        foreach (var tag in tags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            tagsArray.Add(new JsonObject { ["key"] = tag.Key, ["value"] = tag.Value });
+        }
+
+        return new JsonObject
+        {
+            ["resourceName"] = resourceName,
+            ["tags"] = tagsArray,
+        };
+    }
 }

@@ -31,14 +31,15 @@ namespace Servyx.Infrastructure.Aws;
 /// adapter under the same SigV4 machinery was worth doing: the algorithm was never EC2-specific.
 /// </para>
 /// <para>
-/// <strong>There is no <c>TagResource</c> call here, deliberately — for exactly the reason there is no
-/// <c>CreateTags</c> in <see cref="Ec2QueryApiClient"/>.</strong> <c>CreateInstances</c> accepts a <c>tags</c>
-/// array applied to the instance in the same call that creates it, so a follow-up <c>TagResource</c> would open
-/// the same untagged-billing window EC2's design avoids. Lightsail's own documentation states something EC2's
-/// does not: "If tags cannot be applied during resource creation, Lightsail rolls back the resource creation
-/// process" — the platform itself guarantees the create is all-or-nothing with respect to tagging, which is a
-/// stronger guarantee than "no window observed", and this client has no code path that could weaken it by
-/// tagging after the fact.
+/// <strong>The create path still applies every tag inline, and <c>TagResource</c> cannot weaken that.</strong>
+/// <c>CreateInstances</c> accepts a <c>tags</c> array applied to the instance in the same call that creates it,
+/// so there is no window in which a billing instance exists untagged — and Lightsail's own documentation states
+/// something EC2's does not: "If tags cannot be applied during resource creation, Lightsail rolls back the
+/// resource creation process," i.e. the platform itself guarantees the create is all-or-nothing with respect to
+/// tagging. Nothing on the create path calls <c>TagResource</c>, and nothing can: the only
+/// <c>TagResource</c> method on this client lives in <c>LightsailJsonApiClient.Tags.cs</c> and is reached solely
+/// from the <c>IUpdateApplier</c> half of the adapter, which acts on an instance that already exists and is
+/// already tagged. See that file for why the retag exists at all and what it structurally cannot do.
 /// </para>
 /// <para>
 /// <strong>Identity is caller-chosen, not provider-generated — the one structural simplification worth naming
@@ -56,7 +57,7 @@ namespace Servyx.Infrastructure.Aws;
 /// signing key, or a signature.
 /// </para>
 /// </remarks>
-internal sealed class LightsailJsonApiClient
+internal sealed partial class LightsailJsonApiClient
 {
     /// <summary>The service name in the SigV4 credential scope.</summary>
     internal const string ServiceName = "lightsail";

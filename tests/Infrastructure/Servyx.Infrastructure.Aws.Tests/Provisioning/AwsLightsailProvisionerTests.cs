@@ -257,20 +257,33 @@ public class AwsLightsailProvisionerTests
         await scenario.CreateAsync();
 
         // The whole point: if tagging ever needed a follow-up call, there would be a window in which a billing
-        // instance exists untagged. There is no code path in this assembly that can produce one.
+        // instance exists untagged. No code path on the CREATE path can produce one - the adapter's only
+        // TagResource call belongs to update execution, which acts on an instance that already exists and is
+        // already tagged. (This comment was narrowed from "no code path in this assembly" when that stopped
+        // being true; the assertion below is unchanged and is still the claim worth making.)
         scenario.Api.Requests.Should().NotContain(r => r.LightsailAction == "TagResource");
     }
 
     [Fact]
-    public void The_production_client_has_no_method_that_could_call_TagResource()
+    public void The_production_client_can_call_TagResource_and_still_has_no_method_that_could_call_UntagResource()
     {
-        // The structural half of the same claim: it is not merely untested, it is unreachable.
+        // The positive counterpart of a test that used to assert this client had no TagResource method at all.
+        // It was inverted rather than deleted when the adapter gained update execution: TagResource is now the
+        // whole backing of its UpdateInPlace capability, so asserting its absence would pin the dishonest state.
+        //
+        // What did NOT change is the half that protects the orphan sweep, and it is the stronger half.
+        // UntagResource is the only Lightsail action that can REMOVE a tag from an instance, and it is still
+        // absent - so no plan, no argument and no caller in this assembly can delete a servyx.* ownership tag
+        // from a live instance, because there is no code to reach. Overwriting one is closed off separately, by
+        // ServyxTagKeys.Build writing the canonical keys last; removal is closed off here, by absence.
         var methods = typeof(AwsLightsailProvisioner).Assembly
             .GetType("Servyx.Infrastructure.Aws.LightsailJsonApiClient", throwOnError: true)!
             .GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public)
-            .Select(m => m.Name);
+            .Select(m => m.Name)
+            .ToList();
 
-        methods.Should().NotContain(n => n.Contains("TagResource", StringComparison.Ordinal));
+        methods.Should().Contain(n => n.Contains("TagResource", StringComparison.Ordinal));
+        methods.Should().NotContain(n => n.Contains("UntagResource", StringComparison.Ordinal));
     }
 
     // ---------------------------------------------------------------------------------------------------

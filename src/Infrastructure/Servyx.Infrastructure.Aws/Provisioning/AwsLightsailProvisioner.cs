@@ -111,9 +111,12 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// are all absent, mirroring EC2's same four omissions.
 /// </para>
 /// <para>
-/// <strong>Maintenance is implemented, and it is planning-only.</strong> <see cref="IMaintainer"/> lives in
+/// <strong>Maintenance is implemented, planning and execution alike.</strong> <see cref="IMaintainer"/> lives in
 /// <c>AwsLightsailProvisioner.Maintenance.cs</c>: it detects drift against a recorded handle and produces an
-/// <see cref="UpdatePlan"/>, issuing nothing but <c>GetInstance</c> reads. Read that file's remarks for the
+/// <see cref="UpdatePlan"/>, issuing nothing but <c>GetInstance</c> reads. <see cref="IUpdateApplier"/> lives in
+/// <c>AwsLightsailProvisioner.Tags.cs</c> and carries out the one thing Lightsail can change in place — a tag
+/// change, by <c>TagResource</c> — refusing every other plan without a request. Read that file's remarks for how
+/// the Servyx ownership tags are made structurally unlosable, and this file's remarks for the
 /// finding that makes this adapter's plans differ most from EC2's: <strong>Lightsail has no operation that
 /// changes an existing instance's bundle at all</strong>, so a bundle change is reported unsupported rather
 /// than planned as anything, and the snapshot-and-restore procedure AWS actually documents for it is named in

@@ -227,6 +227,38 @@ internal sealed class LightsailScenario
         }
         """;
 
+    /// <summary>
+    /// A <c>TagResource</c> response envelope: an array of pending operations, never the retagged instance.
+    /// </summary>
+    /// <remarks>
+    /// The shape is the whole reason the update path polls. A <c>200</c> here means "accepted", and the
+    /// <c>status</c>/<c>isTerminal</c> pair says so explicitly — <paramref name="status"/> defaults to the
+    /// <c>Started</c>/<c>isTerminal:false</c> answer AWS documents rather than to a finished one, so a test that
+    /// wanted to prove the adapter trusts the submission would have to say so out loud.
+    /// </remarks>
+    internal static string TagResourceJson(
+        string instanceName = InstanceName,
+        string status = "Started",
+        bool isTerminal = false,
+        string? errorCode = null,
+        string? errorDetails = null) =>
+        $$"""
+        {
+            "operations": [
+                {
+                    "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                    "operationType": "TagResource",
+                    "resourceName": "{{instanceName}}",
+                    "resourceType": "Instance",
+                    "status": "{{status}}",
+                    {{(errorCode is null ? string.Empty : $"\"errorCode\": \"{errorCode}\",")}}
+                    {{(errorDetails is null ? string.Empty : $"\"errorDetails\": \"{errorDetails}\",")}}
+                    "isTerminal": {{(isTerminal ? "true" : "false")}}
+                }
+            ]
+        }
+        """;
+
     /// <summary>A Lightsail AWS-JSON-1.1 error document, as every action returns one alongside a 4xx status.</summary>
     internal static string ErrorJson(string type, string message) =>
         $$"""{ "__type": "{{type}}", "message": "{{message}}" }""";

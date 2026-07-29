@@ -72,6 +72,28 @@ internal static class LightsailJson
         }
     }
 
+    /// <summary>A named property read as a boolean, or <see langword="null"/> when absent or not a boolean.</summary>
+    internal static bool? Bool(JsonObject? obj, string property)
+    {
+        if (obj is null || !obj.TryGetPropertyValue(property, out var node) || node is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return node.GetValue<bool>();
+        }
+        catch (InvalidOperationException)
+        {
+            return null;
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+    }
+
     /// <summary>Reads a Lightsail <c>tags</c> array (<c>[{"key":...,"value":...}]</c>) into an ordinal dictionary.</summary>
     /// <remarks>
     /// A key-only tag (Lightsail allows a tag with no value) reads as an empty string, matching how
@@ -159,6 +181,86 @@ internal sealed record LightsailInstance(
             LightsailJson.Text(item, "username"),
             LightsailJson.UnixSeconds(item, "createdAt"),
             LightsailJson.Tags(item?["tags"] as JsonArray));
+    }
+}
+
+/// <summary>
+/// One Lightsail <c>Operation</c> record, as every mutating action answers with an array of them rather than
+/// with the resource it changed.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>This type exists because submission is not success.</strong> <c>CreateInstances</c>,
+/// <c>DeleteInstance</c> and <c>TagResource</c> all answer <c>200 OK</c> carrying pending operations — a
+/// response that says the request was accepted, not that anything has happened. Projecting the status makes an
+/// outright provider-side failure (<c>Failed</c>) distinguishable from a change still in flight, which is the
+/// distinction <c>UpdateExecutionResult.Failed</c> and <c>UpdateExecutionResult.TimedOut</c> exist to keep.
+/// </para>
+/// <para>
+/// It is deliberately <em>not</em> the confirmation the update path relies on. A terminal-looking status is
+/// still the provider describing its own bookkeeping; the adapter confirms a retag by reading the tags back off
+/// the instance. This record is used to fail fast, never to declare success.
+/// </para>
+/// </remarks>
+/// <param name="Id">The operation's id, as Lightsail's <c>GetOperation</c> would key on.</param>
+/// <param name="OperationType">The action the operation belongs to, e.g. <c>UpdateInstanceMetadataOptions</c>.</param>
+/// <param name="Status">The operation's status: <c>NotStarted</c>, <c>Started</c>, <c>Failed</c>, <c>Completed</c>, <c>Succeeded</c>.</param>
+/// <param name="IsTerminal">Whether Lightsail considers the operation finished, one way or the other.</param>
+/// <param name="ErrorCode">Lightsail's own error code, when the operation carries one.</param>
+/// <param name="ErrorDetails">Lightsail's own error detail text, when the operation carries one.</param>
+internal sealed record LightsailOperation(
+    string? Id,
+    string? OperationType,
+    string? Status,
+    bool IsTerminal,
+    string? ErrorCode,
+    string? ErrorDetails)
+{
+    /// <summary>The one status that means the provider itself refused or errored the operation.</summary>
+    internal const string FailedStatus = "Failed";
+
+    /// <summary>Whether this operation is Lightsail reporting a failure rather than progress.</summary>
+    internal bool IsFailure => string.Equals(Status, FailedStatus, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Lightsail's own words about a failure, or a plain statement that it supplied none.</summary>
+    internal string FailureText =>
+        string.Join(' ', new[] { ErrorCode, ErrorDetails }.Where(t => !string.IsNullOrWhiteSpace(t)))
+            is { Length: > 0 } text
+            ? text
+            : "Lightsail reported the operation as Failed without an error code or detail text.";
+
+    /// <summary>Projects one element of an <c>operations</c> array.</summary>
+    internal static LightsailOperation? From(JsonObject? item) =>
+        item is null
+            ? null
+            : new LightsailOperation(
+                LightsailJson.Text(item, "id"),
+                LightsailJson.Text(item, "operationType"),
+                LightsailJson.Text(item, "status"),
+                LightsailJson.Bool(item, "isTerminal") ?? false,
+                LightsailJson.Text(item, "errorCode"),
+                LightsailJson.Text(item, "errorDetails"));
+
+    /// <summary>Projects a whole <c>operations</c> array, skipping anything that is not an object.</summary>
+    internal static IReadOnlyList<LightsailOperation> AllFrom(JsonArray? items)
+    {
+        var results = new List<LightsailOperation>();
+
+        if (items is null)
+        {
+            return results;
+        }
+
+        foreach (var node in items)
+        {
+            var operation = From(node as JsonObject);
+            if (operation is not null)
+            {
+                results.Add(operation);
+            }
+        }
+
+        return results;
     }
 }
 

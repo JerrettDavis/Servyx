@@ -61,9 +61,15 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// request.
 /// </para>
 /// <para>
-/// <strong>Nothing here executes.</strong> Every call on both paths is a <c>GetInstance</c> read. There is no
-/// <c>CreateInstances</c>, no <c>DeleteInstance</c>, no <c>TagResource</c> and no snapshot call anywhere in
-/// this file, and no executor in this solution applies an <see cref="UpdatePlan"/> from it.
+/// <strong>Nothing in <em>this file</em> executes.</strong> Every call on both paths is a <c>GetInstance</c>
+/// read. There is no <c>CreateInstances</c>, no <c>DeleteInstance</c>, no <c>TagResource</c> and no snapshot
+/// call anywhere in it. What has changed is what happens to a plan afterwards: the tag case above is now
+/// executable, by the <see cref="IUpdateApplier"/> implementation in
+/// <c>AwsLightsailProvisioner.Tags.cs</c> — which is the whole of this adapter's
+/// <see cref="ProvisioningCapabilities.UpdateInPlace"/> backing, because the tag case is the whole of what
+/// Lightsail can change in place. Every other plan this file can produce is refused there, without a request,
+/// and three of the four are refused permanently rather than pending an implementation: AWS publishes no
+/// operation that changes an existing instance's bundle, region or zone.
 /// </para>
 /// </remarks>
 public sealed partial class AwsLightsailProvisioner : IMaintainer
