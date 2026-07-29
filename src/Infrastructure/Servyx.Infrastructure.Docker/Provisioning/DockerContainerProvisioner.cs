@@ -45,7 +45,7 @@ namespace Servyx.Infrastructure.Docker.Provisioning;
 /// still reachable only by driving the existing create/destroy paths deliberately.
 /// </para>
 /// </remarks>
-public sealed class DockerContainerProvisioner : IProvisioner, IMaintainer
+public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintainer
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "docker-container";
@@ -509,7 +509,16 @@ public sealed class DockerContainerProvisioner : IProvisioner, IMaintainer
     /// always ends with the mandatory Servyx entries. There is therefore no expressible call to this
     /// method — and no other route to <c>CreateContainerAsync</c> — that produces an unlabelled container.
     /// </remarks>
-    private static CreateContainerParameters BuildCreateParameters(DockerContainerSpec spec)
+    /// <param name="spec">The container to create.</param>
+    /// <param name="bookkeeping">
+    /// Labels this adapter writes about itself rather than about the workload — the recorded prior spec a
+    /// rollback restores from, and the markers a rollback leaves. Applied <em>after</em>
+    /// <see cref="LabelsFor"/>, which is safe precisely because <see cref="LabelsFor"/> strips these keys out
+    /// of anything a caller supplied: the only values that can land here are ones this assembly produced.
+    /// </param>
+    private static CreateContainerParameters BuildCreateParameters(
+        DockerContainerSpec spec,
+        IReadOnlyDictionary<string, string>? bookkeeping = null)
     {
         var exposedPorts = new Dictionary<string, EmptyStruct>(StringComparer.Ordinal);
         var portBindings = new Dictionary<string, IList<PortBinding>>(StringComparer.Ordinal);
@@ -538,11 +547,17 @@ public sealed class DockerContainerProvisioner : IProvisioner, IMaintainer
             hostConfig.RestartPolicy = new RestartPolicy { Name = restartPolicy };
         }
 
+        var labels = new Dictionary<string, string>(LabelsFor(spec), StringComparer.Ordinal);
+        foreach (var entry in bookkeeping ?? new Dictionary<string, string>(StringComparer.Ordinal))
+        {
+            labels[entry.Key] = entry.Value;
+        }
+
         return new CreateContainerParameters
         {
             Image = spec.Image,
             Name = spec.ContainerName,
-            Labels = new Dictionary<string, string>(LabelsFor(spec), StringComparer.Ordinal),
+            Labels = labels,
             Env = spec.Environment
                 .Select(e => $"{e.Key}={e.Value}")
                 .ToList(),
@@ -566,11 +581,20 @@ public sealed class DockerContainerProvisioner : IProvisioner, IMaintainer
     /// </remarks>
     private static IReadOnlyDictionary<string, string> LabelsFor(DockerContainerSpec spec)
     {
-        var extras = new Dictionary<string, string>(spec.AdditionalLabels, StringComparer.Ordinal)
+        var extras = new Dictionary<string, string>(spec.AdditionalLabels, StringComparer.Ordinal);
+
+        // Bookkeeping keys describe what Servyx did to the container, not what the container is, so they are
+        // never derived from a spec. Stripping them here — the single place every label set is built — is what
+        // stops a `label:servyx.previous-spec` provisioning parameter from planting a prior state Servyx never
+        // observed, which a later rollback would then restore as if it had been recorded. It also keeps them
+        // out of every plan hash, so an update's bookkeeping cannot make the next plan look different.
+        foreach (var key in ServyxResourceTags.Bookkeeping)
         {
-            [ServyxResourceTags.RootPathLabel] = spec.RootPath,
-            [ServyxResourceTags.ImageLabel] = spec.Image,
-        };
+            extras.Remove(key);
+        }
+
+        extras[ServyxResourceTags.RootPathLabel] = spec.RootPath;
+        extras[ServyxResourceTags.ImageLabel] = spec.Image;
 
         return spec.Tags.ToLabels(extras);
     }

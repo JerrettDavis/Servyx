@@ -66,6 +66,60 @@ public sealed class ServyxResourceTags
     /// </summary>
     public const string ImageLabel = ServyxTagKeys.Image;
 
+    /// <summary>
+    /// The complete specification of the container this one <em>replaced</em>, recorded on the replacement at
+    /// the moment an update recreates it. This is the only durable record of a container's pre-update state,
+    /// and therefore the only thing a rollback can restore from.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Nothing else records it.</strong> A <see cref="ResourceHandle"/> carries a provisioner id, a
+    /// provider-assigned id, a region and the container's labels — so the ledger knows the image
+    /// (<see cref="ImageLabel"/>) and the root path, and nothing about ports, environment or mounts. The
+    /// container itself holds all of those, but a recreate removes it, taking the only copy with it. Without
+    /// this label a rollback could restore nothing it did not invent, which is why it exists.
+    /// </para>
+    /// <para>
+    /// <strong>Docker-local on purpose.</strong> The payload is an encoded
+    /// <see cref="DockerContainerSpec"/> — ports, binds, env — which no other adapter has an analogue for, so
+    /// unlike <see cref="ImageLabel"/> and <see cref="RootPathLabel"/> this key is not promoted to
+    /// <see cref="ServyxTagKeys"/>. It is still built from <see cref="ServyxTagKeys.Prefix"/> so the Servyx
+    /// namespace stays one namespace, exactly as the SSH adapter's own keys are.
+    /// </para>
+    /// <para>
+    /// <strong>A caller can never supply one.</strong> <c>DockerContainerProvisioner.LabelsFor</c> strips this
+    /// key (and the two below) out of caller-supplied extras, so a <c>label:servyx.previous-spec</c>
+    /// provisioning parameter cannot plant a prior state that Servyx never observed. It is written in exactly
+    /// one place: the recreate operation, from a spec read off the live container it is about to replace.
+    /// </para>
+    /// </remarks>
+    public const string PreviousSpecLabel = ServyxTagKeys.Prefix + "previous-spec";
+
+    /// <summary>
+    /// When this container was created by a rollback, as a round-trip UTC timestamp. Present only on a
+    /// container a rollback produced.
+    /// </summary>
+    public const string RolledBackAtLabel = ServyxTagKeys.Prefix + "rolled-back-at";
+
+    /// <summary>
+    /// The encoded spec of the container a rollback <em>undid</em> — i.e. the updated container that the
+    /// restored one replaced.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately a different key from <see cref="PreviousSpecLabel"/>, and deliberately never read as a
+    /// prior state. A rollback writes this instead of <see cref="PreviousSpecLabel"/> precisely so a second
+    /// consecutive rollback finds no recorded prior state and refuses, rather than treating the update it just
+    /// undid as a state to restore and silently re-applying it.
+    /// </remarks>
+    public const string RolledBackFromLabel = ServyxTagKeys.Prefix + "rolled-back-from";
+
+    /// <summary>
+    /// The keys this adapter writes for its own bookkeeping rather than to describe the workload. They are
+    /// never part of a <see cref="DockerContainerSpec"/>, never diffed by update planning, and stripped out of
+    /// any caller-supplied extras.
+    /// </summary>
+    public static IReadOnlyList<string> Bookkeeping { get; } = [PreviousSpecLabel, RolledBackAtLabel, RolledBackFromLabel];
+
     /// <summary>The Docker Engine label filter expression that selects every Servyx-managed container.</summary>
     /// <remarks>
     /// Stays in this assembly rather than moving to <see cref="ServyxTagKeys"/> alongside the keys it is
