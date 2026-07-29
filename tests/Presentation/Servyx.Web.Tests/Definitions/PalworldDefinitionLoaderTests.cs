@@ -93,4 +93,102 @@ public class PalworldDefinitionLoaderTests
 
         info.Should().BeNull();
     }
+
+    private const string ControlBlock = """
+        control:
+          channels:
+            - id: rest
+              protocol: palworld-rest
+              endpoints:
+                players:  { method: GET, path: "/v1/api/players",  readOnly: true }
+            - id: rcon
+              protocol: source-rcon
+              commands:
+                info:      { template: "Info",                       readOnly: true }
+                players:   { template: "ShowPlayers",                readOnly: true }
+                save:      { template: "Save",                       readOnly: false }
+                shutdown:  { template: "Shutdown {seconds} \"{message}\"", readOnly: false }
+        """;
+
+    /// <summary>
+    /// The catalogue must be selected by channel <c>id</c>, not by list position. The REST channel is
+    /// declared first here on purpose: picking index 0 would bind that channel's <c>endpoints</c> block —
+    /// or nothing — and the write guard would then be gating a vocabulary the definition never declared.
+    /// </summary>
+    [Fact]
+    public void ParseRconCommands_SelectsTheRconChannelByIdNotByPosition()
+    {
+        var commands = PalworldDefinitionLoader.ParseRconCommands(ControlBlock);
+
+        commands.Should().HaveCount(4);
+        commands.Should().ContainSingle(c => c.Id == "save").Which.Template.Should().Be("Save");
+    }
+
+    [Fact]
+    public void ParseRconCommands_CarriesTheReadOnlyClassificationVerbatim()
+    {
+        var commands = PalworldDefinitionLoader.ParseRconCommands(ControlBlock)
+            .ToDictionary(c => c.Id, c => c.ReadOnly, StringComparer.Ordinal);
+
+        commands["info"].Should().BeTrue();
+        commands["players"].Should().BeTrue();
+        commands["save"].Should().BeFalse();
+        commands["shutdown"].Should().BeFalse();
+    }
+
+    [Fact]
+    public void ParseRconCommands_ReadsAMissingReadOnlyFlagAsMutating()
+    {
+        // The safe reading of an absent classification is the one that makes the write guard refuse.
+        var yaml = """
+            control:
+              channels:
+                - id: rcon
+                  commands:
+                    mystery: { template: "Mystery" }
+            """;
+
+        PalworldDefinitionLoader.ParseRconCommands(yaml).Should().ContainSingle().Which.ReadOnly.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ParseRconCommands_Throws_WhenNoChannelHasRconId()
+    {
+        var yaml = """
+            control:
+              channels:
+                - id: rest
+                  endpoints:
+                    players: { method: GET, path: "/v1/api/players" }
+            """;
+
+        var act = () => PalworldDefinitionLoader.ParseRconCommands(yaml);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*id: rcon*");
+    }
+
+    [Fact]
+    public void ParseRconCommands_Throws_WhenTheChannelDeclaresNoCommands()
+    {
+        var yaml = """
+            control:
+              channels:
+                - id: rcon
+                  protocol: source-rcon
+            """;
+
+        var act = () => PalworldDefinitionLoader.ParseRconCommands(yaml);
+
+        act.Should().Throw<InvalidOperationException>().WithMessage("*no 'commands'*");
+    }
+
+    [Fact]
+    public void TryLoadRconCommands_ReturnsNull_WhenTheFileDoesNotExist()
+    {
+        // No hardcoded fallback catalogue: a definition that cannot be read yields no RCON vocabulary at
+        // all, which is a visible absence rather than a silent substitution.
+        PalworldDefinitionLoader
+            .TryLoadRconCommands(Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")))
+            .Should().BeNull();
+    }
 }

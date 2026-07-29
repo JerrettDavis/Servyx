@@ -23,6 +23,11 @@
          kind of secret:// URN, rather than through a storage mechanism invented for authentication. -->
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+    <!-- Servyx.Infrastructure.Rcon supplies the Source RCON protocol client and the write-guarded session
+         decorator. The composition root is the only layer that can turn a server id into an endpoint, a
+         credential URN and a definition-parsed command catalogue, which is why the wiring lives here (see
+         ServyxRconChannels) rather than in the protocol assembly. -->
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Rcon\Servyx.Infrastructure.Rcon.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
     <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
   </ItemGroup>

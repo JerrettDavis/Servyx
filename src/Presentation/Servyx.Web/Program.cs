@@ -6,6 +6,9 @@ using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
 using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Domain.Provisioning;
+using Servyx.Domain.Rcon;
+using Servyx.Domain.Secrets;
+using Servyx.Infrastructure.Rcon;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Docker.Provisioning;
 using Servyx.Infrastructure.Persistence;
@@ -163,6 +166,54 @@ if (provisioningGate.Enabled)
         sp.GetServices<IProvisioner>(),
         sp.GetService<IProvisioningLedger>(),
         sp.GetService<ProvisioningExecutor>()));
+
+    // ── RCON control channel ─────────────────────────────────────────────────────────────────────
+    //
+    // Opt-in per server on top of this gate: RconWiringOptions.FromConfiguration returns Disabled unless a
+    // server names itself under Servyx:Servers:<container>:Rcon:Enabled, and returns Disabled outright when
+    // the gate is closed. With nothing configured, none of the lines below reads the definition file,
+    // resolves a secret, or opens a socket.
+    //
+    // The catalogue comes from the bundled definition's control.channels[rcon].commands block and from
+    // nowhere else — there is no hardcoded fallback. Every id that reaches the wire has to carry the
+    // definition's own readOnly flag, because that flag is what WriteGuardedRconSession gates on; a
+    // fallback written in C# would be a second, unreviewed source of truth for exactly that decision. A
+    // definition that will not parse therefore yields an empty catalogue, and ServyxRconChannels refuses at
+    // startup if a channel is configured against one.
+    //
+    // What this buys, concretely: ServyxBackupContextSource can now attach the definition's quiesce step to
+    // a backup context, so DockerBackupProvider flushes Palworld's world with RCON `Save` before archiving
+    // — and refuses to write an archive at all if that flush does not succeed.
+    var rconWiring = RconWiringOptions.FromConfiguration(builder.Configuration, provisioningGate);
+    builder.Services.AddSingleton(rconWiring);
+
+    if (rconWiring.Any)
+    {
+        using var rconLoggerFactory = LoggerFactory.Create(logging => logging.AddConsole());
+        var rconCommands = PalworldDefinitionLoader.TryLoadRconCommands(
+            AppContext.BaseDirectory,
+            rconLoggerFactory.CreateLogger("Servyx.Web.Startup"));
+
+        var rconCatalog = rconCommands is null ? RconCommandCatalog.Empty : new RconCommandCatalog(rconCommands);
+
+        builder.Services.AddServyxRcon();
+        builder.Services.AddSingleton(sp => new ServyxRconChannels(
+            rconWiring,
+            rconCatalog,
+            sp.GetRequiredService<IRconClient>(),
+            sp.GetRequiredService<ISecretStore>(),
+            sp.GetRequiredService<WritableServers>(),
+            // The audited raw escape hatch stays unavailable until a host implements IRconAuditSink. A raw
+            // command bypasses the catalogue's readOnly classification, so the audit record is the only
+            // remaining account of what was run — and RconSession refuses to send one it cannot record.
+            audit: null));
+    }
+    else
+    {
+        // Registered on both sides so ServyxBackupContextSource always resolves; None composes no client,
+        // no secret lookup and no session, and every TryGetSession returns null.
+        builder.Services.AddSingleton(ServyxRconChannels.None);
+    }
 
     // ── Backups ──────────────────────────────────────────────────────────────────────────────────
     //

@@ -26,16 +26,26 @@ namespace Servyx.Web.Services;
 /// per call would open a Docker client per listing.
 /// </para>
 /// <para>
-/// <strong>No quiesce step is configured, and that is a stated limitation rather than a hidden one.</strong>
-/// Flushing Palworld's in-memory world before archiving needs an authenticated RCON session, which this
-/// host does not compose yet. <see cref="DockerBackupContext.Quiesce"/> is therefore
-/// <see langword="null"/>, which the provider treats as "no flush was asked for": it archives what is on
-/// disk, and a running server may have state it has not written out. The alternative — naming a quiesce
-/// step with no control channel to issue it on — is refused outright by
-/// <c>DockerBackupProvider.CreateAsync</c>, and rightly: a backup silently taken without the flush its
-/// definition asked for is exactly what <c>BackupQuiesceFailedException</c> exists to prevent. Once an
-/// RCON session is composed, filling both <see cref="DockerBackupContext.Quiesce"/> and
-/// <see cref="DockerBackupContext.Control"/> in here is the whole change.
+/// <strong>Quiesce is attached exactly when a control channel exists, and never otherwise.</strong> When
+/// the operator has configured an RCON channel for a server (see <see cref="RconWiringOptions"/>), this
+/// source fills both <see cref="DockerBackupContext.Control"/> and
+/// <see cref="DockerBackupContext.Quiesce"/> with the definition's own step — <c>rcon</c> <c>save</c>, 30s
+/// — and <c>DockerBackupProvider</c> issues it before a single byte is archived. When no channel is
+/// configured, both stay <see langword="null"/>: the provider treats that as "no flush was asked for" and
+/// archives on-disk state, exactly as it did before, recording the absence in the manifest's
+/// <c>quiesceCommand</c> field so an archive taken without a flush is distinguishable from one taken with
+/// it. Naming a quiesce step with no channel to issue it on is refused outright by
+/// <c>DockerBackupProvider.CreateAsync</c>, and rightly.
+/// </para>
+/// <para>
+/// <strong>A configured quiesce that fails produces no archive — there is no fallback, by design.</strong>
+/// <c>DockerBackupProvider.QuiesceAsync</c> converts every failure route (a refusal from the write guard, a
+/// rejected credential, an unreachable endpoint, a 30-second timeout, a <c>Success: false</c> reply) into
+/// <c>BackupQuiesceFailedException</c> before <c>CollectAsync</c> is reached, so no archive and no manifest
+/// are written. Continuing "best effort" would produce a file that looks exactly like a good backup and is
+/// not one — and the operator would only find out at restore time. Turning the channel <em>off</em> is the
+/// explicit, per-server way to say "archive without flushing"; it is never what a failure silently
+/// degrades into.
 /// </para>
 /// </remarks>
 public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsyncDisposable
@@ -43,13 +53,23 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
     private readonly IServerQueryService _query;
     private readonly ITransport _transport;
     private readonly BackupWiringOptions _options;
+    private readonly ServyxRconChannels _rcon;
     private readonly ConcurrentDictionary<string, Lazy<Task<IExecutionTarget>>> _sessions = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Creates a context source.</summary>
     /// <param name="query">Resolves a server id to the adopted container and its mount.</param>
     /// <param name="transport">The (write-guarded) transport sessions are opened through.</param>
     /// <param name="options">Where archives are read from and written to.</param>
-    public ServyxBackupContextSource(IServerQueryService query, ITransport transport, BackupWiringOptions options)
+    /// <param name="rcon">
+    /// The configured RCON control channels. Defaults to <see cref="ServyxRconChannels.None"/>, which
+    /// reproduces the pre-M2 behaviour exactly: no control channel, therefore no quiesce step, therefore an
+    /// archive of on-disk state that says so in its manifest.
+    /// </param>
+    public ServyxBackupContextSource(
+        IServerQueryService query,
+        ITransport transport,
+        BackupWiringOptions options,
+        ServyxRconChannels? rcon = null)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(transport);
@@ -58,6 +78,7 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
         _query = query;
         _transport = transport;
         _options = options;
+        _rcon = rcon ?? ServyxRconChannels.None;
     }
 
     /// <inheritdoc />
@@ -72,6 +93,11 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
         var containerName = detail.Summary.Name;
         var root = Normalize(_options.ContainerDataRoot ?? detail.MountContainerPath ?? BackupWiringOptions.DefaultContainerDataRoot);
         var target = await SessionAsync(containerName, root, ct).ConfigureAwait(false);
+
+        // Null unless the operator configured an RCON channel for this server. The pair below is all-or-
+        // nothing on purpose: a context carrying a quiesce step with no channel is refused by the provider,
+        // and a context carrying a channel with no step would open a control session it never used.
+        var control = _rcon.TryGetSession(detail.Summary.Id, containerName);
 
         var source = new BackupSource(
             BackupWiringOptions.DataSourceId,
@@ -99,10 +125,15 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
             ],
             DefaultRetention: _options.DefaultRetention,
 
-            // Null, deliberately, and not a fabricated step: see the type remarks. A context that declares
-            // a quiesce it has no control channel for is refused by the provider outright.
-            Quiesce: null,
-            Control: null);
+            // The definition's own backup.quiesce entry — { kind: control, channel: rcon, command: save,
+            // timeout: 30s } — attached only when there is a channel to issue it on. If it fails, the
+            // provider raises BackupQuiesceFailedException and writes nothing at all; there is deliberately
+            // no "archive anyway" path, because an un-flushed archive is indistinguishable from a good one
+            // until the day someone restores it.
+            Quiesce: control is null
+                ? null
+                : new QuiesceStep(RconWiringOptions.QuiesceCommandId, null, RconWiringOptions.QuiesceTimeout),
+            Control: control);
     }
 
     private Task<IExecutionTarget> SessionAsync(string containerName, string root, CancellationToken ct)

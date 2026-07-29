@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Rcon\Servyx.Infrastructure.Rcon.csproj" />
+    <!-- The point of implementing RCON at all is that DockerBackupProvider can flush a running world before
+         it archives it. "The quiesce happened before anything was captured" and "a failed quiesce produced
+         no archive" are statements about the two assemblies together, so they can only be asserted in a
+         test assembly that sees both. Neither source project references the other. -->
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+  </ItemGroup>
+
+</Project>

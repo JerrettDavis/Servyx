@@ -98,6 +98,10 @@ jobs:
       #     HttpMessageHandler for BOTH Azure hosts - login.microsoftonline.com and
       #     management.azure.com - so no Azure subscription, service principal,
       #     client secret, or outbound network access is required or attempted)
+      #   tests/Infrastructure/Servyx.Infrastructure.Rcon.Tests   (the Source RCON protocol is
+      #     exercised against a loopback TcpListener bound to port 0 on 127.0.0.1 that speaks the
+      #     wire format itself, so no game server, container, or outbound network access is
+      #     required or attempted)
       #   tests/Infrastructure/Servyx.Config.Tests
       #   tests/Servyx.Bdd.Tests
       #   tests/Presentation/Servyx.Web.Tests
@@ -117,6 +121,7 @@ jobs:
             "tests/Infrastructure/Servyx.Infrastructure.Process.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.DigitalOcean.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Azure.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Rcon.Tests"
             "tests/Infrastructure/Servyx.Config.Tests"
             "tests/Servyx.Bdd.Tests"
             "tests/Presentation/Servyx.Web.Tests"

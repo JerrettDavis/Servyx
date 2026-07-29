@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Deliberately the ONLY package reference in this assembly, and deliberately NOT a logging one.
+         "The RCON password is never logged" is a guarantee this project keeps structurally rather than by
+         review: there is no logging package here, so no reachable code path exists that could write the
+         password — or a packet containing it — anywhere. The same reasoning DigitalOceanApiClient documents
+         for its API token. The audited raw-command escape hatch takes an IRconAuditSink the host implements,
+         so the audit record is written by a layer that has a logger and never sees a credential. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application, for the same reason
+         Servyx.Infrastructure.Docker, Servyx.Infrastructure.Ssh and Servyx.Infrastructure.Process do:
+         Application's purpose is to consume IRconClient/IRconSession via DI, so a reference the other way
+         would create a cycle. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>
