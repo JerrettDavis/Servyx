@@ -34,6 +34,21 @@
          which would make the single-ITransport injection in ServyxBackupContextSource resolve to SSH and
          silently point Docker backups at the wrong machine. -->
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
+    <!-- The remaining provisioning adapters, so /deploy can offer more than one target. Every one of them is
+         individually opt-in behind Servyx:Provisioners:<name>:Enabled on top of Servyx:Provisioning:Enabled,
+         and a host that configures none composes none — see ProvisionerWiringOptions and
+         ProvisionerComposition. Referencing an assembly is not registering anything from it.
+
+         Note what is deliberately NOT taken from these four: none of AddServyxLocalProcess(),
+         AddServyxSshProvisioning() or AddServyxProcessProvisioning() is called, because each needs a second
+         ITransport in the container and ITransport is injected singly by ServyxBackupContextSource. And the
+         three cloud projects carry no PackageReference at all — not even DependencyInjection.Abstractions —
+         which is what lets them hold no logger and so have no path that could log an API token; they are
+         factory-composed at the root rather than given a registration extension, and must stay that way. -->
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Process\Servyx.Infrastructure.Process.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.DigitalOcean\Servyx.Infrastructure.DigitalOcean.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Azure\Servyx.Infrastructure.Azure.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Aws\Servyx.Infrastructure.Aws.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
     <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
   </ItemGroup>

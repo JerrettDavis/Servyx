@@ -135,6 +135,31 @@ if (provisioningGate.Enabled)
     // deliberately NOT part of AddServyxDocker() — see AddServyxDockerProvisioning's own remarks.
     builder.Services.AddServyxDockerProvisioning();
 
+    // ── The remaining provisioners ───────────────────────────────────────────────────────────────
+    //
+    // Individually opt-in on top of this gate, and absent by default: ProvisionerWiringOptions returns None
+    // unless a provisioner names itself under Servyx:Provisioners:<name>:Enabled. With nothing configured
+    // the two lines below register nothing whatsoever, so an operator who sets only the gate gets exactly
+    // the Docker-only composition the line above has always produced — no second provisioner, no second
+    // transport, no HTTP client, no secret resolved.
+    //
+    // A provisioner enabled without a value it cannot be constructed without — an endpoint, a region, a
+    // credential URN — fails this process at startup with the missing key named. Registering it anyway
+    // would put a target on /deploy whose first click is guaranteed to fail after the operator has already
+    // approved a plan; dropping it quietly would answer an explicit `Enabled = true` with silence. See
+    // ProvisionerWiringOptions.FromConfiguration.
+    //
+    // Credentials are locators only. Every one of these keys takes a secret:// URN resolved through
+    // ISecretStore at the point of use; there is no key anywhere in this block that accepts a token, a
+    // password, a client secret or an AWS key.
+    //
+    // AddServyxConfiguredProvisioners registers no ITransport — see its remarks. That is the same hazard
+    // the SSH backup block below documents: ITransport is injected singly by ServyxBackupContextSource, so
+    // a second registration would silently point Docker's backups at another machine.
+    var configuredProvisioners = ProvisionerWiringOptions.FromConfiguration(builder.Configuration, provisioningGate);
+    builder.Services.AddSingleton(configuredProvisioners);
+    builder.Services.AddServyxConfiguredProvisioners(configuredProvisioners);
+
     // Durable storage for the provisioning ledger — only composed when provisioning itself is enabled, so
     // a read-only host never gets a ServyxDbContext, a SQLite file, or an IProvisioningLedger in its
     // container. Servyx:Persistence:ConnectionString lets an operator point at a different file (or a
