@@ -1,0 +1,49 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- No PackageReference at all, deliberately - and this is the third time that sentence is written in this
+       repo, with the hardest argument behind it. DigitalOcean has no first-party .NET SDK, so hand-rolling was
+       the only maintained option. Azure has one and it was declined over its dependency closure and
+       Azure.Identity's ambient credential discovery. AWS has one too (AWSSDK.EC2 + AWSSDK.Core), and declining
+       it costs something the other two did not: AWS authentication is not a header, it is a signing algorithm.
+
+       The argument for declining it anyway:
+
+         * AWSSDK.Core carries its own credential-resolution chain (environment variables, the shared
+           credentials file, EC2/ECS instance metadata, SSO caches). That is the same objection raised against
+           Azure.Identity and it is the stronger one here, because instance-metadata resolution succeeds
+           silently on any EC2 host. Servyx's rule is that credentials come from ISecretStore by URN and from
+           nowhere else; a library whose default is to go looking is the opposite of that rule.
+         * AWSSDK.Core's credential type is `AWSCredentials`, which materialises the secret access key as a
+           `string` property. Servyx's SecretLease exists precisely so a secret is a zeroable byte[] and never
+           an interned, unerasable string. Using the SDK would mean giving that up at the one place it matters.
+         * The surface actually needed is five EC2 Query actions and one signing algorithm.
+
+       So SigV4 is implemented here from AWS's published specification over System.Security.Cryptography's
+       HMACSHA256 and SHA256, and the EC2 Query API over System.Net.Http + System.Xml.Linq - all of which ship
+       in the net10.0 shared framework, so "no new dependency" here is a fact about the build, not an
+       aspiration. The signer is validated against AWS's own published SigV4 test-suite vectors; see
+       AwsSigV4Tests, which pins the exact expected signatures.
+
+       Note the sibling infra projects reference Microsoft.Extensions.{DependencyInjection,Logging}.Abstractions
+       for their DI registration helpers; this project has neither, which is also why it can carry no logger and
+       therefore no code path that could log the AWS secret access key, a derived signing key, or a signature. -->
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application, for the same reason
+         Servyx.Infrastructure.Docker, .Ssh, .DigitalOcean and .Azure do: Application's purpose is to consume
+         IProvisioner/ITransport via DI, so a reference the other way would create a cycle. It also references
+         no other infrastructure project - in particular not Servyx.Infrastructure.Ssh, even though every
+         TargetDescriptor it produces is consumed by the SSH transport, and neither of the two existing cloud
+         adapters, even though this is the third instance of the same shape. That is the layering rule and it is
+         load-bearing here: if this project could see the SSH adapter, "shape I contains no install logic" would
+         be a matter of discipline rather than a matter of what is reachable. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

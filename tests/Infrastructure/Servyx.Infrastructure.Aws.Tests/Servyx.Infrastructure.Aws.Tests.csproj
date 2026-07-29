@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Aws\Servyx.Infrastructure.Aws.csproj" />
+    <!-- The whole point of shape I is that its output feeds shape H unchanged, and that claim can only be
+         asserted from an assembly that can see both adapters. Neither *source* project may reference the
+         other (infrastructure references Servyx.Domain only), so this reference exists for exactly that
+         assertion - see AwsShapeIToShapeHCompositionTests. The precedent is
+         Servyx.Infrastructure.DigitalOcean.Tests and Servyx.Infrastructure.Azure.Tests, which reference
+         Servyx.Infrastructure.Ssh for the same reason. -->
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
+  </ItemGroup>
+
+</Project>
