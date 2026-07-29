@@ -1,0 +1,69 @@
+@page "/backups"
+@inject IDashboardDataService Data
+
+<PageTitle>Backups - Servyx</PageTitle>
+
+<div class="svx-page-header">
+    <h2>Backups</h2>
+    <p class="svx-page-description">
+        Servyx-owned backup creation, retention, and restore land in Milestone 5. Below are the archives
+        already present on disk today, discovered read-only.
+    </p>
+</div>
+
+@if (_loading)
+{
+    <p>Loading backups…</p>
+}
+else if (_backups.Count == 0)
+{
+    <div class="svx-empty-state">
+        <h3>No backups found</h3>
+        <p>No adopted server has an on-disk backup directory yet.</p>
+    </div>
+}
+else
+{
+    <div class="svx-row-grid" role="list" aria-label="Backups">
+        <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;" aria-hidden="true">
+            <span>Server</span>
+            <span>File</span>
+            <span>Created</span>
+            <span>Size</span>
+            <span>Ownership</span>
+        </div>
+
+        @foreach (var backup in _backups)
+        {
+            <div class="svx-row-link" role="listitem" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;">
+                <span data-col-label="Server">@backup.ServerName</span>
+                <span data-col-label="File"><code>@backup.FileName</code></span>
+                <span data-col-label="Created">@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                <span data-col-label="Size">@FormatSize(backup.SizeBytes)</span>
+                <span data-col-label="Ownership">
+                    <span class="badge foreign-badge" tabindex="0"
+                          title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
+                        Foreign
+                    </span>
+                </span>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private bool _loading = true;
+    private IReadOnlyList<BackupEntry> _backups = [];
+
+    protected override async Task OnInitializedAsync()
+    {
+        _backups = await Data.GetAllBackupsAsync();
+        _loading = false;
+    }
+
+    private static string FormatSize(long bytes)
+    {
+        double mb = bytes / 1024.0 / 1024.0;
+        return mb >= 1024 ? $"{mb / 1024.0:0.0} GB" : $"{mb:0.0} MB";
+    }
+}

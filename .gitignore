@@ -264,6 +264,12 @@ Generated_Code/
 # because we have git ;-)
 _UpgradeReport_Files/
 Backup*/
+# ...but "Backup*/" is a Visual Studio upgrade-artifact rule, and Servyx has first-class source
+# directories called "Backups" (Servyx.Domain/Backups, Servyx.Infrastructure.Docker/Backups, and their
+# tests). Re-include those explicitly. The negation has to name the directory, not the files inside it:
+# git cannot re-include a file whose parent directory is excluded.
+!src/**/[Bb]ackups/
+!tests/**/[Bb]ackups/
 UpgradeLog*.XML
 UpgradeLog*.htm
 ServiceFabricBackup/
