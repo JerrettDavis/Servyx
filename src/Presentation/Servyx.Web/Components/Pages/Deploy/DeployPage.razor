@@ -141,28 +141,58 @@ else
                 the stages below before anything is applied.
             </p>
 
-            <div class="svx-deploy-form">
+            @* The form is rendered from the selected provisioner's schema, not from a branch on its id. A
+               target this build ships no schema for still gets a usable form — see ProvisionerFormCatalog. *@
+            @if (_schema.Description is not null)
+            {
+                <p class="svx-page-description" data-testid="provisioner-form-description">@_schema.Description</p>
+            }
+
+            <div class="svx-deploy-form" data-testid="provisioner-form"
+                 data-schema-for="@_schema.ProvisionerId">
                 <label>
                     <span>Provisioner</span>
-                    <select @bind="_selectedProvisionerId" data-testid="provisioner-select">
+                    <select @bind="_selectedProvisionerId" @bind:after="OnProvisionerChanged"
+                            data-testid="provisioner-select">
                         @foreach (var provisioner in _provisioners)
                         {
                             <option value="@provisioner.ProvisionerId">@provisioner.ProvisionerId</option>
                         }
                     </select>
                 </label>
-                <label>
-                    <span>Container name</span>
-                    <input @bind="_containerName" data-testid="container-name" />
-                </label>
-                <label>
-                    <span>Image</span>
-                    <input @bind="_image" data-testid="image" />
-                </label>
-                <label>
-                    <span>Port (host → container, tcp)</span>
-                    <input @bind="_hostPort" type="number" data-testid="host-port" />
-                </label>
+
+                @foreach (var field in _schema.Fields)
+                {
+                    <label data-testid="provisioner-field" data-field-id="@field.Id">
+                        <span>@field.Label</span>
+                        @if (field.Kind is ProvisionerFieldKind.Multiline)
+                        {
+                            <textarea rows="3" data-testid="@field.Id" value="@ValueOf(field)"
+                                      @onchange="e => SetField(field, e.Value)"></textarea>
+                        }
+                        else
+                        {
+                            <input type="@(field.Kind is ProvisionerFieldKind.Number ? "number" : "text")"
+                                   data-testid="@field.Id" value="@ValueOf(field)"
+                                   @onchange="e => SetField(field, e.Value)" />
+                        }
+                        @if (field.Hint is not null)
+                        {
+                            <small class="svx-field-hint">@field.Hint</small>
+                        }
+                    </label>
+                }
+
+                @if (_schema.AllowsAdditionalParameters)
+                {
+                    <label class="svx-deploy-form-wide">
+                        <span>Parameters</span>
+                        <textarea rows="4" data-testid="additional-parameters"
+                                  value="@_additionalParameters"
+                                  @onchange="e => _additionalParameters = e.Value?.ToString() ?? string.Empty"></textarea>
+                    </label>
+                }
+
                 <button type="button" class="btn btn-primary" data-testid="preview-plan"
                         @onclick="PreviewPlanAsync">
                     Preview plan
@@ -684,9 +714,15 @@ else
     private bool _applying;
 
     private string _selectedProvisionerId = string.Empty;
-    private string _containerName = "servyx-preview";
-    private string _image = "ghcr.io/thijsvanloef/palworld-server-docker:latest";
-    private int _hostPort = 8211;
+
+    // What the form is made of, and what has been typed into it. The catalog answers for every provisioner
+    // id — including one it has never heard of — so nothing on this page ever branches on a provisioner's
+    // name, and adding an eighth adapter needs no edit here at all.
+    private ProvisionerFormCatalog _formCatalog = ProvisionerFormCatalog.CreateDefault();
+    private ProvisionerFormSchema _schema = ProvisionerFormCatalog.Undescribed(string.Empty);
+    private Dictionary<string, string> _fieldValues = [];
+    private string _additionalParameters = string.Empty;
+
     private string _instanceId = string.Empty;
     private string _jobId = string.Empty;
     private string _gameDefinitionId = "palworld";
@@ -719,11 +755,18 @@ else
             return;
         }
 
+        string? containerImage = null;
         if (Services.GetService(typeof(PalworldDefinitionInfo)) is PalworldDefinitionInfo definition)
         {
             _gameDefinitionId = definition.GameId;
-            _image = definition.DefaultImage;
+            containerImage = definition.DefaultImage;
         }
+
+        // Resolved like everything else on this page — optionally — so a host that registers no catalog gets
+        // the shipped one rather than a render-time failure. The bundled definition's image is handed to it
+        // so Docker's Image field still starts where it always did.
+        _formCatalog = Services.GetService(typeof(ProvisionerFormCatalog)) as ProvisionerFormCatalog
+            ?? ProvisionerFormCatalog.CreateDefault(containerImage);
 
         // Fixed once per page instance so repeated previews of unchanged inputs produce the same plan hash.
         _instanceId = $"preview-{Guid.NewGuid():n}"[..20];
@@ -731,8 +774,53 @@ else
 
         _provisioners = _dashboard.ListProvisioners();
         _selectedProvisionerId = _provisioners.Count > 0 ? _provisioners[0].ProvisionerId : string.Empty;
+        LoadFormForSelectedProvisioner();
         await RefreshLedgerAsync();
     }
+
+    /// <summary>
+    /// Replaces the whole form — schema, values, free-form block — with the selected provisioner's.
+    /// </summary>
+    /// <remarks>
+    /// A replacement rather than a merge, and that is the whole point. Values are keyed by field id, and two
+    /// provisioners can spell the same id (<c>image</c> means a container image to Docker and an AMI to EC2),
+    /// so anything short of discarding the previous state would let a value typed for one target be sent to
+    /// another. Edits are therefore lost when the target changes, which is the correct trade: a lost edit is
+    /// visible, and a silently retargeted one is not.
+    /// </remarks>
+    private void LoadFormForSelectedProvisioner()
+    {
+        _schema = _formCatalog.For(_selectedProvisionerId);
+        _fieldValues = _schema.Defaults();
+        _additionalParameters = string.Empty;
+    }
+
+    /// <summary>
+    /// Reacts to the target changing: a new form, and no leftover plan.
+    /// </summary>
+    /// <remarks>
+    /// The plan is discarded because it describes what the <em>previous</em> provisioner would do, and
+    /// leaving it on screen beside a different selected target would invite a confirmation of one thing that
+    /// reads as a confirmation of another. Nothing here weakens the confirmation discipline — the plan hash
+    /// check would already have refused such an apply as stale; this simply refuses to show the trap.
+    /// </remarks>
+    private void OnProvisionerChanged()
+    {
+        LoadFormForSelectedProvisioner();
+
+        _plan = null;
+        _planError = null;
+        _applyResult = null;
+        _applyError = null;
+    }
+
+    /// <summary>The current value of <paramref name="field"/>, or empty if it has never been set.</summary>
+    private string ValueOf(ProvisionerFormField field) =>
+        _fieldValues.TryGetValue(field.Id, out var value) ? value : string.Empty;
+
+    /// <summary>Records what was typed into <paramref name="field"/>.</summary>
+    private void SetField(ProvisionerFormField field, object? value) =>
+        _fieldValues[field.Id] = value?.ToString() ?? string.Empty;
 
     /// <summary>
     /// Re-reads the ledger and then, for every row it returned, asks whether the live resource still
@@ -848,8 +936,15 @@ else
 
         try
         {
-            _updateResult = await _dashboard.PlanUpdateAsync(
-                entry.Intent.ProvisionerId, handle, BuildRequest());
+            if (!TryBuildRequest(out var desired, out var refusal))
+            {
+                _updateError = refusal;
+            }
+            else
+            {
+                _updateResult = await _dashboard.PlanUpdateAsync(
+                    entry.Intent.ProvisionerId, handle, desired!);
+            }
         }
         catch (Exception ex)
         {
@@ -911,6 +1006,14 @@ else
             return;
         }
 
+        // Same refusal as everywhere else: an empty required control means the provider is not contacted.
+        if (!TryBuildRequest(out var desired, out var refusal))
+        {
+            _updateApplyResult = null;
+            _updateApplyError = refusal;
+            return;
+        }
+
         DataImpactAcknowledgement? acknowledgement = plan.DataImpact switch
         {
             DataImpact.AtRisk => DataImpactAcknowledgement.AtRisk(),
@@ -927,7 +1030,7 @@ else
             _updateApplyResult = await _dashboard.ApplyUpdateAsync(
                 entry.Intent.ProvisionerId,
                 handle,
-                BuildRequest(),
+                desired!,
                 plan.PlanHash,
                 acknowledgement,
                 entry.Intent.JobId);
@@ -976,9 +1079,17 @@ else
             return;
         }
 
+        // Refused before the provisioner is asked anything, so an empty control produces a message naming
+        // that control rather than a provider-side exception surfaced as "could not build a plan".
+        if (!TryBuildRequest(out var request, out var refusal))
+        {
+            _planError = refusal;
+            return;
+        }
+
         try
         {
-            _plan = await _dashboard.PlanAsync(_selectedProvisionerId, BuildRequest());
+            _plan = await _dashboard.PlanAsync(_selectedProvisionerId, request!);
         }
         catch (Exception ex)
         {
@@ -1016,6 +1127,15 @@ else
             return;
         }
 
+        // The same refusal the preview makes, and for the same reason: an input emptied after previewing
+        // must not reach the executor at all, rather than reaching it with a parameter missing.
+        if (!TryBuildRequest(out var request, out var refusal))
+        {
+            _applyResult = null;
+            _applyError = refusal;
+            return;
+        }
+
         _applying = true;
         _applyResult = null;
         _applyError = null;
@@ -1024,7 +1144,7 @@ else
         {
             _applyResult = await _dashboard.ApplyAsync(
                 _selectedProvisionerId,
-                BuildRequest(),
+                request!,
                 _plan.PlanHash,
                 _jobId);
         }
@@ -1054,26 +1174,27 @@ else
         }
     }
 
-    private ProvisioningRequest BuildRequest()
-    {
-        var connectorId = $"{_selectedProvisionerId}-local";
-        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["image"] = _image,
-            ["containerName"] = _containerName,
-            ["instanceId"] = _instanceId,
-            ["jobId"] = _jobId,
-            ["connectorId"] = connectorId,
-            ["restartPolicy"] = "unless-stopped",
-            [$"port:{_hostPort}/tcp"] = _hostPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
-        };
-
-        return new ProvisioningRequest(
-            GameDefinitionId: _gameDefinitionId,
-            DeploymentProfileId: "docker",
-            ConnectorId: connectorId,
-            Parameters: parameters);
-    }
+    /// <summary>
+    /// Builds the request the selected provisioner would be handed, or refuses — naming the empty control —
+    /// without calling anything.
+    /// </summary>
+    /// <remarks>
+    /// Every path on this page that reaches a provisioner goes through here, so a refusal is a refusal
+    /// everywhere: no plan is computed, no operation is built, and <c>ProvisioningExecutor</c> is never
+    /// entered. The request itself is assembled entirely from the schema — this method knows no provisioner's
+    /// name and no provisioner's parameter keys.
+    /// </remarks>
+    private bool TryBuildRequest(out ProvisioningRequest? request, out string? refusal) =>
+        _schema.TryBuildRequest(
+            _fieldValues,
+            new DeployRequestIdentity(
+                GameDefinitionId: _gameDefinitionId,
+                InstanceId: _instanceId,
+                JobId: _jobId,
+                ConnectorId: $"{_selectedProvisionerId}-local"),
+            _additionalParameters,
+            out request,
+            out refusal);
 
     /// <summary>Splits a flags value into its individual set bits, or a single "none" chip.</summary>
     private static IReadOnlyList<string> DescribeCapabilities(ProvisioningCapabilities capabilities)

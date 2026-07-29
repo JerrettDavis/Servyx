@@ -15,7 +15,8 @@
 }
 
 .svx-deploy-form input,
-.svx-deploy-form select {
+.svx-deploy-form select,
+.svx-deploy-form textarea {
     min-width: 12rem;
     padding: 0.35rem 0.5rem;
     border-radius: 0.35rem;
@@ -23,6 +24,28 @@
     background: rgba(255, 255, 255, 0.04);
     color: inherit;
     font-size: 0.85rem;
+}
+
+.svx-deploy-form textarea {
+    min-width: 22rem;
+    font-family: inherit;
+    resize: vertical;
+}
+
+/* The free-form editor an undescribed provisioner gets is the whole form, so it takes the whole row. */
+.svx-deploy-form-wide {
+    flex-basis: 100%;
+}
+
+.svx-deploy-form-wide textarea {
+    width: 100%;
+}
+
+/* A hint explains an input; it must never be mistaken for the input's value or for an error. */
+.svx-field-hint {
+    max-width: 22rem;
+    font-size: 0.72rem;
+    opacity: 0.65;
 }
 
 .svx-deploy-error {
