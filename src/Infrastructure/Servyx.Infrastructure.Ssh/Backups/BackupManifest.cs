@@ -38,6 +38,13 @@ namespace Servyx.Infrastructure.Ssh.Backups;
 /// <param name="ArchiveSizeBytes">Size of the archive in bytes.</param>
 /// <param name="ArchiveRoot">The absolute host directory the archive's entry names are relative to.</param>
 /// <param name="Entries">Every archive entry name, in the order <c>tar</c> reported them.</param>
+/// <param name="QuiescedWith">
+/// The control command id used to flush the server before archiving, or <see langword="null"/> when the
+/// context declared no quiesce step. This is what keeps an archive of un-flushed state
+/// <em>distinguishable</em> from a flushed one after the fact: without it, a backup taken from a server
+/// with no control channel and a backup taken after a successful <c>save</c> would be byte-identical in
+/// every field an operator can see, and the difference would only surface at restore time.
+/// </param>
 public sealed record BackupManifest(
     int SchemaVersion,
     string ServerId,
@@ -46,7 +53,8 @@ public sealed record BackupManifest(
     string ArchiveSha256,
     long ArchiveSizeBytes,
     string? ArchiveRoot,
-    IReadOnlyList<string> Entries)
+    IReadOnlyList<string> Entries,
+    string? QuiescedWith = null)
 {
     /// <summary>The schema version this build writes.</summary>
     public const int CurrentSchemaVersion = 1;

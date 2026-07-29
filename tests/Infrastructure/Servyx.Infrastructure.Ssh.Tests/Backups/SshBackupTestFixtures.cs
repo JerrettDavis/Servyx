@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using NSubstitute;
 using Servyx.Domain.Backups;
+using Servyx.Domain.Rcon;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Ssh.Backups;
 
@@ -548,6 +549,15 @@ internal sealed class SshBackupScenario
     internal IReadOnlyList<ForeignSshBackupDirectory> Foreign { get; set; } =
         [new ForeignSshBackupDirectory("stub-ssh-cron", ForeignDirectory, "*.tar.gz")];
 
+    /// <summary>
+    /// The control channel a quiesce is issued through, or null when the operator configured none. Null is
+    /// the pre-quiesce shape and must stay byte-for-byte equivalent to it.
+    /// </summary>
+    internal IRconSession? Control { get; set; }
+
+    /// <summary>The pre-archive flush, or null when the context declares none.</summary>
+    internal QuiesceStep? Quiesce { get; set; }
+
     /// <summary>The target handed to the provider — guarded when <see cref="WriteMode"/> is set, bare otherwise.</summary>
     internal IExecutionTarget ContextTarget => WriteMode is { } mode
         ? new WriteGuardedExecutionTarget(Host.Target, mode, ServerId)
@@ -610,7 +620,9 @@ internal sealed class SshBackupScenario
         Exclude,
         StoreDirectory,
         Foreign,
-        Retention);
+        Retention,
+        Quiesce,
+        Control);
 
     internal StaticSshContextSource Source() => new(Build());
 

@@ -71,6 +71,17 @@ namespace Servyx.Infrastructure.Ssh.Backups;
 /// the operation — before a single command is issued. See <see cref="ResolveWriteMode"/>.
 /// </para>
 /// <para>
+/// <strong>A configured quiesce that fails produces no archive.</strong> When the context carries a
+/// <see cref="QuiesceStep"/> — which the composition root attaches only when the operator configured a
+/// control channel for that server — <see cref="CreateAsync"/> issues it through the context's
+/// <see cref="Servyx.Domain.Rcon.IRconSession"/> before the first command reaches the host, and converts
+/// every failure route into <see cref="BackupQuiesceFailedException"/>. Because the flush happens ahead of
+/// even the <c>mkdir</c>, a failed quiesce leaves no archive, no manifest and no artifact directory. A
+/// context with no step is unchanged from before: the host's <c>tar</c> archives whatever the server last
+/// wrote to disk, and the manifest's <c>quiescedWith</c> field records that nothing was flushed, so the two
+/// kinds of archive stay distinguishable. See <see cref="QuiesceAsync"/>.
+/// </para>
+/// <para>
 /// <strong>Restores are planned, then applied.</strong> <see cref="PlanRestoreAsync"/> reads the manifest and
 /// returns a <see cref="RestorePlan"/> naming every path a restore would overwrite; it writes nothing and
 /// runs nothing. <see cref="RestoreAsync"/> accepts only a plan id, and the plan is single-use,
@@ -137,14 +148,16 @@ public sealed class SshBackupProvider : IBackupProvider
 
     /// <inheritdoc />
     /// <remarks>
-    /// Runs the host's <c>tar</c> to write the archive straight into the artifact directory, then reads back
-    /// its entry names and content hash and writes the sidecar manifest. The artifact directory is always
-    /// excluded from the archive, so an archive can never contain a previous archive. A non-zero <c>tar</c>
-    /// exit removes whatever partial archive it left and throws
-    /// <see cref="SshBackupCommandFailedException"/> — a half-written tarball with a manifest beside it
-    /// claiming it is complete is worse than no backup.
+    /// Quiesces first when the context declares a quiesce step, then runs the host's <c>tar</c> to write the
+    /// archive straight into the artifact directory, then reads back its entry names and content hash and
+    /// writes the sidecar manifest. The artifact directory is always excluded from the archive, so an archive
+    /// can never contain a previous archive. A non-zero <c>tar</c> exit removes whatever partial archive it
+    /// left and throws <see cref="SshBackupCommandFailedException"/> — a half-written tarball with a manifest
+    /// beside it claiming it is complete is worse than no backup. A failed quiesce aborts before <em>any</em>
+    /// command is issued at all — see <see cref="BackupQuiesceFailedException"/>.
     /// </remarks>
     /// <exception cref="WritesDisabledException">The target's write mode is not <see cref="WriteMode.Enabled"/>.</exception>
+    /// <exception cref="BackupQuiesceFailedException">A declared quiesce step failed, timed out, or had no channel.</exception>
     public async Task<BackupArtifact> CreateAsync(string serverId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
@@ -158,6 +171,12 @@ public sealed class SshBackupProvider : IBackupProvider
         var excludes = EffectiveExcludes(context);
         var root = Absolute(context.Root);
         var storeDirectory = StoreDirectoryOf(context);
+
+        // Flush the server's in-memory state to disk before the host reads a byte of it. This sits after the
+        // cheap, purely-local validation above — there is no point asking a live server to stall for a backup
+        // whose include set was going to be rejected anyway — and before every command below, so a quiesce
+        // that fails leaves not even the artifact directory behind.
+        await QuiesceAsync(context, ct).ConfigureAwait(false);
 
         await RunAsync(context, "mkdir", ["-p", storeDirectory], ct).ConfigureAwait(false);
 
@@ -197,7 +216,8 @@ public sealed class SshBackupProvider : IBackupProvider
             sha256,
             sizeBytes,
             root,
-            entries);
+            entries,
+            context.Quiesce?.CommandId);
 
         await context.Target.WriteFileAsync(
             HostPaths.Resolve(archivePath + ManifestSuffix),
@@ -490,7 +510,73 @@ public sealed class SshBackupProvider : IBackupProvider
                 "root it is backing up, because the next archive would then contain the previous one.");
         }
 
+        if (context.Quiesce is not null && context.Control is null)
+        {
+            throw new BackupQuiesceFailedException(
+                $"Server '{serverId}' declares a '{context.Quiesce.CommandId}' quiesce step but has no control channel to issue it on.",
+                serverId,
+                context.Quiesce.CommandId);
+        }
+
         return context;
+    }
+
+    /// <summary>
+    /// Runs the declared pre-archive flush, converting <em>every</em> failure route into
+    /// <see cref="BackupQuiesceFailedException"/> before <see cref="CreateAsync"/> issues its first command.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// There is deliberately no "archive anyway" path. The channel's <em>presence</em> is the operator's
+    /// opt-in: a server with no control channel configured carries no step here and archives on-disk state
+    /// exactly as it always has, saying so in the manifest's <c>quiescedWith</c> field. A server that does
+    /// carry one and cannot complete it produces nothing — a refusal from the write guard, a rejected
+    /// credential, an unreachable endpoint, a timeout and a <c>Success: false</c> reply all land here and all
+    /// abort. Degrading to an un-flushed archive would produce a file that looks exactly like a good backup
+    /// and is not one, and the operator would only find out at restore time.
+    /// </para>
+    /// <para>
+    /// The caller's own cancellation is re-thrown untouched: an operator who cancelled the backup wants a
+    /// cancellation, not a report that the game server failed to save.
+    /// </para>
+    /// </remarks>
+    private async Task QuiesceAsync(SshBackupContext context, CancellationToken ct)
+    {
+        if (context.Quiesce is not { } step)
+        {
+            return;
+        }
+
+        // GetContextAsync already refused a context that declares a quiesce with no channel.
+        var control = context.Control!;
+
+        try
+        {
+            using var timeout = new CancellationTokenSource(step.Timeout, _timeProvider);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, timeout.Token);
+
+            var response = await control.InvokeAsync(step.CommandId, step.Arguments, linked.Token).ConfigureAwait(false);
+            if (!response.Success)
+            {
+                throw new BackupQuiesceFailedException(
+                    $"Quiesce command '{step.CommandId}' on server '{context.ServerId}' reported failure: {response.Text}",
+                    context.ServerId,
+                    step.CommandId);
+            }
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new BackupQuiesceFailedException(
+                $"Quiesce command '{step.CommandId}' on server '{context.ServerId}' did not complete within {step.Timeout}.",
+                context.ServerId,
+                step.CommandId);
+        }
+        catch (Exception ex) when (ex is not BackupQuiesceFailedException and not OperationCanceledException)
+        {
+            throw new BackupQuiesceFailedException(
+                $"Quiesce command '{step.CommandId}' on server '{context.ServerId}' failed: {ex.Message}",
+                ex);
+        }
     }
 
     /// <summary>
