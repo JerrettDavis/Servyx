@@ -137,6 +137,34 @@ The `WriteMode` enum carries three values with distinct semantics:
 - **`PreviewOnly`** — Plans may be computed and diffs rendered via `PreviewAsync`, but `ApplyAsync` refuses to run.
 - **`Enabled`** — Writes are permitted, subject to per-plan approval and audit logging.
 
+As shipped in M4 the decorator is `WriteGuardedExecutionTarget`
+(`Servyx.Domain.Transport`), applied by `WriteGuardedTransport`, which is what
+every transport DI extension registers instead of the concrete transport. Two
+details are worth stating because they are easy to get wrong:
+
+- **`ExecuteAsync` is not gated by write mode.** `docker exec` can mutate, but
+  Servyx classifies control operations by the `readOnly` flag their definition
+  declares, not by verb. Gating the raw exec channel would block M2's
+  read-only control probes on exactly the servers they exist for. Files are
+  guarded here; commands are guarded by the command classifier.
+- **At this seam `PreviewOnly` refuses precisely what `ReadOnly` refuses.**
+  Previewing is reading; the distinction between the two modes lives in the
+  plan engine (`PreviewAsync` vs `ApplyAsync`), one layer up.
+
+Write posture is resolved per target from `WriteModeGrant`s the composition
+root registers — never a process-wide switch, and a grant that names no
+specific target cannot be constructed. `Servyx.Web` reads them from
+`Servyx:Servers:<container>:WriteMode`, only when `Servyx:Provisioning:Enabled`
+is open.
+
+The architecture test is
+`Servyx.Infrastructure.Ssh.Tests.TransportWriteGuardArchitectureTests` — the
+only assembly that sees all three transports. It carries one documented
+exemption: `AddServyxLocalProcess` still registers `LocalProcessTransport`
+unguarded, because existing tests pin both that registration's concrete type
+and `ConnectAsync`'s concrete return type. Closing it belongs to M8, and the
+test fails if the exemption list grows.
+
 ### `IConfigFormatAdapter`
 
 Round-trip fidelity is a hard requirement: `Render(Parse(x)) == x`

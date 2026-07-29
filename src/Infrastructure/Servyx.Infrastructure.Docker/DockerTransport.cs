@@ -19,12 +19,25 @@ public sealed class DockerTransport : ITransport
 {
     private readonly IDockerClientFactory _clientFactory;
     private readonly IDockerEnvironment _environment;
+    private readonly IWriteModeResolver _writeModes;
 
     /// <summary>Creates a <see cref="DockerTransport"/>, optionally substituting its client factory and environment for testing.</summary>
-    public DockerTransport(IDockerClientFactory? clientFactory = null, IDockerEnvironment? environment = null)
+    /// <param name="clientFactory">Creates the Docker client for a resolved endpoint.</param>
+    /// <param name="environment">Supplies environment/context information for endpoint resolution.</param>
+    /// <param name="writeModes">
+    /// Resolves the write posture of each target this transport connects to, which decides whether the
+    /// <see cref="DockerExecutionTarget"/> it builds is constructed write-capable at all. Defaults to
+    /// <see cref="ReadOnlyWriteModeResolver"/>, so a transport constructed with no argument produces
+    /// sessions that refuse every write — the M1 behaviour, unchanged.
+    /// </param>
+    public DockerTransport(
+        IDockerClientFactory? clientFactory = null,
+        IDockerEnvironment? environment = null,
+        IWriteModeResolver? writeModes = null)
     {
         _clientFactory = clientFactory ?? new DockerClientFactory();
         _environment = environment ?? new SystemDockerEnvironment();
+        _writeModes = writeModes ?? ReadOnlyWriteModeResolver.Instance;
     }
 
     /// <inheritdoc />
@@ -89,7 +102,17 @@ public sealed class DockerTransport : ITransport
         var containerRef = ResolveContainerRef(target);
         var containerRootPath = ResolveContainerRootPath(target);
 
-        IExecutionTarget executionTarget = new DockerExecutionTarget(client, containerRef, containerRootPath, ownsClient: true);
+        // The resolved mode decides whether the session is even capable of writing. The structural refusal
+        // still lives in WriteGuardedExecutionTarget, which wraps whatever this returns (see
+        // WriteGuardedTransport); constructing the inner target read-only as well means a write reaching a
+        // mis-wired composition would be refused twice rather than once.
+        IExecutionTarget executionTarget = new DockerExecutionTarget(
+            client,
+            containerRef,
+            containerRootPath,
+            ownsClient: true,
+            writeMode: _writeModes.Resolve(target));
+
         return Task.FromResult(executionTarget);
     }
 

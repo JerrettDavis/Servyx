@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Transport;
 
@@ -18,12 +19,26 @@ public static class ServiceCollectionExtensions
     /// this project depends on transitively through <c>Servyx.Domain</c> only, not directly; callers must
     /// register those separately (or via that project's own DI extension) before resolving
     /// <see cref="ITransport"/>/<see cref="IConnectorPool"/> here.
+    /// <para>
+    /// The registered <see cref="ITransport"/> is a <see cref="WriteGuardedTransport"/>, not a bare
+    /// <see cref="SshTransport"/>: no Servyx transport may reach a caller without the write guard in front
+    /// of it, and <c>TransportWriteGuardArchitectureTests</c> asserts it. SFTP writes are genuinely
+    /// implemented here (unlike Docker's, which arrived only in M4), so without this the SSH transport
+    /// would be the one hole in the guarantee. Write posture comes from <see cref="WriteModeGrant"/>s the
+    /// composition root registers; <c>AddServyxSshProvisioning</c> registers one for the single endpoint it
+    /// was configured with, which is how provisioning keeps its marker-file writes.
+    /// </para>
     /// </remarks>
     public static IServiceCollection AddServyxSsh(this IServiceCollection services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        services.AddSingleton<ITransport, SshTransport>();
+        services.TryAddSingleton<IWriteModeResolver>(sp =>
+            new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>()));
+
+        services.AddSingleton<ITransport>(sp => new WriteGuardedTransport(
+            ActivatorUtilities.CreateInstance<SshTransport>(sp),
+            sp.GetRequiredService<IWriteModeResolver>()));
 
         services.AddSingleton<IConnectorPool>(sp => new ConnectorPool(
             connectorFactory: (key, _) => throw new InvalidOperationException(

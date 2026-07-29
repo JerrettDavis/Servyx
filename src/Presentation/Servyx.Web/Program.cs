@@ -103,6 +103,19 @@ builder.Services.AddSingleton(provisioningGate);
 
 if (provisioningGate.Enabled)
 {
+    // ── Per-server write mode ────────────────────────────────────────────────────────────────────
+    //
+    // The only thing in this process that can make a transport session's WriteFileAsync/DeleteAsync do
+    // anything other than throw WritesDisabledException. Each grant names ONE server, read from
+    // Servyx:Servers:<container>:WriteMode; a server with no entry stays ReadOnly, and there is
+    // deliberately no key that enables writes for everything the daemon can see — WriteModeGrant refuses
+    // to construct such a thing. Registered inside this block, so with the provisioning flag off the
+    // container holds no grants and the write guard refuses everywhere, exactly as it did before M4.
+    foreach (var writeGrant in ServerWriteModes.ReadGrants(builder.Configuration, provisioningGate))
+    {
+        builder.Services.AddSingleton(writeGrant);
+    }
+
     // The one call in this file that makes container creation/destruction reachable at all. It is
     // deliberately NOT part of AddServyxDocker() — see AddServyxDockerProvisioning's own remarks.
     builder.Services.AddServyxDockerProvisioning();

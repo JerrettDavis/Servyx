@@ -59,6 +59,13 @@ public static class SshProvisioningServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
         ArgumentException.ThrowIfNullOrWhiteSpace(endpoint);
 
+        // AddServyxSsh() puts a write guard in front of the SSH transport, so the provisioner's own marker
+        // writes and sweeps would be refused without an explicit grant. This is that grant, and it is scoped
+        // to exactly the endpoint this method was configured with — the host being provisioned, named at the
+        // composition root, not "any host this transport can reach". A caller cannot forge it: nothing
+        // downstream can register a grant, only whoever writes this line.
+        services.AddSingleton(new WriteModeGrant(WriteMode.Enabled, SshProcessProvisioner.SshTransportId, endpoint));
+
         services.AddSingleton(sp =>
         {
             var transport = sp.GetServices<ITransport>()

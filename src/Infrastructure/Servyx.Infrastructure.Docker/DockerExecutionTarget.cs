@@ -1,5 +1,6 @@
 using System.Formats.Tar;
 using System.Net;
+using System.Security.Cryptography;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 using Servyx.Domain.Transport;
@@ -11,11 +12,30 @@ namespace Servyx.Infrastructure.Docker;
 /// Docker Engine API.
 /// </summary>
 /// <remarks>
-/// This milestone is strictly read-only. File reads are implemented via the container archive API
-/// (<c>GetArchiveFromContainerAsync</c>, the same mechanism behind <c>docker cp</c>) rather than by
-/// shelling out. <see cref="ExecuteAsync"/>/<see cref="ExecuteStreamingAsync"/> require <c>docker exec</c>,
-/// which is out of scope until M2, and <see cref="WriteFileAsync"/>/<see cref="DeleteAsync"/> are
-/// unconditionally disabled.
+/// <para>
+/// File reads are implemented via the container archive API (<c>GetArchiveFromContainerAsync</c>, the same
+/// mechanism behind <c>docker cp</c>) rather than by shelling out.
+/// <see cref="ExecuteAsync"/>/<see cref="ExecuteStreamingAsync"/> — the general-purpose
+/// <c>docker exec</c> command channel — remain out of scope until M2 and still throw
+/// <see cref="NotSupportedException"/>.
+/// </para>
+/// <para>
+/// <b>Writes are refused unless this instance was constructed write-capable.</b> The
+/// <c>writeMode</c> constructor parameter defaults to <see cref="WriteMode.ReadOnly"/>, so every existing
+/// construction site — and every caller who does not deliberately opt in — gets exactly the M1 behaviour:
+/// <see cref="WriteFileAsync"/> and <see cref="DeleteAsync"/> throw <see cref="WritesDisabledException"/>
+/// before any I/O occurs. Being constructed with <see cref="WriteMode.Enabled"/> only makes this instance
+/// <em>capable</em>; the structural enforcement that decides which servers get such an instance is
+/// <see cref="WriteGuardedExecutionTarget"/>, which every transport-produced session is wrapped in.
+/// </para>
+/// <para>
+/// A permitted write uses the narrowest exec this type is willing to perform: content is placed as a
+/// temporary sibling with <c>ExtractArchiveToContainerAsync</c> and then moved over the target with a
+/// single <c>mv -f</c>, because the Engine API has no rename endpoint and an in-place archive extraction is
+/// not atomic. <see cref="DeleteAsync"/> likewise runs a single <c>rm -f</c>. Neither goes through
+/// <see cref="ExecuteAsync"/>: those two argv vectors are fixed, and the general command channel staying
+/// closed until M2 is a separate promise from this one.
+/// </para>
 /// </remarks>
 public sealed class DockerExecutionTarget : IExecutionTarget
 {
@@ -23,6 +43,7 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     private readonly string _containerRef;
     private readonly string _containerRootPath;
     private readonly bool _ownsClient;
+    private readonly WriteMode _writeMode;
     private bool _disposed;
 
     /// <summary>Creates a target bound to a specific container.</summary>
@@ -33,7 +54,16 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     /// relative to (e.g. <c>/palworld</c>). Defaults to <c>/</c>.
     /// </param>
     /// <param name="ownsClient">Whether this instance disposes <paramref name="client"/> when it is itself disposed.</param>
-    public DockerExecutionTarget(IDockerClient client, string containerRef, string containerRootPath = "/", bool ownsClient = false)
+    /// <param name="writeMode">
+    /// The write posture this instance was constructed for. Defaults to <see cref="WriteMode.ReadOnly"/>,
+    /// under which <see cref="WriteFileAsync"/> and <see cref="DeleteAsync"/> refuse before any I/O.
+    /// </param>
+    public DockerExecutionTarget(
+        IDockerClient client,
+        string containerRef,
+        string containerRootPath = "/",
+        bool ownsClient = false,
+        WriteMode writeMode = WriteMode.ReadOnly)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentException.ThrowIfNullOrWhiteSpace(containerRef);
@@ -42,7 +72,11 @@ public sealed class DockerExecutionTarget : IExecutionTarget
         _containerRef = containerRef;
         _containerRootPath = string.IsNullOrWhiteSpace(containerRootPath) ? "/" : containerRootPath;
         _ownsClient = ownsClient;
+        _writeMode = writeMode;
     }
+
+    /// <summary>The write posture this instance was constructed for.</summary>
+    public WriteMode WriteMode => _writeMode;
 
     /// <inheritdoc />
     /// <exception cref="NotSupportedException">
@@ -256,16 +290,252 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     }
 
     /// <inheritdoc />
-    /// <exception cref="WritesDisabledException">Always thrown: file writes are disabled in this milestone.</exception>
-    public Task<FileWriteReceipt> WriteFileAsync(TargetPath path, Stream content, FileWriteOptions options, CancellationToken ct = default) =>
-        throw new WritesDisabledException(
-            "Docker execution target file writes are disabled in this milestone (M1), which is strictly read-only.");
+    /// <remarks>
+    /// The temporary sibling is written into the same directory as the target — a temp path anywhere else
+    /// would make the final <c>mv</c> a cross-device copy and therefore non-atomic — and is cleaned up if
+    /// the move fails. The pre-image is read and hashed before anything is placed, so a mismatched
+    /// <see cref="FileWriteOptions.ExpectedPreImageHash"/> aborts with no temporary file ever created.
+    /// </remarks>
+    /// <exception cref="WritesDisabledException">
+    /// This instance was not constructed with <see cref="WriteMode.Enabled"/>. Thrown synchronously, before
+    /// <paramref name="content"/> is read and before any request reaches the daemon.
+    /// </exception>
+    /// <exception cref="TargetDriftException">
+    /// <paramref name="options"/> specifies an <c>ExpectedPreImageHash</c> that does not match the file's
+    /// current content. Thrown before any mutating request is issued.
+    /// </exception>
+    public Task<FileWriteReceipt> WriteFileAsync(TargetPath path, Stream content, FileWriteOptions options, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(content);
+        ArgumentNullException.ThrowIfNull(options);
+        ThrowIfWritesDisabled("write file", path);
+
+        return WriteFileCoreAsync(path, content, options, ct);
+    }
 
     /// <inheritdoc />
-    /// <exception cref="WritesDisabledException">Always thrown: file deletes are disabled in this milestone.</exception>
-    public Task DeleteAsync(TargetPath path, CancellationToken ct = default) =>
+    /// <exception cref="WritesDisabledException">
+    /// This instance was not constructed with <see cref="WriteMode.Enabled"/>. Thrown synchronously, before
+    /// any request reaches the daemon.
+    /// </exception>
+    /// <exception cref="FileNotFoundException">The path does not exist in the container.</exception>
+    /// <exception cref="IOException">The path is a directory, or <c>rm</c> reported a failure.</exception>
+    public Task DeleteAsync(TargetPath path, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ThrowIfWritesDisabled("delete", path);
+
+        return DeleteCoreAsync(path, ct);
+    }
+
+    private async Task<FileWriteReceipt> WriteFileCoreAsync(TargetPath path, Stream content, FileWriteOptions options, CancellationToken ct)
+    {
+        var containerPath = ToContainerPath(path);
+        var (directory, leaf) = SplitContainerPath(containerPath);
+
+        using var buffer = new MemoryStream();
+        await content.CopyToAsync(buffer, ct).ConfigureAwait(false);
+        var bytes = buffer.ToArray();
+        var postImageHash = Convert.ToHexStringLower(SHA256.HashData(bytes));
+
+        var existing = await StatAsync(path, ct).ConfigureAwait(false);
+        var preImage = await TryReadPreImageAsync(path, ct).ConfigureAwait(false);
+        var preImageHash = preImage is null ? null : Convert.ToHexStringLower(SHA256.HashData(preImage));
+
+        if (options.ExpectedPreImageHash is { } expected &&
+            !string.Equals(expected, preImageHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TargetDriftException(
+                $"Content at '{containerPath}' in container '{_containerRef}' has drifted since it was last observed.",
+                path,
+                expected,
+                preImageHash);
+        }
+
+        var tempLeaf = $"{leaf}.servyx-tmp-{Guid.NewGuid():N}";
+        var tempPath = directory.Length == 0 ? "/" + tempLeaf : directory + "/" + tempLeaf;
+
+        using var tar = new MemoryStream();
+        await using (var writer = new TarWriter(tar, TarEntryFormat.Pax, leaveOpen: true))
+        {
+            var entry = new PaxTarEntry(TarEntryType.RegularFile, tempLeaf)
+            {
+                DataStream = new MemoryStream(bytes, writable: false),
+
+                // Preserve the mode the file already had; a fresh file gets rw-r--r--. Getting this wrong is
+                // how a config write silently makes a file the game server itself can no longer read.
+                Mode = existing.Exists && existing.Mode is { } mode ? (UnixFileMode)mode : DefaultFileMode,
+            };
+
+            await writer.WriteEntryAsync(entry, ct).ConfigureAwait(false);
+        }
+
+        tar.Position = 0;
+        await _client.Containers.ExtractArchiveToContainerAsync(
+            _containerRef,
+            new ContainerPathStatParameters { Path = directory.Length == 0 ? "/" : directory },
+            tar,
+            ct).ConfigureAwait(false);
+
+        var (exitCode, standardError) = await RunFixedCommandAsync(["mv", "-f", "--", tempPath, containerPath], ct)
+            .ConfigureAwait(false);
+        if (exitCode != 0)
+        {
+            await TryRemoveQuietlyAsync(tempPath, ct).ConfigureAwait(false);
+            throw new IOException(
+                $"Failed to move '{tempPath}' onto '{containerPath}' in container '{_containerRef}' " +
+                $"(exit code {exitCode}){FormatDetail(standardError)}. The target file is unchanged.");
+        }
+
+        return new FileWriteReceipt(preImageHash, postImageHash, DateTimeOffset.UtcNow);
+    }
+
+    private async Task DeleteCoreAsync(TargetPath path, CancellationToken ct)
+    {
+        var containerPath = ToContainerPath(path);
+
+        var stat = await StatAsync(path, ct).ConfigureAwait(false);
+        if (!stat.Exists)
+        {
+            throw new FileNotFoundException(
+                $"File '{containerPath}' was not found in container '{_containerRef}'.", containerPath);
+        }
+
+        if (stat.IsDirectory)
+        {
+            throw new IOException(
+                $"'{containerPath}' in container '{_containerRef}' is a directory. " +
+                "IExecutionTarget.DeleteAsync deletes files only — recursive directory removal is deliberately " +
+                "not reachable through this seam.");
+        }
+
+        var (exitCode, standardError) = await RunFixedCommandAsync(["rm", "-f", "--", containerPath], ct)
+            .ConfigureAwait(false);
+        if (exitCode != 0)
+        {
+            throw new IOException(
+                $"Failed to delete '{containerPath}' in container '{_containerRef}' " +
+                $"(exit code {exitCode}){FormatDetail(standardError)}.");
+        }
+    }
+
+    /// <summary>
+    /// Reads the current bytes at <paramref name="path"/>, or <see langword="null"/> when it does not
+    /// exist. Only used to compute the pre-image hash, which is why "missing" is a value rather than a
+    /// fault: a write that creates a file is a legitimate write with a null pre-image.
+    /// </summary>
+    private async Task<byte[]?> TryReadPreImageAsync(TargetPath path, CancellationToken ct)
+    {
+        try
+        {
+            await using var stream = await OpenReadAsync(path, ct).ConfigureAwait(false);
+            using var buffer = new MemoryStream();
+            await stream.CopyToAsync(buffer, ct).ConfigureAwait(false);
+            return buffer.ToArray();
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Runs one fixed argv vector in the container and returns its exit code and stderr.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately private and deliberately not routed through <see cref="ExecuteAsync"/>. The only two
+    /// call sites pass literal argv arrays (<c>mv</c> and <c>rm</c>) whose only variable parts are paths
+    /// already normalized by <see cref="SandboxedPathResolver"/>, and each is passed as its own argv
+    /// element, so there is no shell, no word splitting, and no glob expansion. Opening the general command
+    /// channel is M2's decision to make, not a side effect of file writes landing.
+    /// </remarks>
+    private async Task<(long ExitCode, string StandardError)> RunFixedCommandAsync(IReadOnlyList<string> argv, CancellationToken ct)
+    {
+        var created = await _client.Exec.ExecCreateContainerAsync(
+            _containerRef,
+            new ContainerExecCreateParameters
+            {
+                Cmd = argv.ToList(),
+                AttachStdin = false,
+                AttachStdout = true,
+                AttachStderr = true,
+                Detach = false,
+                Tty = false,
+            },
+            ct).ConfigureAwait(false);
+
+        if (created?.ID is not { Length: > 0 } execId)
+        {
+            throw new IOException(
+                $"The Docker daemon did not return an exec id for container '{_containerRef}'.");
+        }
+
+        var standardError = string.Empty;
+        using (var stream = await _client.Exec.StartAndAttachContainerExecAsync(execId, tty: false, ct).ConfigureAwait(false))
+        {
+            if (stream is not null)
+            {
+                // Draining to end is also how completion is awaited: the daemon closes the attached stream
+                // when the process exits, so the exit code inspected below is never read while still running.
+                var (_, stderr) = await stream.ReadOutputToEndAsync(ct).ConfigureAwait(false);
+                standardError = stderr ?? string.Empty;
+            }
+        }
+
+        var inspect = await _client.Exec.InspectContainerExecAsync(execId, ct).ConfigureAwait(false);
+        return (inspect?.ExitCode ?? 0, standardError);
+    }
+
+    /// <summary>
+    /// Best-effort removal of a temporary sibling left behind by a failed move. A failure here is
+    /// swallowed: the caller is already throwing about the real failure, and replacing that message with a
+    /// cleanup error would hide it.
+    /// </summary>
+    private async Task TryRemoveQuietlyAsync(string containerPath, CancellationToken ct)
+    {
+        try
+        {
+            await RunFixedCommandAsync(["rm", "-f", "--", containerPath], ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // Intentionally ignored — see the summary.
+        }
+    }
+
+    private void ThrowIfWritesDisabled(string operation, TargetPath path)
+    {
+        if (_writeMode == Domain.Transport.WriteMode.Enabled)
+        {
+            return;
+        }
+
         throw new WritesDisabledException(
-            "Docker execution target file deletes are disabled in this milestone (M1), which is strictly read-only.");
+            $"Refusing to {operation} '{path.Value}' in container '{_containerRef}': this Docker execution " +
+            $"target was constructed with WriteMode.{_writeMode}. Writes are enabled per server, never globally.");
+    }
+
+    /// <summary>rw-r--r--, the mode a newly created file gets when there is no pre-image mode to preserve.</summary>
+    private const UnixFileMode DefaultFileMode =
+        UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
+
+    private static string FormatDetail(string standardError) =>
+        string.IsNullOrWhiteSpace(standardError) ? string.Empty : $": {standardError.Trim()}";
+
+    /// <summary>Splits an absolute container path into its parent directory and leaf name.</summary>
+    private static (string Directory, string Leaf) SplitContainerPath(string containerPath)
+    {
+        var trimmed = containerPath.TrimEnd('/');
+        var lastSlash = trimmed.LastIndexOf('/');
+        return lastSlash <= 0
+            ? (string.Empty, trimmed.TrimStart('/'))
+            : (trimmed[..lastSlash], trimmed[(lastSlash + 1)..]);
+    }
 
     /// <inheritdoc />
     public ValueTask DisposeAsync()

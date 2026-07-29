@@ -37,6 +37,11 @@
          the only place that invariant can actually be asserted is a test assembly that sees both. This
          reference exists for exactly that assertion — see CanonicalTagVocabularyTests. -->
     <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+    <!-- Same reasoning as the Docker reference above, for a second cross-transport invariant: no transport
+         may be registered in dependency injection without the write guard wrapping the execution targets it
+         hands out. That is a statement about every transport at once, so it can only be asserted in an
+         assembly that sees all three — see TransportWriteGuardArchitectureTests. -->
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Process\Servyx.Infrastructure.Process.csproj" />
   </ItemGroup>
 
 </Project>
