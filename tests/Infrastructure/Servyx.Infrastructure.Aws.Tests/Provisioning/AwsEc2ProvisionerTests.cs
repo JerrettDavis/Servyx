@@ -686,27 +686,33 @@ public class AwsEc2ProvisionerTests
             ProvisioningCapabilities.Create
             | ProvisioningCapabilities.Destroy
             | ProvisioningCapabilities.TagQuery
-            | ProvisioningCapabilities.EstimatesCost);
+            | ProvisioningCapabilities.EstimatesCost
+            | ProvisioningCapabilities.UpdateInPlace
+            | ProvisioningCapabilities.RecreateToUpdate
+            | ProvisioningCapabilities.DetectDrift);
 
     [Theory]
     [InlineData(ProvisioningCapabilities.Resize)]
     [InlineData(ProvisioningCapabilities.Snapshot)]
     [InlineData(ProvisioningCapabilities.StaticAddress)]
     [InlineData(ProvisioningCapabilities.FirewallRules)]
-    [InlineData(ProvisioningCapabilities.UpdateInPlace)]
-    [InlineData(ProvisioningCapabilities.RecreateToUpdate)]
-    [InlineData(ProvisioningCapabilities.DetectDrift)]
     public void Every_capability_the_provisioner_does_not_implement_is_absent(ProvisioningCapabilities absent) =>
-        // EC2 can do the first four; the last three are simply not implemented here, because this adapter has
-        // no IMaintainer. A capability bit is a promise about the adapter, not about the provider.
+        // EC2 can do all four; none of them is implemented here. A capability bit is a promise about the
+        // adapter, not about the provider - and note that the maintenance half plans a stop/ModifyInstanceAttribute
+        // /start sequence in detail while Resize stays absent, because planning one is not performing one.
         new AwsScenario().Provisioner().Capabilities.Should().NotHaveFlag(absent);
 
     [Fact]
-    public void The_provisioner_does_not_implement_IMaintainer_at_all() =>
-        // Deliberately out of scope: both existing cloud adapters have planning-only maintenance, and adding a
-        // third is a separate change. Asserted so the three absent capability bits above cannot drift away from
-        // the reason they are absent.
-        typeof(AwsEc2Provisioner).Should().NotBeAssignableTo<IMaintainer>();
+    public void The_provisioner_implements_IMaintainer_and_the_two_ids_agree()
+    {
+        // The three maintenance bits above are claimed, so the interface backing them has to be there: a
+        // capability bit is a promise about this adapter. What that implementation may and may not do is pinned
+        // by AwsEc2MaintenanceTests - in particular that it issues no mutating request at all.
+        var provisioner = new AwsScenario().Provisioner();
+
+        provisioner.Should().BeAssignableTo<IMaintainer>();
+        ((IMaintainer)provisioner).ProvisionerId.Should().Be(AwsEc2Provisioner.Id);
+    }
 
     // ---------------------------------------------------------------------------------------------------
     // The AWS key pair

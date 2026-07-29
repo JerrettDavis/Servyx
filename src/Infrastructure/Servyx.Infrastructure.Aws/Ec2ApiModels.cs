@@ -84,7 +84,7 @@ internal static class Ec2Xml
 /// <param name="AvailabilityZone">The availability zone, e.g. <c>us-east-1a</c>.</param>
 /// <param name="LaunchTime">When EC2 reports the instance was launched.</param>
 /// <param name="Tags">The instance's tags, decoded from its <c>tagSet</c>.</param>
-/// <param name="VolumeIds">The EBS volume ids attached by the launch's block device mapping.</param>
+/// <param name="BlockDevices">The EBS devices the instance's block device mapping attaches.</param>
 internal sealed record Ec2Instance(
     string InstanceId,
     string? InstanceType,
@@ -95,7 +95,7 @@ internal sealed record Ec2Instance(
     string? AvailabilityZone,
     DateTimeOffset? LaunchTime,
     IReadOnlyDictionary<string, string> Tags,
-    IReadOnlyList<string> VolumeIds)
+    IReadOnlyList<Ec2BlockDevice> BlockDevices)
 {
     /// <summary>The states in which an instance no longer exists as far as Servyx is concerned.</summary>
     /// <remarks>
@@ -120,10 +120,10 @@ internal sealed record Ec2Instance(
             return null;
         }
 
-        var volumeIds = Ec2Xml.Items(item, "blockDeviceMapping")
-            .Select(mapping => Ec2Xml.Text(Ec2Xml.Child(mapping, "ebs"), "volumeId"))
-            .Where(id => id is not null)
-            .Select(id => id!)
+        var blockDevices = Ec2Xml.Items(item, "blockDeviceMapping")
+            .Select(Ec2BlockDevice.From)
+            .Where(device => device is not null)
+            .Select(device => device!)
             .ToList();
 
         return new Ec2Instance(
@@ -136,7 +136,52 @@ internal sealed record Ec2Instance(
             Ec2Xml.Text(Ec2Xml.Child(item, "placement"), "availabilityZone"),
             Ec2Xml.Timestamp(item, "launchTime"),
             Ec2Xml.Tags(item),
-            volumeIds);
+            blockDevices);
+    }
+}
+
+/// <summary>One EBS device an instance's <c>blockDeviceMapping</c> attaches.</summary>
+/// <param name="DeviceName">The guest device name, e.g. <c>/dev/xvda</c>.</param>
+/// <param name="VolumeId">The EBS volume attached at that device.</param>
+/// <param name="DeleteOnTermination">
+/// Whether EC2 deletes the volume when the instance is terminated, or <see langword="null"/> when the API
+/// reported no value for it.
+/// </param>
+/// <remarks>
+/// <para>
+/// <strong><see cref="DeleteOnTermination"/> is the whole reason this record exists</strong>, and it is the one
+/// field that decides what an update plan may claim about a caller's data. This adapter sends no
+/// <c>BlockDeviceMapping</c> on <c>RunInstances</c> (see <c>AwsEc2Provisioner</c>'s type remarks), so the flag
+/// is whatever the AMI's own default is — which means it can only ever be <em>read back</em> off a live
+/// instance, never assumed from anything this codebase did.
+/// </para>
+/// <para>
+/// <see langword="null"/> is deliberately distinguished from <see langword="false"/>. "EC2 reported nothing" is
+/// not evidence that the volume survives, and a planner that collapsed the two would state a data impact it
+/// has no grounds for — see <c>AwsEc2Provisioner.AssertDataImpact</c>, which answers the unknown case with
+/// <c>DataImpact.AtRisk</c> rather than with the reassuring value.
+/// </para>
+/// </remarks>
+internal sealed record Ec2BlockDevice(string? DeviceName, string VolumeId, bool? DeleteOnTermination)
+{
+    /// <summary>Projects one <c>blockDeviceMapping/item</c> element, or <see langword="null"/> if it names no EBS volume.</summary>
+    internal static Ec2BlockDevice? From(XElement item)
+    {
+        var ebs = Ec2Xml.Child(item, "ebs");
+        var volumeId = Ec2Xml.Text(ebs, "volumeId");
+
+        if (volumeId is null)
+        {
+            return null;
+        }
+
+        var flag = Ec2Xml.Text(ebs, "deleteOnTermination")?.Trim();
+        var deleteOnTermination =
+            string.Equals(flag, "true", StringComparison.OrdinalIgnoreCase) ? true
+            : string.Equals(flag, "false", StringComparison.OrdinalIgnoreCase) ? false
+            : (bool?)null;
+
+        return new Ec2BlockDevice(Ec2Xml.Text(item, "deviceName"), volumeId, deleteOnTermination);
     }
 }
 

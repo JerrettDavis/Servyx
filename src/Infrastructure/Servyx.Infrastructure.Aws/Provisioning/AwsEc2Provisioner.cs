@@ -137,14 +137,17 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// inbound traffic, so a game port a caller asked for is not merely un-opened, it is actively closed.
 /// </para>
 /// <para>
-/// <strong>There is no <see cref="IMaintainer"/> implementation for AWS, deliberately.</strong> Both existing
-/// cloud adapters have planning-only maintenance (drift detection and update planning); adding a third is a
-/// separate change with its own design questions, and the three maintenance capability bits are therefore
-/// absent rather than claimed and unimplemented. A capability bit is a promise about this adapter, and this
-/// adapter cannot compare a live instance against a recorded handle.
+/// <strong>Maintenance is implemented, and it is planning-only.</strong> <see cref="IMaintainer"/> lives in
+/// <c>AwsEc2Provisioner.Maintenance.cs</c>: it detects drift against a recorded handle and produces an
+/// <see cref="UpdatePlan"/>, issuing nothing but <c>DescribeInstances</c> reads. It does <em>not</em> apply
+/// one — there is no <c>ModifyInstanceAttribute</c>, no <c>StopInstances</c> and no <c>TerminateInstances</c>
+/// on any planning path, and no executor in this solution applies an <see cref="UpdatePlan"/> from this
+/// adapter. Read that file's remarks for the one thing that makes EC2's answers different from every sibling
+/// adapter's: this adapter sends no <c>BlockDeviceMapping</c>, so what a replacement costs a caller's data is
+/// decided by a <c>DeleteOnTermination</c> flag Servyx never set and can only read back.
 /// </para>
 /// </remarks>
-public sealed class AwsEc2Provisioner : IProvisioner
+public sealed partial class AwsEc2Provisioner : IProvisioner
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "aws-ec2";
@@ -292,16 +295,30 @@ public sealed class AwsEc2Provisioner : IProvisioner
     /// <para>
     /// <see cref="ProvisioningCapabilities.UpdateInPlace"/>,
     /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> and
-    /// <see cref="ProvisioningCapabilities.DetectDrift"/> are absent because this adapter does not implement
-    /// <see cref="IMaintainer"/> at all. Both existing cloud adapters hold all three; this one holds none, and
-    /// that difference is a fact about what is implemented rather than about what EC2 can do.
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> are all present, and each names something
+    /// <c>AwsEc2Provisioner.Maintenance.cs</c> actually plans.
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is backed by two operations: an instance-type change
+    /// (a stop, a <c>ModifyInstanceAttribute</c> and a start, with every EBS volume still attached at the end)
+    /// and a retag. <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is backed by the image case, which
+    /// EC2 can only reach by terminating this instance and launching another.
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> compares a live instance against the handle Servyx
+    /// recorded — including whether the machine still exists at all, which on EC2 is a state rather than a 404.
+    /// </para>
+    /// <para>
+    /// <strong>Planning a type change is not <see cref="ProvisioningCapabilities.Resize"/>.</strong> That bit
+    /// stays absent, and the distinction is the point: this adapter can describe the stop/modify/start sequence
+    /// in detail and still issues no <c>ModifyInstanceAttribute</c> call anywhere in the assembly. A caller must
+    /// be able to tell "can tell me what a resize would do" from "will resize it".
     /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
         | ProvisioningCapabilities.TagQuery
-        | ProvisioningCapabilities.EstimatesCost;
+        | ProvisioningCapabilities.EstimatesCost
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.RecreateToUpdate
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <inheritdoc />
     /// <remarks>

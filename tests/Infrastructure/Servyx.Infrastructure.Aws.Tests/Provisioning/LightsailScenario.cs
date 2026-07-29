@@ -149,6 +149,11 @@ internal sealed class LightsailScenario
         + "]";
 
     /// <summary>One <c>Instance</c> JSON object as <c>GetInstance</c>/<c>GetInstances</c> report it.</summary>
+    /// <remarks>
+    /// The two trailing parameters exist for the maintenance suite and are additive: a drift or update plan has
+    /// to be shown an instance whose blueprint or zone differs from the one a request names, and neither was
+    /// variable before.
+    /// </remarks>
     internal static string InstanceJson(
         string instanceName = InstanceName,
         string state = "running",
@@ -156,15 +161,17 @@ internal sealed class LightsailScenario
         bool withPublicIp = true,
         bool withPrivateIp = true,
         string? username = Username,
-        IReadOnlyDictionary<string, string>? tags = null) =>
+        IReadOnlyDictionary<string, string>? tags = null,
+        string blueprintId = BlueprintId,
+        string availabilityZone = AvailabilityZone) =>
         $$"""
         {
             "name": "{{instanceName}}",
             "arn": "arn:aws:lightsail:us-east-1:111122223333:Instance/{{instanceName}}",
-            "blueprintId": "{{BlueprintId}}",
+            "blueprintId": "{{blueprintId}}",
             "bundleId": "{{bundleId}}",
             "createdAt": 1785000000.0,
-            "location": { "availabilityZone": "{{AvailabilityZone}}", "regionName": "{{Region}}" },
+            "location": { "availabilityZone": "{{availabilityZone}}", "regionName": "{{Region}}" },
             "state": { "code": 16, "name": "{{state}}" },
             {{(withPublicIp ? $"\"publicIpAddress\": \"{PublicIp}\"," : string.Empty)}}
             {{(withPrivateIp ? $"\"privateIpAddress\": \"{PrivateIp}\"," : string.Empty)}}
@@ -283,4 +290,35 @@ internal sealed class LightsailScenario
             providerResourceId,
             region,
             new Dictionary<string, string>(CanonicalTags, StringComparer.Ordinal));
+
+    /// <summary>
+    /// The handle a caller gets when it also supplies the two descriptive expectation tags a drift check needs.
+    /// </summary>
+    /// <remarks>
+    /// Kept separate from <see cref="RecordedHandle"/> for the reason <c>AwsScenario.MaintenanceHandle</c> gives:
+    /// that one is the handle this adapter produces today, and existing tests assert about it. Passing
+    /// <see langword="null"/> for either value reproduces the weaker handle, which must report that aspect as
+    /// unverifiable rather than as matching.
+    /// </remarks>
+    internal static ResourceHandle MaintenanceHandle(
+        string? size = BundleId,
+        string? image = BlueprintId,
+        string providerResourceId = InstanceName,
+        string region = Region,
+        string provisionerId = AwsLightsailProvisioner.Id)
+    {
+        var tags = new Dictionary<string, string>(CanonicalTags, StringComparer.Ordinal);
+
+        if (size is not null)
+        {
+            tags[ServyxTagKeys.Size] = size;
+        }
+
+        if (image is not null)
+        {
+            tags[ServyxTagKeys.Image] = image;
+        }
+
+        return new ResourceHandle(provisionerId, providerResourceId, region, tags);
+    }
 }

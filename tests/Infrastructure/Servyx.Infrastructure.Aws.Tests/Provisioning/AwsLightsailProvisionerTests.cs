@@ -651,15 +651,19 @@ public class AwsLightsailProvisionerTests
     }
 
     [Fact]
-    public void Capabilities_does_not_claim_any_maintenance_bit_because_there_is_no_IMaintainer_implementation()
+    public void Capabilities_claims_every_maintenance_bit_and_the_IMaintainer_implementation_backing_them()
     {
-        var capabilities = new LightsailScenario().Provisioner().Capabilities;
+        var provisioner = new LightsailScenario().Provisioner();
+        var capabilities = provisioner.Capabilities;
 
-        capabilities.Should().NotHaveFlag(ProvisioningCapabilities.UpdateInPlace);
-        capabilities.Should().NotHaveFlag(ProvisioningCapabilities.RecreateToUpdate);
-        capabilities.Should().NotHaveFlag(ProvisioningCapabilities.DetectDrift);
+        // UpdateInPlace is backed by exactly one operation here - a TagResource retag - because Lightsail has no
+        // operation that changes an existing instance's bundle. RecreateToUpdate is backed by the blueprint case.
+        capabilities.Should().HaveFlag(ProvisioningCapabilities.UpdateInPlace);
+        capabilities.Should().HaveFlag(ProvisioningCapabilities.RecreateToUpdate);
+        capabilities.Should().HaveFlag(ProvisioningCapabilities.DetectDrift);
 
-        new LightsailScenario().Provisioner().Should().NotBeAssignableTo<IMaintainer>();
+        provisioner.Should().BeAssignableTo<IMaintainer>();
+        ((IMaintainer)provisioner).ProvisionerId.Should().Be(AwsLightsailProvisioner.Id);
     }
 
     // ---------------------------------------------------------------------------------------------------

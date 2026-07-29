@@ -108,8 +108,16 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// snapshot an instance, attach a free static IP, and manage per-instance public ports; this adapter calls none
 /// of those, so <see cref="ProvisioningCapabilities.Resize"/>, <see cref="ProvisioningCapabilities.Snapshot"/>,
 /// <see cref="ProvisioningCapabilities.StaticAddress"/> and <see cref="ProvisioningCapabilities.FirewallRules"/>
-/// are all absent, mirroring EC2's same four omissions. There is no <see cref="IMaintainer"/> implementation
-/// either, consistent with EC2 and unlike the two ARM/HTTP-header adapters.
+/// are all absent, mirroring EC2's same four omissions.
+/// </para>
+/// <para>
+/// <strong>Maintenance is implemented, and it is planning-only.</strong> <see cref="IMaintainer"/> lives in
+/// <c>AwsLightsailProvisioner.Maintenance.cs</c>: it detects drift against a recorded handle and produces an
+/// <see cref="UpdatePlan"/>, issuing nothing but <c>GetInstance</c> reads. Read that file's remarks for the
+/// finding that makes this adapter's plans differ most from EC2's: <strong>Lightsail has no operation that
+/// changes an existing instance's bundle at all</strong>, so a bundle change is reported unsupported rather
+/// than planned as anything, and the snapshot-and-restore procedure AWS actually documents for it is named in
+/// the refusal rather than silently substituted.
 /// </para>
 /// <para>
 /// <strong>Host-key trust is unresolved here exactly as it is for the other three.</strong> Lightsail exposes no
@@ -118,7 +126,7 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// caller's transport options to the SSH transport's existing host-key mechanism unchanged.
 /// </para>
 /// </remarks>
-public sealed class AwsLightsailProvisioner : IProvisioner
+public sealed partial class AwsLightsailProvisioner : IProvisioner
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "aws-lightsail";
@@ -229,15 +237,34 @@ public sealed class AwsLightsailProvisioner : IProvisioner
 
     /// <inheritdoc />
     /// <remarks>
-    /// The same four bits as <c>AwsEc2Provisioner.Capabilities</c>, for the same reasons - see the type remarks
-    /// for what each omission means for Lightsail specifically rather than restating EC2's version of the same
-    /// argument.
+    /// <para>
+    /// The same seven bits as <c>AwsEc2Provisioner.Capabilities</c> — and identical spelling is not identical
+    /// meaning, which is the one thing worth reading here rather than restating EC2's argument.
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is backed by <em>one</em> operation on this adapter,
+    /// a <c>TagResource</c>/<c>UntagResource</c> retag, where EC2's is backed by that plus an instance-type
+    /// change. The difference is not an implementation gap: Lightsail has no operation that changes an existing
+    /// instance's bundle, so there is nothing for a second in-place backing to be.
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is backed by the blueprint case, which Lightsail
+    /// can only reach by deleting this instance and creating another.
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> compares a live instance against the recorded handle.
+    /// </para>
+    /// <para>
+    /// <see cref="ProvisioningCapabilities.Resize"/> stays absent for a blunter reason than EC2's — there is
+    /// nothing to implement, not merely nothing implemented — and
+    /// <see cref="ProvisioningCapabilities.Snapshot"/> stays absent even though the snapshot-and-restore
+    /// procedure is the documented route to a bigger bundle: this adapter calls neither
+    /// <c>CreateInstanceSnapshot</c> nor <c>CreateInstancesFromSnapshot</c>, and naming a procedure in a
+    /// refusal is not the same as being able to perform it.
+    /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
         | ProvisioningCapabilities.TagQuery
-        | ProvisioningCapabilities.EstimatesCost;
+        | ProvisioningCapabilities.EstimatesCost
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.RecreateToUpdate
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <inheritdoc />
     /// <remarks>

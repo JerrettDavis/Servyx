@@ -168,6 +168,14 @@ internal sealed class AwsScenario
         + "</tagSet>";
 
     /// <summary>One <c>instancesSet/item</c> element as the EC2 Query API reports it.</summary>
+    /// <remarks>
+    /// The three trailing parameters exist for the maintenance suite and are additive: <paramref name="imageId"/>
+    /// lets a test present an instance running a different AMI from the one a request names, and
+    /// <paramref name="deleteOnTermination"/>/<paramref name="withBlockDevice"/> reproduce the three states of
+    /// the one flag that decides what an update plan may claim about a caller's data — set true, set false, and
+    /// not reported at all. The default is the flag AWS's stock AMIs set, so every pre-existing caller is
+    /// unaffected.
+    /// </remarks>
     internal static string InstanceXml(
         string instanceId = Ec2InstanceId,
         string state = "running",
@@ -175,19 +183,27 @@ internal sealed class AwsScenario
         bool withPublicIp = true,
         bool withPrivateIp = true,
         IReadOnlyDictionary<string, string>? tags = null,
-        string volumeId = VolumeId) =>
+        string volumeId = VolumeId,
+        string imageId = ImageId,
+        string? deleteOnTermination = "true",
+        bool withBlockDevice = true) =>
         "<item>"
         + $"<instanceId>{instanceId}</instanceId>"
-        + $"<imageId>{ImageId}</imageId>"
+        + $"<imageId>{imageId}</imageId>"
         + $"<instanceState><code>16</code><name>{state}</name></instanceState>"
         + (withPrivateIp ? $"<privateIpAddress>{PrivateIp}</privateIpAddress>" : string.Empty)
         + (withPublicIp ? $"<ipAddress>{PublicIp}</ipAddress>" : string.Empty)
         + $"<instanceType>{instanceType}</instanceType>"
         + "<launchTime>2026-07-27T10:00:00.000Z</launchTime>"
         + $"<placement><availabilityZone>{AvailabilityZone}</availabilityZone></placement>"
-        + "<blockDeviceMapping><item><deviceName>/dev/xvda</deviceName>"
-        + $"<ebs><volumeId>{volumeId}</volumeId><status>attached</status><deleteOnTermination>true</deleteOnTermination></ebs>"
-        + "</item></blockDeviceMapping>"
+        + (withBlockDevice
+            ? "<blockDeviceMapping><item><deviceName>/dev/xvda</deviceName>"
+              + $"<ebs><volumeId>{volumeId}</volumeId><status>attached</status>"
+              + (deleteOnTermination is null
+                  ? string.Empty
+                  : $"<deleteOnTermination>{deleteOnTermination}</deleteOnTermination>")
+              + "</ebs></item></blockDeviceMapping>"
+            : "<blockDeviceMapping></blockDeviceMapping>")
         + TagSetXml(tags)
         + "</item>";
 
@@ -311,6 +327,42 @@ internal sealed class AwsScenario
             providerResourceId,
             region,
             new Dictionary<string, string>(CanonicalInstanceTags, StringComparer.Ordinal));
+
+    /// <summary>
+    /// The handle Servyx would have recorded for the launched instance <em>if it had also recorded what the
+    /// instance was launched as</em> — that is, carrying the two descriptive expectation tags a drift check
+    /// needs.
+    /// </summary>
+    /// <remarks>
+    /// A separate helper rather than extra parameters on <see cref="RecordedHandle"/> because the two answer
+    /// different questions. <see cref="RecordedHandle"/> is the handle this adapter actually produces today, and
+    /// every existing test that asserts on a handle's tags is asserting about that one. This is the handle a
+    /// caller gets when it supplies <c>tag:servyx.size</c> / <c>tag:servyx.image</c> provisioning parameters,
+    /// which is the only way to give a drift check something to compare against — see
+    /// <c>ServyxTagKeys.Size</c>'s remarks. Passing <see langword="null"/> for either reproduces the weaker
+    /// handle, which must report that aspect as unverifiable rather than as matching.
+    /// </remarks>
+    internal static ResourceHandle MaintenanceHandle(
+        string? size = InstanceType,
+        string? image = ImageId,
+        string providerResourceId = Ec2InstanceId,
+        string region = Region,
+        string provisionerId = AwsEc2Provisioner.Id)
+    {
+        var tags = new Dictionary<string, string>(CanonicalInstanceTags, StringComparer.Ordinal);
+
+        if (size is not null)
+        {
+            tags[ServyxTagKeys.Size] = size;
+        }
+
+        if (image is not null)
+        {
+            tags[ServyxTagKeys.Image] = image;
+        }
+
+        return new ResourceHandle(provisionerId, providerResourceId, region, tags);
+    }
 
     private static string Envelope(string root, string inner) =>
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
