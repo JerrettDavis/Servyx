@@ -28,6 +28,12 @@
          credential URN and a definition-parsed command catalogue, which is why the wiring lives here (see
          ServyxRconChannels) rather than in the protocol assembly. -->
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Rcon\Servyx.Infrastructure.Rcon.csproj" />
+    <!-- Servyx.Infrastructure.Ssh supplies the SSH transport and SshBackupProvider. Only the *backup* half
+         is composed here (AddServyxSshBackups) and only behind Servyx:Provisioning:Enabled — see the SSH
+         block in Program.cs. AddServyxSsh() is deliberately NOT called: it registers a second ITransport,
+         which would make the single-ITransport injection in ServyxBackupContextSource resolve to SSH and
+         silently point Docker backups at the wrong machine. -->
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
     <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
   </ItemGroup>

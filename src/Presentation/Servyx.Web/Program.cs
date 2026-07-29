@@ -6,12 +6,17 @@ using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
 using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Domain.Provisioning;
+using Servyx.Domain.Backups;
+using Servyx.Domain.Connectors;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
+using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Docker.Provisioning;
 using Servyx.Infrastructure.Persistence;
+using Servyx.Infrastructure.Ssh;
+using Servyx.Infrastructure.Ssh.Backups;
 using Servyx.Web.Authentication;
 using Servyx.Web.Components;
 using Servyx.Web.Definitions;
@@ -238,7 +243,65 @@ if (provisioningGate.Enabled)
     builder.Services.AddSingleton<IDockerBackupContextSource>(sp => sp.GetRequiredService<ServyxBackupContextSource>());
 
     builder.Services.AddServyxDockerBackups();
-    builder.Services.AddServyxBackupDashboard();
+
+    // ── SSH-hosted backups ───────────────────────────────────────────────────────────────────────
+    //
+    // Opt-in per server on top of this gate, and empty by default: SshBackupWiringOptions returns None
+    // unless a server names itself under Servyx:Servers:<name>:Ssh:Enabled AND supplies the two values
+    // nothing can be inferred from — :Host and :Root. With nothing configured, not one line below runs, so
+    // no SSH transport is constructed, no secret is resolved, no socket is opened, and the container is
+    // byte-for-byte what it was before SSH backups existed.
+    //
+    // AddServyxSsh() is deliberately NOT called. It registers a second ITransport, and ITransport is
+    // injected singly by ServyxBackupContextSource — the Docker context source — so a second registration
+    // would resolve there and point Docker's backups at an SSH host. (It also registers an IConnectorPool
+    // whose factory throws pending a connector registry; not calling it sidesteps that too, and nothing
+    // here needs a pooled connector.) The SSH transport is therefore composed inline below, inside the
+    // same WriteGuardedTransport wrapper AddServyxSsh() would have put it in and over the same grants.
+    var sshBackups = SshBackupWiringOptions.FromConfiguration(builder.Configuration, provisioningGate);
+    builder.Services.AddSingleton(sshBackups);
+
+    if (sshBackups.Any)
+    {
+        // The SSH half of Servyx:Servers:<name>:WriteMode. ServerWriteModes above emits grants keyed on
+        // container-name descriptor options, which no SSH target carries; these are scoped to the exact
+        // endpoint the session connects to, and to nothing wider. Without one, an SSH server can still be
+        // listed, inspected and dry-run pruned — only creating and restoring are refused.
+        foreach (var sshGrant in sshBackups.WriteGrants)
+        {
+            builder.Services.AddSingleton(sshGrant);
+        }
+
+        // The seam AddServyxSshBackups() deliberately does not default. Registered as the implementation
+        // type as well so its cached SSH sessions are disposed with the container.
+        builder.Services.AddSingleton(sp => new ServyxSshBackupContextSource(
+            sshBackups,
+            new WriteGuardedTransport(
+                new SshTransport(
+                    sp.GetRequiredService<ISecretStore>(),
+                    sp.GetRequiredService<IHostKeyVerifier>(),
+                    sp.GetRequiredService<ILoggerFactory>()),
+                new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>())),
+            sp.GetRequiredService<ServyxRconChannels>()));
+        builder.Services.AddSingleton<ISshBackupContextSource>(
+            sp => sp.GetRequiredService<ServyxSshBackupContextSource>());
+
+        builder.Services.AddServyxSshBackups();
+
+        // Two IBackupProviders are now registered, and BackupDashboardService takes one. Rather than let
+        // registration order decide — which would make "Docker backups still work" a property of the order
+        // of two lines in this file — the dashboard is composed over an explicit router that dispatches on
+        // the server the call is about. See ServyxBackupProviderRouter for why routing beats keyed
+        // resolution here: half of IBackupProvider's members take an opaque backup or restore-plan id that
+        // names no server, and the router is the only place that can remember who issued one.
+        builder.Services.AddSingleton<IBackupDashboard>(sp => new BackupDashboardService(
+            ServyxBackupProviderRouter.FromRegistered(sp.GetServices<IBackupProvider>(), sshBackups.ServerKeys)));
+    }
+    else
+    {
+        // The unchanged path: one provider, resolved singly, exactly as before.
+        builder.Services.AddServyxBackupDashboard();
+    }
 
     // Opt-in on top of the gate: BackupScheduleOptions.FromConfiguration returns Disabled unless a
     // server names itself under Servyx:Servers:<name>:Backup:Enabled, so registering the service here
