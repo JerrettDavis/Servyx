@@ -153,8 +153,17 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// which upserts a resource group and then refuses to delete it, this adapter leaves behind exactly one class of
 /// thing it made (task definition revisions) and that class is free.
 /// </para>
+/// <para>
+/// <strong>It implements <see cref="IControlChannelAddressSource"/> in order to answer no.</strong> The RCON
+/// control channel is what lifts a shape-M resource to the <c>Operate</c> tier, and it needs an address that
+/// outlives a replacement. ACI has one when a <c>dnsNameLabel</c> was requested; this adapter has none, for the
+/// reason its addressing finding already gave and which <see cref="NoControlAddressReason"/> states in full.
+/// The interface is implemented rather than omitted so that "this target still cannot be operated" is a value a
+/// caller receives and a test pins, instead of an absence that reads as an oversight. A load balancer or a Cloud
+/// Map registration would change the answer; nothing inside this adapter can.
+/// </para>
 /// </remarks>
-public sealed class AwsEcsFargateProvisioner : IProvisioner
+public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddressSource
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "aws-ecs-fargate";
@@ -528,6 +537,64 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner
                 PrivateAddress: task?.PrivateIpv4Address,
                 Cost: cost,
                 CreatedAt: service.CreatedAt ?? DateTimeOffset.UnixEpoch));
+    }
+
+    /// <summary>
+    /// Why no control channel can be pinned to a Fargate service this adapter creates. Returned from every
+    /// <see cref="ResolveControlAddressAsync"/> call, whatever the service's state.
+    /// </summary>
+    /// <remarks>
+    /// The counterpart to <see cref="UnreachableReason"/>, and — unlike ACI's — it does not end in a route
+    /// that works. It names the two things that would create one, because a refusal with no next step reads
+    /// as a bug in Servyx rather than as a missing piece of infrastructure.
+    /// </remarks>
+    public const string NoControlAddressReason =
+        "an ECS service on Fargate has no address that outlives the workload. The only address that exists at any "
+        + "moment belongs to the current task's elastic network interface, and the service's entire purpose is to "
+        + "replace that task - on a host retirement, a platform-version rollout, an out-of-memory kill or a crash - "
+        + "at which point the address is gone with nothing raised. Worse, it is not usable in the first place: "
+        + "DescribeTasks reports no public address at all (obtaining one means ec2:DescribeNetworkInterfaces, a "
+        + "different service this adapter deliberately does not call), so ResourceFacts.PrivateAddress carries a "
+        + "private IPv4 inside the task's awsvpc subnet that Servyx generally cannot route to. A durable control "
+        + "address therefore has to be created rather than discovered: put a load balancer in front of the service "
+        + "and pin the channel to its DNS name, or register the service in AWS Cloud Map and pin the channel to "
+        + "the service-discovery name. This adapter creates neither, so until one exists a Fargate service can be "
+        + "planned, priced, created, swept and destroyed by Servyx, and cannot be operated by it.";
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <strong>Always <see cref="ControlChannelAddress.NoAddress"/>, and that is the finding rather than a
+    /// gap in this method.</strong> The interface is implemented precisely so the answer is stated, tested
+    /// and visible instead of being an absence a reader has to notice. ACI's counterpart can answer
+    /// <see cref="ControlChannelAddress.Durable"/> when the group carries a <c>dnsNameLabel</c>; this one
+    /// has no equivalent, because a container group's DNS label belongs to the group and a Fargate task's
+    /// address belongs to a task the service exists to throw away. See <see cref="NoControlAddressReason"/>.
+    /// </para>
+    /// <para>
+    /// <strong>Not even <see cref="ControlChannelAddress.Ephemeral"/>.</strong> That case is for an address
+    /// that works now and will silently stop being right; the task's private IPv4 does not clear the first
+    /// half of that bar, since Servyx is not in the task's VPC and the ECS API exposes no public address to
+    /// offer instead. Reporting an unusable address as merely non-durable would overstate how close this
+    /// target is to being operable.
+    /// </para>
+    /// <para>
+    /// <strong>Issues no request of any kind</strong> — no <c>DescribeServices</c>, no <c>DescribeTasks</c>,
+    /// no signature computed and no credential resolved. The answer does not depend on the service's state,
+    /// so asking would bill a caller for a round trip that could not change it. It does not even check
+    /// whether the handle names a service in this cluster: a handle that does not is equally unserviceable,
+    /// and inventing a second reason for it would suggest the first one was situational.
+    /// </para>
+    /// </remarks>
+    public Task<ControlChannelAddress> ResolveControlAddressAsync(
+        ResourceHandle handle,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        ct.ThrowIfCancellationRequested();
+
+        return Task.FromResult<ControlChannelAddress>(
+            new ControlChannelAddress.NoAddress(NoControlAddressReason));
     }
 
     /// <inheritdoc />

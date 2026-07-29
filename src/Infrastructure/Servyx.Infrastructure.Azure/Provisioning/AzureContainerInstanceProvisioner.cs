@@ -109,8 +109,16 @@ namespace Servyx.Infrastructure.Azure.Provisioning;
 /// three before this adapter could be configured at all. If the named group does not exist the single ARM
 /// PUT fails before anything billable has been created — the cheapest possible failure.
 /// </para>
+/// <para>
+/// <strong>It also implements <see cref="IControlChannelAddressSource"/>, and that is what makes the
+/// resource operable rather than merely creatable.</strong> The interface is separate from
+/// <see cref="IProvisioner"/> on purpose: answering "where would a control channel connect?" grants nothing,
+/// produces no <see cref="Transport.TargetDescriptor"/> and cannot alter this adapter's permanent
+/// <see cref="ResourceReachability.NoTransport"/>. See <see cref="ResolveControlAddressAsync"/> for why the
+/// durable answer is the group's FQDN and never its public IP.
+/// </para>
 /// </remarks>
-public sealed class AzureContainerInstanceProvisioner : IProvisioner
+public sealed class AzureContainerInstanceProvisioner : IProvisioner, IControlChannelAddressSource
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "azure-container-instance";
@@ -414,6 +422,97 @@ public sealed class AzureContainerInstanceProvisioner : IProvisioner
             ConnectorId: identity.ConnectorId,
             Reachability: new ResourceReachability.NoTransport(UnreachableReason),
             Facts: BuildFacts(group));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <strong>This is the other half of <see cref="UnreachableReason"/>.</strong> That text ends by telling
+    /// the operator to reach the workload through its RCON control channel; this method answers the question
+    /// that immediately follows — <em>at what address?</em> — and answers it honestly enough to refuse when
+    /// the answer would not survive the week. It grants nothing: the resource remains
+    /// <see cref="ResourceReachability.NoTransport"/> whatever this returns, and no
+    /// <c>TargetDescriptor</c> is produced on any path.
+    /// </para>
+    /// <para>
+    /// <strong>The durable answer is the group's FQDN, and it is durable for a specific reason.</strong> ACI
+    /// warns that a container group's public IP may change when the group restarts — which is why
+    /// <see cref="ProvisioningCapabilities.StaticAddress"/> is absent and stays absent. A
+    /// <c>dnsNameLabel</c>, when one was requested, gives the group a name in
+    /// <c>&lt;region&gt;.azurecontainer.io</c> that Azure re-points at whatever public IP the group currently
+    /// holds. The name therefore outlives the restart that moves the address underneath it. That is not the
+    /// same claim as a static address and this method does not make the stronger one: the IP still moves, and
+    /// anything that resolved it once and cached it still breaks.
+    /// </para>
+    /// <para>
+    /// <strong>The FQDN is read back from ARM rather than composed.</strong> Concatenating
+    /// <c>{label}.{region}.azurecontainer.io</c> would be a guess at a suffix that differs across Azure's
+    /// sovereign clouds, and a guessed control address is the failure mode this whole path exists to avoid.
+    /// ARM reports the name it actually assigned, so that is what is used.
+    /// </para>
+    /// <para>
+    /// <strong>A group with no DNS label answers <see cref="ControlChannelAddress.Ephemeral"/>, not
+    /// <see cref="ControlChannelAddress.Durable"/>.</strong> It has a public IP that a socket would connect
+    /// to right now, and that IP is exactly the thing ACI says may move. Reporting it as durable would ship a
+    /// control channel that works until the first restart and then silently points elsewhere. The address is
+    /// still carried, with the one change that would fix it, because an operator who can see "you are one
+    /// <c>dnsNameLabel</c> away" is better served than one who is told there is no address.
+    /// </para>
+    /// <para>
+    /// Issues one ARM read (plus the token exchange <c>AzureArmApiClient</c> performs), touches no storage
+    /// account, and changes nothing.
+    /// </para>
+    /// </remarks>
+    public async Task<ControlChannelAddress> ResolveControlAddressAsync(
+        ResourceHandle handle,
+        CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+
+        if (!IsContainerGroupId(handle.ProviderResourceId))
+        {
+            return new ControlChannelAddress.NoAddress(
+                $"'{handle.ProviderResourceId}' does not name a {ContainerInstanceProvider}/{ContainerGroupType} "
+                + "resource, so this adapter has no address to offer for it. A handle from a different provisioner "
+                + "must be resolved by that provisioner.");
+        }
+
+        var group = await _api.GetResourceAsync<ArmContainerGroup>(handle.ProviderResourceId, ct).ConfigureAwait(false);
+        if (group is null)
+        {
+            return new ControlChannelAddress.NoAddress(
+                $"ARM reports no container group at '{handle.ProviderResourceId}'. A control channel cannot be "
+                + "opened to a resource that no longer exists; if this is unexpected, reconcile before operating.");
+        }
+
+        var ip = group.Properties?.IpAddress;
+
+        if (!string.IsNullOrWhiteSpace(ip?.Fqdn))
+        {
+            return new ControlChannelAddress.Durable(
+                ip.Fqdn,
+                "the container group was provisioned with a dnsNameLabel, and Azure keeps that name pointed at "
+                + "whatever public IP the group currently holds. ACI warns the IP itself may change when the group "
+                + "restarts - the name survives that, which is precisely why it, and not the IP, is the address a "
+                + "control channel is pinned to. This is still not a static address, and StaticAddress remains "
+                + "absent from this adapter's capabilities.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(ip?.Ip))
+        {
+            return new ControlChannelAddress.Ephemeral(
+                ip.Ip,
+                "the container group has no dnsNameLabel, so its public IP is the only address it has - and ACI's "
+                + "own documentation warns that IP may change when the group restarts, with nothing raised at the "
+                + "moment it does. Provision the group with a dnsNameLabel to obtain a name that survives a "
+                + "restart; that is the single change that makes this resource operable.");
+        }
+
+        return new ControlChannelAddress.NoAddress(
+            "the container group has no public address at all. Either Azure has not finished allocating one - in "
+            + "which case this answer changes on its own - or the group was provisioned with no public IP "
+            + "configuration, in which case nothing outside its virtual network can reach it and a control channel "
+            + "from Servyx is not possible without one.");
     }
 
     /// <inheritdoc />

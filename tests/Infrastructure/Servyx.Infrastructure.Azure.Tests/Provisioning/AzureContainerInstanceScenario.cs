@@ -191,19 +191,36 @@ internal sealed class AzureContainerInstanceScenario
     // Assembled by concatenation rather than with raw interpolated literals, for the same reason
     // AzureScenario does it: ARM payloads end in runs of '}' that a $$"""...""" literal misreads.
 
+    /// <summary>
+    /// The FQDN ARM reports for a group that was provisioned with a <c>dnsNameLabel</c>. The address a
+    /// control channel is pinned to, and the only one that survives the restart that moves the IP.
+    /// </summary>
+    internal const string Fqdn = "palworld.eastus.azurecontainer.io";
+
     /// <summary>A container group as ARM reports it.</summary>
+    /// <param name="ip">The public IP, or null for a group ARM has not allocated an address for yet.</param>
+    /// <param name="tags">The group's tags; defaults to <see cref="CanonicalTags"/>.</param>
+    /// <param name="provisioningState">ARM's <c>provisioningState</c>.</param>
+    /// <param name="id">The ARM resource id.</param>
+    /// <param name="fqdn">
+    /// The DNS name ARM assigned from the group's <c>dnsNameLabel</c>. Null models a group provisioned
+    /// without one — which has an IP that works right now and moves on the next restart, and is therefore
+    /// the case that separates a durable control address from an ephemeral one.
+    /// </param>
     internal static string GroupJson(
         string? ip = PublicIp,
         IReadOnlyDictionary<string, string>? tags = null,
         string provisioningState = "Succeeded",
-        string id = GroupId) =>
+        string id = GroupId,
+        string? fqdn = Fqdn) =>
         "{\"id\":\"" + id + "\",\"name\":\"" + GroupName + "\",\"location\":\"" + Region + "\","
         + "\"tags\":" + TagsJson(tags) + ","
         + "\"properties\":{"
         + "\"provisioningState\":\"" + provisioningState + "\","
         + (ip is null
             ? "\"ipAddress\":{\"type\":\"Public\"},"
-            : "\"ipAddress\":{\"type\":\"Public\",\"ip\":\"" + ip + "\",\"fqdn\":\"palworld.eastus.azurecontainer.io\"},")
+            : "\"ipAddress\":{\"type\":\"Public\",\"ip\":\"" + ip + "\""
+                + (fqdn is null ? string.Empty : ",\"fqdn\":\"" + fqdn + "\"") + "},")
         + "\"volumes\":[{\"name\":\"servyx-data\",\"azureFile\":{\"shareName\":\"" + FileShareName
         + "\",\"storageAccountName\":\"" + StorageAccountName + "\"}}],"
         + "\"containers\":[{\"name\":\"" + GroupName + "\",\"properties\":{"
