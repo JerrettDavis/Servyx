@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 
 using Servyx.Domain.Secrets;
 
@@ -85,8 +86,126 @@ internal sealed class AzureArmApiDouble : HttpMessageHandler
             body);
 
         Requests.Add(recorded);
+        RejectImageBearingUpdate(recorded);
         return Responder(recorded);
     }
+
+    /// <summary>
+    /// The suite-wide guarantee that <strong>no update</strong> this assembly's adapter ever issues names an
+    /// image.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Enforced here, in the one place every request in the suite passes through, rather than as an assertion
+    /// each individual test remembers to make — a per-test assertion only covers the requests that test happens
+    /// to trigger, and the claim being made is about all of them. Any <c>PATCH</c> body carrying an
+    /// <c>imageReference</c> or a <c>storageProfile</c> member, at any depth, fails the test where it was
+    /// issued.
+    /// </para>
+    /// <para>
+    /// <strong>Why the check is scoped to PATCH, and why that is the honest scope rather than a weakened
+    /// one.</strong> Azure differs from DigitalOcean here in a way worth stating: <c>disk: true</c> is a value
+    /// DigitalOcean's adapter never has a legitimate reason to send, so its double can reject it on every
+    /// request. An image reference is different — the <em>create</em> sequence must name the image the machine
+    /// boots from, and it does so with a <c>PUT</c>. PATCH is ARM's merge verb and the only verb this adapter's
+    /// update path uses, so "no PATCH names an image" is exactly the claim being made: an update that named the
+    /// image would be a replacement wearing an update's clothes, since ARM cannot reimage a machine in place
+    /// and a PATCH that appeared to ask for it would either be ignored or rejected — never honestly applied.
+    /// The production code makes such a body unrepresentable (see <c>ArmVirtualMachineResizeRequest</c>, which
+    /// has no member that could carry either); this is the independent check that the wire agrees, since a
+    /// serializer setting is not a compiler guarantee.
+    /// </para>
+    /// <para>
+    /// Only <em>request</em> bodies are inspected. A virtual machine <em>response</em> reports its image
+    /// reference on every read, and never trips this.
+    /// </para>
+    /// </remarks>
+    private static void RejectImageBearingUpdate(RecordedRequest recorded)
+    {
+        if (recorded.Method != HttpMethod.Patch
+            || recorded.Body is not { Length: > 0 } body
+            || !body.TrimStart().StartsWith('{'))
+        {
+            return;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            // Not JSON at all, so it cannot carry a JSON member.
+            return;
+        }
+
+        string? offender;
+        using (document)
+        {
+            offender = ForbiddenUpdateMember(document.RootElement);
+            if (offender is null)
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The adapter sent an update to '{recorded.Uri}' whose body carries a \"{offender}\" member. ARM has "
+            + "no operation that changes an existing machine's image in place, so an update naming one is a "
+            + "replacement - which deletes the machine's managed OS disk, and everything on it - rather than the "
+            + $"resize it is dressed as. Servyx never issues it. Body: {body}");
+    }
+
+    /// <summary>
+    /// The name of the first <c>imageReference</c> or <c>storageProfile</c> member found at any depth, or
+    /// <see langword="null"/> if the body carries neither.
+    /// </summary>
+    /// <remarks>
+    /// <c>storageProfile</c> is rejected as well as <c>imageReference</c> because it is the member an image
+    /// reference would have to arrive inside: catching only the inner name would let a body that names the OS
+    /// disk — the resource whose survival is the whole <c>Preserved</c> claim — through unremarked.
+    /// </remarks>
+    private static string? ForbiddenUpdateMember(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (ForbiddenUpdateMemberNames.Contains(property.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        return property.Name;
+                    }
+
+                    var nested = ForbiddenUpdateMember(property.Value);
+                    if (nested is not null)
+                    {
+                        return nested;
+                    }
+                }
+
+                return null;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    var nested = ForbiddenUpdateMember(item);
+                    if (nested is not null)
+                    {
+                        return nested;
+                    }
+                }
+
+                return null;
+
+            default:
+                return null;
+        }
+    }
+
+    /// <summary>The member names an update body may never carry.</summary>
+    private static readonly string[] ForbiddenUpdateMemberNames = ["imageReference", "storageProfile"];
 }
 
 /// <summary>

@@ -112,7 +112,16 @@ internal sealed class AzureScenario
         ResourceGroupId + "/providers/Microsoft.Network/virtualNetworks/" + VmName + "-vnet";
 
     /// <summary>Builds a provisioner over this scenario's API double and secret store.</summary>
-    internal AzureVirtualMachineProvisioner Provisioner(bool withSecret = true, string sshUsername = "azureuser")
+    /// <param name="withSecret">Whether the client secret is present in the store.</param>
+    /// <param name="sshUsername">The admin username produced descriptors authenticate as.</param>
+    /// <param name="pollAttempts">
+    /// How many polls the adapter makes before giving up — on a provisioning wait, on a deletion wait, and on
+    /// the long-running operation a resize creates. Defaulted so every existing test is unaffected.
+    /// </param>
+    internal AzureVirtualMachineProvisioner Provisioner(
+        bool withSecret = true,
+        string sshUsername = "azureuser",
+        int pollAttempts = 3)
     {
         if (withSecret)
         {
@@ -129,7 +138,7 @@ internal sealed class AzureScenario
             sshUsername: sshUsername,
             timeProvider: TimeProvider.System,
             pollInterval: TimeSpan.Zero,
-            pollAttempts: 3);
+            pollAttempts: pollAttempts);
     }
 
     /// <summary>A provisioning request for a Palworld-sized VM, mirroring a cloud deployment profile.</summary>

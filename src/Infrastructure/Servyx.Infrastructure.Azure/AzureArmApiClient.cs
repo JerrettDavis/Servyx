@@ -47,7 +47,7 @@ namespace Servyx.Infrastructure.Azure;
 /// error body, never from the request headers or the token form body.
 /// </para>
 /// </remarks>
-internal sealed class AzureArmApiClient
+internal sealed partial class AzureArmApiClient
 {
     /// <summary>The public ARM root, used when no override is supplied.</summary>
     internal const string DefaultArmBaseAddress = "https://management.azure.com/";
