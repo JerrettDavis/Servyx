@@ -1,11 +1,36 @@
 @* No delete/prune/restore controls are rendered here — not even disabled ones — for foreign backups.
-   Servyx does not own these archives and must never appear to offer control over their lifecycle. *@
+   Servyx does not own these archives and must never appear to offer control over their lifecycle.
+
+   That stays true whether or not the provisioning gate is open: when it is, the managed surface lives on
+   /backups, and this tab links to it rather than growing a second copy of the same preview-then-confirm
+   flow. Two implementations of "confirm before overwriting a save" is one too many.
+
+   The gate is read through IServiceProvider rather than @inject so a host — or a test — that never
+   registered one still renders this tab, and renders it exactly as it did before backups became
+   actionable. *@
+@inject IServiceProvider Services
+
+@if (GateOpen)
+{
+    <p class="svx-page-description" data-testid="backups-tab-managed-link">
+        Creating, inspecting, restoring, and applying retention to this server's archives is on the
+        <a href="/backups">Backups page</a>. Everything destructive there is previewed first and confirmed
+        separately.
+    </p>
+}
 
 @if (Backups.Count == 0)
 {
     <div class="svx-empty-state">
         <h3>No backups found</h3>
-        <p>Servyx-owned backup creation arrives in Milestone 5.</p>
+        @if (GateOpen)
+        {
+            <p>Nothing has been archived for this server yet, by Servyx or by the container's own tooling.</p>
+        }
+        else
+        {
+            <p>Servyx-owned backup creation arrives in Milestone 5.</p>
+        }
     </div>
 }
 else
@@ -42,6 +67,13 @@ else
 @code {
     [Parameter, EditorRequired]
     public IReadOnlyList<BackupEntry> Backups { get; set; } = [];
+
+    /// <summary>
+    /// Whether this process can act on backups at all. An unregistered gate answers "no", which is the
+    /// same answer a closed one gives and the same markup it produces — see the file header.
+    /// </summary>
+    private bool GateOpen =>
+        (Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate)?.Enabled == true;
 
     private static string FormatSize(long bytes)
     {

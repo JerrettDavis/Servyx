@@ -1,8 +1,10 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Servyx.Application;
+using Servyx.Application.Backups;
 using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
+using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Domain.Provisioning;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Docker.Provisioning;
@@ -101,6 +103,11 @@ builder.Services.AddServyxOperatorAuthentication(
 var provisioningGate = ProvisioningGate.FromConfiguration(builder.Configuration);
 builder.Services.AddSingleton(provisioningGate);
 
+// Registered on both sides of the gate because it is a *label*, not a capability: with the gate closed it
+// is WritableServers.None and every page that asks gets "read-only", which is exactly true — no write
+// grant exists in the container at all. Pages inject it unconditionally, so it must always resolve.
+builder.Services.AddSingleton(WritableServers.FromConfiguration(builder.Configuration, provisioningGate));
+
 if (provisioningGate.Enabled)
 {
     // ── Per-server write mode ────────────────────────────────────────────────────────────────────
@@ -156,6 +163,43 @@ if (provisioningGate.Enabled)
         sp.GetServices<IProvisioner>(),
         sp.GetService<IProvisioningLedger>(),
         sp.GetService<ProvisioningExecutor>()));
+
+    // ── Backups ──────────────────────────────────────────────────────────────────────────────────
+    //
+    // The three calls below are the whole of it, and they are here — inside the gate — because every one
+    // of them is mutating: creating a backup writes an archive, restoring one overwrites live save data,
+    // and applying retention deletes archives. With the flag off none of these lines runs, so no
+    // IBackupProvider, no IBackupDashboard and no scheduler exist in this process, and /backups renders
+    // the same read-only listing it always has.
+    //
+    // Writing still requires a per-server grant on top of this: the sessions ServyxBackupContextSource
+    // opens go through the same WriteGuardedTransport as everything else, so a server without
+    // Servyx:Servers:<name>:WriteMode = Enabled refuses every write at the transport regardless of what
+    // this block registered. The Backups page reads WritableServers so it can say so rather than
+    // offering a control that is guaranteed to throw.
+    var backupWiring = BackupWiringOptions.FromConfiguration(builder.Configuration);
+    builder.Services.AddSingleton(backupWiring);
+
+    // The seam AddServyxDockerBackups() deliberately does not default — turning a server id into a
+    // container, a data root and a capture set is host knowledge. Registered as the implementation type
+    // as well so its cached sessions are disposed with the container.
+    builder.Services.AddSingleton<ServyxBackupContextSource>();
+    builder.Services.AddSingleton<IDockerBackupContextSource>(sp => sp.GetRequiredService<ServyxBackupContextSource>());
+
+    builder.Services.AddServyxDockerBackups();
+    builder.Services.AddServyxBackupDashboard();
+
+    // Opt-in on top of the gate: BackupScheduleOptions.FromConfiguration returns Disabled unless a
+    // server names itself under Servyx:Servers:<name>:Backup:Enabled, so registering the service here
+    // schedules nothing by default. It also returns Disabled whenever this gate is closed, which makes
+    // the "not on a read-only host" guarantee hold even if a later edit moved this line outside the if.
+    var backupSchedule = BackupScheduleOptions.FromConfiguration(builder.Configuration, provisioningGate);
+    builder.Services.AddSingleton(backupSchedule);
+    builder.Services.AddHostedService(sp => new ScheduledBackupService(
+        backupSchedule,
+        sp.GetRequiredService<ILogger<ScheduledBackupService>>(),
+        sp.GetService<IBackupDashboard>(),
+        sp.GetService<TimeProvider>()));
 }
 
 var app = builder.Build();

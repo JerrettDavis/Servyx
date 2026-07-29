@@ -1,0 +1,111 @@
+/* Scoped to the Backups page. The class names deliberately match the ones DeployPage already uses for
+   the same jobs (errors, facts, stage lists, confirmation blocks), because the two pages are the same
+   preview-then-confirm surface and an operator should not have to re-learn what red means. */
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: #ff8f8f;
+}
+
+.svx-deploy-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+}
+
+.svx-deploy-facts dt {
+    opacity: 0.7;
+    font-weight: 500;
+}
+
+.svx-deploy-facts dd {
+    margin: 0;
+}
+
+.svx-deploy-stages {
+    margin: 0;
+    padding-left: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+}
+
+.svx-deploy-confirm {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-applied {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(120, 220, 160, 0.35);
+    background: rgba(120, 220, 160, 0.08);
+}
+
+/* Same treatment DeployPage gives its data-impact acknowledgement: a visibly separate block from the
+   button below it, because a two-step approval is only real if the two steps do not look like one. */
+.svx-data-impact-ack {
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.4rem;
+    border: 2px dashed rgba(255, 92, 92, 0.65);
+    background: rgba(255, 92, 92, 0.08);
+    font-size: 0.85rem;
+}
+
+.svx-data-impact-ack label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+
+/* The restore panel is the only place on this page that overwrites live data, and it is the loudest
+   thing on the page for that reason — a solid red edge on the whole card, not a line of copy that can
+   be skimmed past. */
+.svx-restore-panel {
+    border: 2px solid rgba(255, 92, 92, 0.7);
+}
+
+.svx-restore-overwrite {
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    border-radius: 0.4rem;
+    border-left: 4px solid #ff5c5c;
+    background: rgba(255, 92, 92, 0.12);
+    font-size: 0.9rem;
+}
+
+/* The banner itself is rendered by DataImpactBanner, a child component, so reaching it needs ::deep.
+   Only the danger severity is emphasised; a calm banner is left alone so the real alerts stay easy to
+   pick out. */
+::deep .svx-data-impact[data-severity="danger"] {
+    display: flex;
+    gap: 0.75rem;
+    align-items: flex-start;
+    margin: 0.75rem 0;
+    padding: 0.75rem 1rem;
+    border-radius: 0.4rem;
+    border: 2px solid #ff5c5c;
+    background: rgba(255, 92, 92, 0.14);
+}
+
+::deep .svx-data-impact-glyph {
+    font-size: 1.4rem;
+    line-height: 1;
+}
+
+::deep .svx-data-impact-headline {
+    letter-spacing: 0.04em;
+}

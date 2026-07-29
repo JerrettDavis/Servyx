@@ -1,65 +1,708 @@
 @page "/backups"
+@using Servyx.Application.Backups
+@using Servyx.Domain.Backups
+@using Servyx.Domain.Provisioning
+@using Servyx.Web.Services
+@* Servyx.Web.Models declares its own BackupOwnership for the read-only view below, and _Imports pulls
+   that namespace into every page. The alias picks the domain one explicitly for the managed surface
+   rather than leaving a reader — or the compiler — to guess which enum a badge is switching on. *@
+@using BackupOwnership = Servyx.Domain.Backups.BackupOwnership
 @inject IDashboardDataService Data
+@inject ProvisioningGate Gate
+@inject IServiceProvider Services
 
 <PageTitle>Backups - Servyx</PageTitle>
 
-<div class="svx-page-header">
-    <h2>Backups</h2>
-    <p class="svx-page-description">
-        Servyx-owned backup creation, retention, and restore land in Milestone 5. Below are the archives
-        already present on disk today, discovered read-only.
-    </p>
-</div>
-
-@if (_loading)
+@if (!Gate.Enabled)
 {
-    <p>Loading backups…</p>
-}
-else if (_backups.Count == 0)
-{
-    <div class="svx-empty-state">
-        <h3>No backups found</h3>
-        <p>No adopted server has an on-disk backup directory yet.</p>
+    @* ────────────────────────────────────────────────────────────────────────────────────────────
+       The read-only view, unchanged. With Servyx:Provisioning:Enabled absent or false — the default —
+       no IBackupProvider and no IBackupDashboard exist in this process at all, so there is nothing to
+       create, restore, or prune, and this branch renders exactly what it rendered before backups
+       became actionable: a list, and no control of any kind.
+       ──────────────────────────────────────────────────────────────────────────────────────────── *@
+    <div class="svx-page-header">
+        <h2>Backups</h2>
+        <p class="svx-page-description">
+            Servyx-owned backup creation, retention, and restore land in Milestone 5. Below are the archives
+            already present on disk today, discovered read-only.
+        </p>
     </div>
+
+    @if (_loading)
+    {
+        <p>Loading backups…</p>
+    }
+    else if (_backups.Count == 0)
+    {
+        <div class="svx-empty-state">
+            <h3>No backups found</h3>
+            <p>No adopted server has an on-disk backup directory yet.</p>
+        </div>
+    }
+    else
+    {
+        <div class="svx-row-grid" role="list" aria-label="Backups">
+            <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;" aria-hidden="true">
+                <span>Server</span>
+                <span>File</span>
+                <span>Created</span>
+                <span>Size</span>
+                <span>Ownership</span>
+            </div>
+
+            @foreach (var backup in _backups)
+            {
+                <div class="svx-row-link" role="listitem" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;">
+                    <span data-col-label="Server">@backup.ServerName</span>
+                    <span data-col-label="File"><code>@backup.FileName</code></span>
+                    <span data-col-label="Created">@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                    <span data-col-label="Size">@FormatSize(backup.SizeBytes)</span>
+                    <span data-col-label="Ownership">
+                        <span class="badge foreign-badge" tabindex="0"
+                              title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
+                            Foreign
+                        </span>
+                    </span>
+                </div>
+            }
+        </div>
+    }
 }
 else
 {
-    <div class="svx-row-grid" role="list" aria-label="Backups">
-        <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;" aria-hidden="true">
-            <span>Server</span>
-            <span>File</span>
-            <span>Created</span>
-            <span>Size</span>
-            <span>Ownership</span>
+    <div class="svx-page-header">
+        <h2>Backups</h2>
+        <p class="svx-page-description">
+            Create, inspect, restore, and apply retention to a server's archives. Everything destructive on
+            this page is previewed first and confirmed separately.
+        </p>
+    </div>
+
+    @if (_dashboard is null || !_dashboard.ProviderConfigured)
+    {
+        <div class="svx-empty-state" data-testid="backups-misconfigured">
+            <h3>Backups are enabled but not wired</h3>
+            <p>
+                <code>@ProvisioningGate.ConfigurationKey</code> is <code>true</code>, but no backup provider
+                is registered in this process. Nothing here can create, restore, or prune an archive until
+                the composition root registers one.
+            </p>
+        </div>
+    }
+    else
+    {
+        <div class="svx-card" data-testid="backup-server-picker">
+            <h3>Server</h3>
+
+            @if (_servers.Count == 0)
+            {
+                <p class="svx-page-description" data-testid="no-servers">
+                    No adopted server was found, so there is nothing to back up.
+                </p>
+            }
+            else
+            {
+                <label>
+                    Server
+                    <select @onchange="OnServerChangedAsync" data-testid="server-select">
+                        @foreach (var server in _servers)
+                        {
+                            <option value="@server.Id" selected="@(server.Id == _selectedServerId)">@server.Name</option>
+                        }
+                    </select>
+                </label>
+
+                @if (!_writable)
+                {
+                    @* Backups write: an archive on create, live files on restore, deletions on prune. A
+                       server with no write grant would throw WritesDisabledException at the transport, so
+                       this says so instead of rendering controls that are guaranteed to fail. *@
+                    <div class="svx-empty-state" data-testid="server-read-only">
+                        <h3>This server is read-only</h3>
+                        <p>
+                            No write grant exists for <strong>@_selectedServerName</strong>, so Servyx cannot
+                            write an archive, overwrite a save, or delete anything for it. Listing and
+                            inspecting still work; creating, restoring, and pruning are not offered because
+                            they would be refused by the transport, not by this page.
+                        </p>
+                        <p>
+                            Grant writes by setting <code data-testid="write-mode-key">@WriteModeConfigKey</code>
+                            to <code>Enabled</code>.
+                        </p>
+                    </div>
+                }
+            }
         </div>
 
-        @foreach (var backup in _backups)
+        @if (_servers.Count > 0)
         {
-            <div class="svx-row-link" role="listitem" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;">
-                <span data-col-label="Server">@backup.ServerName</span>
-                <span data-col-label="File"><code>@backup.FileName</code></span>
-                <span data-col-label="Created">@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
-                <span data-col-label="Size">@FormatSize(backup.SizeBytes)</span>
-                <span data-col-label="Ownership">
-                    <span class="badge foreign-badge" tabindex="0"
-                          title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
-                        Foreign
-                    </span>
-                </span>
+            <div class="svx-card" data-testid="backup-list-section">
+                <h3>Archives</h3>
+
+                @if (_listError is not null)
+                {
+                    <p class="svx-deploy-error" data-testid="backup-list-error">@_listError</p>
+                }
+                else if (_artifacts.Count == 0)
+                {
+                    <p class="svx-page-description" data-testid="backup-list-empty">
+                        No archive exists for this server yet — neither one Servyx created nor one the
+                        container's own tooling left behind.
+                    </p>
+                }
+                else
+                {
+                    <div class="svx-row-grid" role="list" aria-label="Backups">
+                        <div class="svx-row-grid-header" style="@ArtifactColumns" aria-hidden="true">
+                            <span>Archive</span>
+                            <span>Created</span>
+                            <span>Size</span>
+                            <span>Ownership</span>
+                            <span>Actions</span>
+                        </div>
+
+                        @foreach (var artifact in _artifacts)
+                        {
+                            <div class="svx-row-link" role="listitem" data-testid="backup-row"
+                                 data-backup-id="@artifact.Id"
+                                 data-ownership="@artifact.Ownership"
+                                 style="@ArtifactColumns">
+                                <span data-col-label="Archive"><code>@artifact.Location</code></span>
+                                <span data-col-label="Created">@artifact.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
+                                <span data-col-label="Size">@FormatSize(artifact.SizeBytes)</span>
+                                <span data-col-label="Ownership">
+                                    @if (artifact.Ownership == BackupOwnership.Foreign)
+                                    {
+                                        <span class="badge foreign-badge" tabindex="0"
+                                              title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
+                                            Foreign
+                                        </span>
+                                    }
+                                    else
+                                    {
+                                        <span class="badge" tabindex="0"
+                                              title="Created by Servyx and subject to this server's retention policy.">
+                                            Servyx
+                                        </span>
+                                    }
+                                </span>
+                                <span data-col-label="Actions" class="svx-ports-cell">
+                                    @* Inspect and Restore are offered for both ownerships; there is no
+                                       prune control in this row for either, and for a foreign artifact
+                                       there is no prune control anywhere on this page — see RenderPrune
+                                       below, which is scoped to the server's Servyx-owned artifacts and is
+                                       not reachable from a row at all. *@
+                                    <button type="button" class="btn" data-testid="inspect-backup"
+                                            @onclick="() => InspectAsync(artifact.Id)">
+                                        Inspect
+                                    </button>
+
+                                    @if (_writable)
+                                    {
+                                        <button type="button" class="btn" data-testid="plan-restore"
+                                                @onclick="() => PlanRestoreAsync(artifact)">
+                                            Restore…
+                                        </button>
+                                    }
+                                </span>
+                            </div>
+                        }
+                    </div>
+                }
+
+                <p class="svx-page-description" data-testid="foreign-policy">
+                    Foreign archives — the ones the container's own cron writes — are listable, inspectable,
+                    and restorable, and are never pruned, moved, or renamed by Servyx. No retention setting
+                    on this page can select one.
+                </p>
             </div>
+
+            @if (_inspection is not null)
+            {
+                <div class="svx-card" data-testid="inspect-panel">
+                    <h3>Archive contents</h3>
+
+                    @if (_inspection is BackupInspectResult.Failed inspectFailed)
+                    {
+                        <p class="svx-deploy-error" data-testid="inspect-error">@inspectFailed.Message</p>
+                    }
+                    else if (_inspection is BackupInspectResult.Inspected inspected)
+                    {
+                        <p class="svx-page-description" data-testid="inspect-summary">
+                            <code>@inspected.BackupId</code> — @inspected.Entries.Count entr(y/ies). The
+                            archive's index was read; nothing was extracted and nothing was written.
+                        </p>
+                        <ul class="svx-deploy-stages" data-testid="inspect-entries">
+                            @foreach (var entry in inspected.Entries)
+                            {
+                                <li data-testid="inspect-entry"><code>@entry</code></li>
+                            }
+                        </ul>
+                    }
+                </div>
+            }
+
+            @if (_writable)
+            {
+                <div class="svx-card" data-testid="create-section">
+                    <h3>Create a backup</h3>
+
+                    <p class="svx-page-description">
+                        Archives this server's save tree into
+                        <code>@BackupWiringOptions.DefaultStoreDirectory</code> and writes a sidecar
+                        manifest beside it. <strong>The server may be quiesced first</strong> — where the
+                        deployment declares a flush step, it is issued before a byte is read, and a failed
+                        flush aborts the backup rather than archiving un-flushed state. Where it declares
+                        none, the archive is of whatever is already on disk, which for a running server may
+                        lag its in-memory state.
+                    </p>
+
+                    @if (!_createConfirming)
+                    {
+                        <button type="button" class="btn btn-primary" data-testid="create-backup"
+                                disabled="@_busy"
+                                @onclick="() => _createConfirming = true">
+                            Create a backup…
+                        </button>
+                    }
+                    else
+                    {
+                        <div class="svx-deploy-confirm" data-testid="create-confirm-step">
+                            <p>
+                                Nothing has been written yet. Confirming archives
+                                <strong>@_selectedServerName</strong> now, and may pause the running server
+                                while its state is flushed to disk.
+                            </p>
+                            <button type="button" class="btn btn-primary" data-testid="create-backup-confirm"
+                                    disabled="@_busy"
+                                    @onclick="CreateAsync">
+                                @(_busy ? "Working…" : "Yes, create the backup")
+                            </button>
+                            <button type="button" class="btn" data-testid="create-backup-cancel"
+                                    disabled="@_busy"
+                                    @onclick="() => _createConfirming = false">
+                                Cancel
+                            </button>
+                        </div>
+                    }
+
+                    @if (_createResult is BackupCreateResult.Created created)
+                    {
+                        <p class="svx-deploy-applied" data-testid="create-success">@created.Message</p>
+                    }
+                    else if (_createResult is BackupCreateResult.Failed createFailed)
+                    {
+                        <p class="svx-deploy-error" data-testid="create-error">@createFailed.Message</p>
+                    }
+                </div>
+            }
+
+            @if (_restorePlan is not null || _restoreResult is not null)
+            {
+                <div class="svx-card svx-restore-panel" data-testid="restore-panel">
+                    <h3>Restore</h3>
+
+                    @if (_restorePlan is RestorePlanResult.Failed planFailed)
+                    {
+                        <p class="svx-deploy-error" data-testid="restore-plan-error">@planFailed.Message</p>
+                    }
+                    else if (_restorePlan is RestorePlanResult.Planned planned)
+                    {
+                        @* The impact banner is the same component the deploy page uses for a destructive
+                           update, and it is given Destroyed rather than AtRisk on purpose: a restore does
+                           not risk the current save, it definitively overwrites it. This is the first thing
+                           in the panel, above the paths, above the confirm, and it carries role="alert". *@
+                        <DataImpactBanner Impact="DataImpact.Destroyed" />
+
+                        <p class="svx-restore-overwrite" data-testid="restore-overwrite-warning" role="alert">
+                            <strong>Applying this restore overwrites live save data.</strong> The
+                            @planned.Plan.AffectedPaths.Count path(s) below are replaced with the archive's
+                            contents. Whatever those files contain right now is gone, including progress made
+                            since the archive was taken. Servyx takes no backup on your behalf first, and
+                            there is no undo.
+                        </p>
+
+                        <dl class="svx-deploy-facts">
+                            <dt>Archive</dt>
+                            <dd><code data-testid="restore-backup-id">@planned.Plan.BackupId</code></dd>
+                            <dt>Restore plan</dt>
+                            <dd><code data-testid="restore-plan-id">@planned.Plan.Id</code></dd>
+                            <dt>Paths overwritten</dt>
+                            <dd data-testid="restore-path-count">@planned.Plan.AffectedPaths.Count</dd>
+                        </dl>
+
+                        <ul class="svx-deploy-stages" data-testid="restore-affected-paths">
+                            @foreach (var path in planned.Plan.AffectedPaths)
+                            {
+                                <li data-testid="restore-affected-path"><code>@path</code></li>
+                            }
+                        </ul>
+
+                        @if (_restoreResult is null)
+                        {
+                            <div class="svx-deploy-confirm" data-testid="restore-confirm-step">
+                                <p data-testid="restore-nothing-written">
+                                    <strong>Nothing has been overwritten.</strong> Previewing a restore reads
+                                    the archive's index and writes nothing at all. Only the confirmation
+                                    below applies it.
+                                </p>
+
+                                @* The second, separate approval. It is a different control from the
+                                   confirmation, it must be completed first, and the Application layer
+                                   refuses independently: ApplyRestoreAsync accepts only a plan id this
+                                   process issued and re-checks the path count against what was shown. *@
+                                <div class="svx-data-impact-ack" data-testid="restore-acknowledgement-step">
+                                    <label>
+                                        <input type="checkbox" data-testid="restore-acknowledge"
+                                               @bind="_restoreAcknowledged" />
+                                        <span>
+                                            I accept that this overwrites @planned.Plan.AffectedPaths.Count
+                                            live path(s) and that there is no undo. This is a separate
+                                            approval from confirming the restore.
+                                        </span>
+                                    </label>
+                                </div>
+
+                                <button type="button" class="btn btn-primary" data-testid="apply-restore"
+                                        disabled="@(!_restoreAcknowledged || _busy)"
+                                        @onclick="() => ApplyRestoreAsync(planned.Plan)">
+                                    @(_busy ? "Restoring…" : "Overwrite live data with this archive")
+                                </button>
+                                <button type="button" class="btn" data-testid="restore-cancel"
+                                        disabled="@_busy"
+                                        @onclick="CancelRestore">
+                                    Cancel
+                                </button>
+                            </div>
+                        }
+                    }
+
+                    @if (_restoreResult is RestoreApplyResult.Restored restored)
+                    {
+                        <p class="svx-deploy-applied" data-testid="restore-success">@restored.Message</p>
+                    }
+                    else if (_restoreResult is RestoreApplyResult.Stale restoreStale)
+                    {
+                        <p class="svx-deploy-error" data-testid="restore-stale">@restoreStale.Message</p>
+                    }
+                    else if (_restoreResult is RestoreApplyResult.Failed restoreFailed)
+                    {
+                        <p class="svx-deploy-error" data-testid="restore-error">@restoreFailed.Message</p>
+                    }
+                </div>
+            }
+
+            @if (_writable)
+            {
+                <div class="svx-card" data-testid="prune-section">
+                    <h3>Retention</h3>
+
+                    <p class="svx-page-description" data-testid="prune-foreign-note">
+                        Retention selects from this server's <strong>Servyx-owned</strong> archives only.
+                        <strong>Foreign artifacts are never pruned</strong> — not deleted, not moved, not
+                        renamed, and not counted against these numbers, however retention is configured.
+                    </p>
+
+                    <label>Keep hourly <input type="number" min="0" @bind="_keepHourly" data-testid="keep-hourly" /></label>
+                    <label>Keep daily <input type="number" min="0" @bind="_keepDaily" data-testid="keep-daily" /></label>
+                    <label>Keep weekly <input type="number" min="0" @bind="_keepWeekly" data-testid="keep-weekly" /></label>
+
+                    <button type="button" class="btn" data-testid="preview-prune"
+                            disabled="@_busy"
+                            @onclick="PreviewPruneAsync">
+                        Preview what retention would remove
+                    </button>
+
+                    @if (_pruneResult is BackupPruneResult.Previewed previewed)
+                    {
+                        <div class="svx-deploy-confirm" data-testid="prune-preview">
+                            <p data-testid="prune-preview-summary">
+                                <strong>Dry run — nothing has been deleted.</strong> @previewed.Message
+                            </p>
+
+                            @if (previewed.Candidates.Count == 0)
+                            {
+                                <p data-testid="prune-no-candidates">
+                                    This retention policy would remove nothing. There is nothing to apply.
+                                </p>
+                            }
+                            else
+                            {
+                                <ul class="svx-deploy-stages" data-testid="prune-candidates">
+                                    @foreach (var candidate in previewed.Candidates)
+                                    {
+                                        <li data-testid="prune-candidate"><code>@candidate</code></li>
+                                    }
+                                </ul>
+
+                                @* Only reachable after a dry run: this control does not exist until
+                                   _pruneResult is a Previewed, so "apply retention" is never the first
+                                   click on this page. *@
+                                <button type="button" class="btn btn-primary" data-testid="apply-prune"
+                                        disabled="@_busy"
+                                        @onclick="ApplyPruneAsync">
+                                    @(_busy ? "Working…" : $"Delete these {previewed.Candidates.Count} archive(s)")
+                                </button>
+                            }
+                        </div>
+                    }
+                    else if (_pruneResult is BackupPruneResult.Pruned pruned)
+                    {
+                        <p class="svx-deploy-applied" data-testid="prune-applied">@pruned.Message</p>
+                    }
+                    else if (_pruneResult is BackupPruneResult.RefusedForeign refused)
+                    {
+                        <p class="svx-deploy-error" data-testid="prune-refused">@refused.Message</p>
+                    }
+                    else if (_pruneResult is BackupPruneResult.Failed pruneFailed)
+                    {
+                        <p class="svx-deploy-error" data-testid="prune-error">@pruneFailed.Message</p>
+                    }
+                </div>
+            }
         }
-    </div>
+    }
 }
 
 @code {
+    private const string ArtifactColumns = "grid-template-columns: 2.2fr 1fr 0.8fr 0.8fr 1.2fr;";
+
+    // ── Closed-gate state (the unchanged read-only view) ──────────────────────────────────────────
     private bool _loading = true;
     private IReadOnlyList<BackupEntry> _backups = [];
 
+    // ── Open-gate state ───────────────────────────────────────────────────────────────────────────
+    private IBackupDashboard? _dashboard;
+    private WritableServers _writableServers = WritableServers.None;
+    private IReadOnlyList<ServerSummary> _servers = [];
+    private string _selectedServerId = string.Empty;
+    private string _selectedServerName = string.Empty;
+    private bool _writable;
+    private bool _busy;
+
+    private IReadOnlyList<BackupArtifact> _artifacts = [];
+    private string? _listError;
+
+    private bool _createConfirming;
+    private BackupCreateResult? _createResult;
+
+    private BackupInspectResult? _inspection;
+
+    private RestorePlanResult? _restorePlan;
+    private RestoreApplyResult? _restoreResult;
+    private bool _restoreAcknowledged;
+
+    private int _keepHourly = 6;
+    private int _keepDaily = 7;
+    private int _keepWeekly = 4;
+    private BackupPruneResult? _pruneResult;
+
     protected override async Task OnInitializedAsync()
     {
-        _backups = await Data.GetAllBackupsAsync();
+        if (!Gate.Enabled)
+        {
+            // Byte-for-byte the pre-existing behaviour: one read, no dashboard, no controls.
+            _backups = await Data.GetAllBackupsAsync();
+            _loading = false;
+            return;
+        }
+
+        // Resolved through IServiceProvider rather than @inject, for the reason DeployPage gives: with the
+        // gate closed the composition root registers neither of these, and a required injection would turn
+        // the default configuration into a render-time exception on this page.
+        _dashboard = Services.GetService(typeof(IBackupDashboard)) as IBackupDashboard;
+        _writableServers = Services.GetService(typeof(WritableServers)) as WritableServers ?? WritableServers.None;
+
         _loading = false;
+
+        if (_dashboard is null || !_dashboard.ProviderConfigured)
+        {
+            return;
+        }
+
+        _servers = await Data.GetServersAsync();
+        if (_servers.Count == 0)
+        {
+            return;
+        }
+
+        await SelectServerAsync(_servers[0].Id);
     }
+
+    private Task OnServerChangedAsync(ChangeEventArgs e) => SelectServerAsync(e.Value?.ToString() ?? string.Empty);
+
+    private async Task SelectServerAsync(string serverId)
+    {
+        _selectedServerId = serverId;
+
+        var server = _servers.FirstOrDefault(s => s.Id == serverId);
+        _selectedServerName = server?.Name ?? serverId;
+        _writable = _writableServers.IsWritable(serverId, server?.Name);
+
+        ResetTransientState();
+        await RefreshArtifactsAsync();
+    }
+
+    /// <summary>
+    /// Clears every preview and result. Called on any change of server or after any mutation, so a
+    /// restore plan computed against one server's archive can never be confirmed while another server's
+    /// listing is on screen.
+    /// </summary>
+    private void ResetTransientState()
+    {
+        _createConfirming = false;
+        _createResult = null;
+        _inspection = null;
+        _restorePlan = null;
+        _restoreResult = null;
+        _restoreAcknowledged = false;
+        _pruneResult = null;
+    }
+
+    private async Task RefreshArtifactsAsync()
+    {
+        if (_dashboard is null || string.IsNullOrWhiteSpace(_selectedServerId))
+        {
+            return;
+        }
+
+        var result = await _dashboard.ListAsync(_selectedServerId);
+        switch (result)
+        {
+            case BackupListResult.Listed listed:
+                _artifacts = listed.All;
+                _listError = null;
+                break;
+
+            case BackupListResult.Failed failed:
+                // Not an empty list: "the provider could not answer" and "there are none" are opposite
+                // facts, and this page must never show the reassuring one for the other.
+                _artifacts = [];
+                _listError = failed.Message;
+                break;
+        }
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_dashboard is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _createResult = await _dashboard.CreateAsync(_selectedServerId);
+            _createConfirming = false;
+            await RefreshArtifactsAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task InspectAsync(string backupId)
+    {
+        if (_dashboard is null)
+        {
+            return;
+        }
+
+        _inspection = await _dashboard.InspectAsync(backupId);
+    }
+
+    /// <summary>
+    /// Previews a restore. Reaches <c>IBackupDashboard.PlanRestoreAsync</c> and nothing else: there is no
+    /// call to <c>ApplyRestoreAsync</c> anywhere on this path, so planning can never restore.
+    /// </summary>
+    private async Task PlanRestoreAsync(BackupArtifact artifact)
+    {
+        if (_dashboard is null)
+        {
+            return;
+        }
+
+        _restoreResult = null;
+        _restoreAcknowledged = false;
+        _restorePlan = await _dashboard.PlanRestoreAsync(artifact.Id);
+    }
+
+    private void CancelRestore()
+    {
+        _restorePlan = null;
+        _restoreResult = null;
+        _restoreAcknowledged = false;
+    }
+
+    private async Task ApplyRestoreAsync(RestorePlan plan)
+    {
+        // Belt and braces with the disabled attribute above: the acknowledgement is re-checked here so a
+        // programmatic click cannot skip the second approval, and the Application layer checks the plan's
+        // provenance and shape a third time.
+        if (_dashboard is null || _busy || !_restoreAcknowledged)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _restoreResult = await _dashboard.ApplyRestoreAsync(plan.Id, plan.AffectedPaths.Count);
+            await RefreshArtifactsAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task PreviewPruneAsync()
+    {
+        if (_dashboard is null || _busy)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _pruneResult = await _dashboard.PreviewPruneAsync(_selectedServerId, Policy());
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private async Task ApplyPruneAsync()
+    {
+        // Unreachable unless a dry run has already been rendered — the control does not exist otherwise —
+        // and re-asserted here so the real prune cannot be driven without one.
+        if (_dashboard is null || _busy || _pruneResult is not BackupPruneResult.Previewed)
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _pruneResult = await _dashboard.ApplyPruneAsync(_selectedServerId, Policy());
+            await RefreshArtifactsAsync();
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private RetentionPolicy Policy() => new(_keepHourly, _keepDaily, _keepWeekly);
+
+    /// <summary>The exact configuration key an operator has to set to make the selected server writable.</summary>
+    private string WriteModeConfigKey =>
+        $"{ServerWriteModes.SectionKey}:{_selectedServerName}:{ServerWriteModes.WriteModeKey}";
 
     private static string FormatSize(long bytes)
     {
