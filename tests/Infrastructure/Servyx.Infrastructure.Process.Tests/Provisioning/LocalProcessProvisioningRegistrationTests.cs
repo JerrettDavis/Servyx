@@ -76,16 +76,84 @@ public class LocalProcessProvisioningRegistrationTests
     }
 
     [Fact]
-    public void The_transport_registration_publishes_a_local_transport_under_the_domain_abstraction()
+    public void The_transport_registration_publishes_a_write_guarded_local_transport_under_the_domain_abstraction()
     {
+        // This assertion used to require the registration to produce a bare LocalProcessTransport, which is
+        // what pinned the last write-guard exemption in place. What it was really worth asserting — that
+        // AddServyxLocalProcess() publishes exactly one singleton ITransport, built by the registration
+        // itself, and that the thing it publishes is the *local* transport — is asserted here unchanged. The
+        // only difference is that the local transport now arrives wrapped, so the assertion follows it
+        // through WriteGuardedTransport.Inner instead of stopping at the outermost type. The transport id is
+        // still checked on the resolved service, because that is the value AddServyxProcessProvisioning()
+        // selects on: a guard that failed to delegate TransportId would break that lookup, and this catches it.
         var services = new ServiceCollection();
         services.AddServyxLocalProcess();
 
         var descriptor = services.Single(d => d.ServiceType == typeof(ITransport));
         descriptor.Lifetime.Should().Be(ServiceLifetime.Singleton);
-        descriptor.ImplementationFactory!(new TransportRegistry())
-            .Should().BeOfType<LocalProcessTransport>()
-            .Which.TransportId.Should().Be("local");
+
+        using var root = services.BuildServiceProvider();
+        var resolved = descriptor.ImplementationFactory!(root);
+
+        resolved.Should().BeOfType<WriteGuardedTransport>()
+            .Which.Inner.Should().BeOfType<LocalProcessTransport>();
+        ((ITransport)resolved).TransportId.Should().Be("local");
+    }
+
+    [Fact]
+    public void The_transport_registration_publishes_the_bare_local_transport_under_no_service_type_at_all()
+    {
+        // The other half of the guarantee the assertion above used to undercut: wrapping is worth nothing if
+        // the inner transport is separately resolvable, because a caller wanting an unguarded session would
+        // simply ask for that instead.
+        var services = new ServiceCollection();
+        services.AddServyxLocalProcess();
+
+        services.Should().NotContain(d => d.ServiceType == typeof(LocalProcessTransport));
+    }
+
+    [Fact]
+    public async Task The_registered_transport_hands_out_read_only_sessions_when_no_grant_was_registered()
+    {
+        // AddServyxLocalProcess() on its own is the M1 shape: a host that configured nothing gets a process
+        // that cannot write anywhere. Before the guard, ExecutionTargetWriteMode.Resolve answered null here
+        // and every mutation was permitted.
+        using var temp = new TempDirectory("registration-guard");
+        var services = new ServiceCollection();
+        services.AddServyxLocalProcess();
+
+        using var provider = services.BuildServiceProvider();
+        var target = new TargetDescriptor(
+            "local",
+            "local://test-machine",
+            null,
+            null,
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["rootPath"] = temp.Root });
+
+        await using var session = await provider.GetRequiredService<ITransport>().ConnectAsync(target);
+
+        ExecutionTargetWriteMode.Resolve(session).Should().Be(WriteMode.ReadOnly);
+    }
+
+    [Fact]
+    public void The_provisioning_registration_grants_writes_to_exactly_the_machine_endpoint_it_was_given()
+    {
+        var services = new ServiceCollection();
+        services.AddServyxLocalProcess();
+        services.AddServyxProcessProvisioning(machineId: "test-machine");
+
+        using var provider = services.BuildServiceProvider();
+        var resolver = provider.GetRequiredService<IWriteModeResolver>();
+
+        TargetDescriptor At(string endpoint) => new(
+            "local",
+            endpoint,
+            null,
+            null,
+            new Dictionary<string, string>(StringComparer.Ordinal));
+
+        resolver.Resolve(At("local://test-machine")).Should().Be(WriteMode.Enabled);
+        resolver.Resolve(At("local://some-other-machine")).Should().Be(WriteMode.ReadOnly);
     }
 
     [Fact]

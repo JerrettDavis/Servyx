@@ -35,6 +35,12 @@ public static class ProcessProvisioningServiceCollectionExtensions
     /// <see cref="ITransport.TransportId"/></em>, never by position, so adding another transport to the
     /// composition root cannot silently hand this provisioner a Docker or SSH connection.
     /// </para>
+    /// <para>
+    /// Registers one <see cref="WriteModeGrant"/>, scoped to <c>local://{machineId}</c> — the single endpoint
+    /// this provisioner stamps — exactly as <c>AddServyxSshProvisioning()</c> does for its host. That grant is
+    /// what lets the guarded transport carry out the marker writes and install verbs an install needs. It is
+    /// the only write capability this method adds, and it names a target rather than a transport.
+    /// </para>
     /// </remarks>
     /// <param name="services">The service collection to register into.</param>
     /// <param name="machineId">
@@ -55,6 +61,16 @@ public static class ProcessProvisioningServiceCollectionExtensions
         string? markerRoot = null)
     {
         ArgumentNullException.ThrowIfNull(services);
+
+        // AddServyxLocalProcess() puts a write guard in front of the local transport, so the provisioner's own
+        // marker writes, sweeps and install verbs would be refused without an explicit grant. This is that
+        // grant, and it is scoped to exactly the machine endpoint this method was configured with — the
+        // machine being provisioned, named at the composition root, not "anything a local session can reach".
+        // A caller cannot forge it: nothing downstream can register a grant, only whoever writes this line.
+        services.AddSingleton(new WriteModeGrant(
+            WriteMode.Enabled,
+            LocalProcessProvisioner.LocalTransportId,
+            LocalProcessProvisioner.EndpointFor(machineId)));
 
         services.AddSingleton(sp =>
         {

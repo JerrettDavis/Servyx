@@ -175,11 +175,22 @@ is open.
 
 The architecture test is
 `Servyx.Infrastructure.Ssh.Tests.TransportWriteGuardArchitectureTests` — the
-only assembly that sees all three transports. It carries one documented
-exemption: `AddServyxLocalProcess` still registers `LocalProcessTransport`
-unguarded, because existing tests pin both that registration's concrete type
-and `ConnectAsync`'s concrete return type. Closing it belongs to M8, and the
-test fails if the exemption list grows.
+only assembly that sees all three transports. **Its exemption list is empty,
+and asserted to be.** `AddServyxLocalProcess` was the last entry; it now
+registers `LocalProcessTransport` behind a `WriteGuardedTransport` exactly as
+`AddServyxDocker` and `AddServyxSsh` do, and `AddServyxProcessProvisioning`
+registers the endpoint-scoped grant (`local://{machineId}`) that keeps
+provisioning's marker writes working — the same pairing SSH uses. A transport
+registered unguarded tomorrow fails the guard assertion, and re-adding an
+exemption to make it pass fails a second assertion that the list is empty.
+
+One local mutation still sits outside every transport seam: the local
+provisioner's `ensure-dir` step is a `Directory.CreateDirectory` call in
+Servyx's own process, so no decorator can reach it. `LocalProcessProvisioner`
+therefore keeps consulting `ExecutionTargetWriteMode` before its first
+mutation. That check is now a second look at the same policy rather than the
+only look, because the transport it holds is guarded and answers a real posture
+instead of `null`.
 
 ### `IConfigFormatAdapter`
 

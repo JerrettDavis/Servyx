@@ -156,16 +156,32 @@ public static class ProvisionerComposition
     /// Composes <see cref="LocalProcessProvisioner"/> over a local transport this provisioner alone can reach.
     /// </summary>
     /// <remarks>
-    /// <see cref="LocalProcessTransport"/> is the one Servyx transport still registered without a write guard
-    /// in front of it — a gap <c>AddServyxLocalProcess()</c> documents and
-    /// <c>TransportWriteGuardArchitectureTests</c> pins. Nothing here changes that, and nothing here widens it
-    /// either: the transport is never published as an <see cref="ITransport"/>, so the unguarded write path
-    /// reaches exactly one object in this container instead of anything that injects a transport.
+    /// <para>
+    /// The write guard is the same one <c>AddServyxLocalProcess()</c> puts in front of the transport, over the
+    /// same endpoint-scoped grant <c>AddServyxProcessProvisioning()</c> registers — but, exactly as
+    /// <see cref="AddSsh"/> does, the grant is handed straight to this transport's resolver instead of being
+    /// registered as a container-wide <see cref="WriteModeGrant"/>, so it can widen nothing but this one
+    /// object. The transport is still never published as an <see cref="ITransport"/>.
+    /// </para>
+    /// <para>
+    /// The grant's endpoint comes from <see cref="LocalProcessProvisioner.EndpointFor"/> rather than being
+    /// spelled out here, because the provisioner constructed on the next line derives its own descriptors'
+    /// endpoint from the same <c>options.MachineId</c> through that same function. A grant naming a different
+    /// string would match nothing and silently leave every marker write refused.
+    /// </para>
     /// </remarks>
     private static void AddProcess(IServiceCollection services, ProcessProvisionerOptions options)
     {
         services.AddSingleton(_ => new LocalProcessProvisioner(
-            new LocalProcessTransport(),
+            new WriteGuardedTransport(
+                new LocalProcessTransport(),
+                new GrantedWriteModeResolver(
+                [
+                    new WriteModeGrant(
+                        WriteMode.Enabled,
+                        LocalProcessTransport.Id,
+                        LocalProcessProvisioner.EndpointFor(options.MachineId)),
+                ])),
             options.MachineId,
             credentialUrn: null,
             transportOptions: null,

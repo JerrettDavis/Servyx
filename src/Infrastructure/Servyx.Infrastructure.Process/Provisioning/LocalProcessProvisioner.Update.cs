@@ -48,6 +48,18 @@ namespace Servyx.Infrastructure.Process.Provisioning;
 /// a better message, not to invent a second policy.
 /// </para>
 /// <para>
+/// <strong>Why this check survived the closing of the last write-guard exemption.</strong>
+/// <c>AddServyxLocalProcess()</c> now registers the local transport behind a
+/// <see cref="WriteGuardedTransport"/>, so a session this adapter is handed carries a real posture rather than
+/// answering <see langword="null"/> — which is what makes the check above actually fire on a local target
+/// instead of falling through. It could still not be deleted: <see cref="ExecutePreservingUpdateAsync"/>
+/// opens with <see cref="Directory.CreateDirectory(string)"/> against the data directory, <em>before</em> the
+/// first guarded call, and that call travels no transport. Without this guard a read-only server would have a
+/// directory created on it and only then be refused at the marker write, which is precisely the "nothing on
+/// this machine was touched" promise the refusal message makes. The check is now a second look at the same
+/// policy; the <c>ensure-dir</c> shape is the part that is still nobody else's to cover.
+/// </para>
+/// <para>
 /// <strong>There is no force path.</strong> No argument here skips a guard, and no combination of arguments
 /// makes a refused plan execute.
 /// </para>
@@ -164,9 +176,10 @@ public sealed partial class LocalProcessProvisioner : IUpdateApplier
                 + "more, so there is no install to update. Nothing on this machine was touched.");
         }
 
-        // Guard 6 - the write posture. The structural guard now refuses the marker write and the install
-        // commands, but not the in-process ensure-dir verb, and it would refuse them one at a time rather
-        // than refusing the update. It is consulted here, before anything runs. See the type remarks.
+        // Guard 6 - the write posture. The structural guard refuses the marker write and the install commands,
+        // but not the in-process ensure-dir verb — and it would refuse them one at a time rather than refusing
+        // the update, after ExecutePreservingUpdateAsync had already created a directory. It is consulted
+        // here, before anything runs. Not retirable; see the type remarks.
         if (ExecutionTargetWriteMode.Resolve(markerSession) is { } mode && mode != WriteMode.Enabled)
         {
             return new UpdateExecutionResult.Refused(

@@ -23,11 +23,14 @@ namespace Servyx.Infrastructure.Ssh.Tests;
 /// three.
 /// </para>
 /// <para>
-/// <b>The exemption list is the point.</b> <see cref="KnownUnguardedRegistrations"/> is asserted to be
-/// exactly one entry. A transport added tomorrow and registered unguarded fails
+/// <b>There are no exemptions left.</b> <see cref="KnownUnguardedRegistrations"/> is asserted to be
+/// <em>empty</em>, so the guard assertion applies to every registration without exception. A transport added
+/// tomorrow and registered unguarded fails
 /// <see cref="Every_transport_implementation_in_the_solution_is_named_here"/> or
 /// <see cref="Every_transport_registration_hands_out_write_guarded_sessions"/>, and the only way to make
-/// either pass is to guard it or to add it here in writing, where a reviewer sees it.
+/// either pass is to guard it — adding an entry here now fails
+/// <see cref="The_exemption_list_is_empty_and_no_registration_may_rejoin_it"/> as well, so reintroducing an
+/// exemption takes a deliberate, reviewable edit to that assertion rather than one quiet line.
 /// </para>
 /// </remarks>
 public class TransportWriteGuardArchitectureTests
@@ -41,18 +44,15 @@ public class TransportWriteGuardArchitectureTests
     ];
 
     /// <summary>
-    /// Registrations that still hand out unguarded sessions, each of which is a known gap rather than a
-    /// design choice.
+    /// Registrations that still hand out unguarded sessions. <b>Empty, and asserted to be.</b>
     /// </summary>
     /// <remarks>
-    /// <c>AddServyxLocalProcess</c>: <c>LocalProcessTransportTests</c> and
-    /// <c>ProvisionedLocalTargetHandoffTests</c> pin both this registration's concrete implementation type
-    /// and <c>ConnectAsync</c>'s concrete return type (<c>LocalExecutionTarget</c>, cast and written through
-    /// directly). Guarding it therefore cannot be done without rewriting those tests, which is M8's business
-    /// — the milestone that brings bare process hosts in — not something M4 may do in passing while adding
-    /// Docker writes.
+    /// It last held <c>AddServyxLocalProcess</c>, which registered a bare <c>LocalProcessTransport</c>. That
+    /// registration now builds a <c>WriteGuardedTransport</c> over it, the same way <c>AddServyxDocker</c> and
+    /// <c>AddServyxSsh</c> do, so all three transports are covered by the assertion below with nothing carved
+    /// out of it.
     /// </remarks>
-    private static readonly string[] KnownUnguardedRegistrations = ["AddServyxLocalProcess"];
+    private static readonly string[] KnownUnguardedRegistrations = [];
 
     private static IServiceCollection Composed(Action<IServiceCollection> register)
     {
@@ -125,13 +125,10 @@ public class TransportWriteGuardArchitectureTests
 
         transports.Should().ContainSingle($"{method} must register exactly one ITransport");
 
-        if (KnownUnguardedRegistrations.Contains(method))
-        {
-            transports[0].Should().NotBeOfType<WriteGuardedTransport>(
-                "this registration is a documented gap; if it has been guarded, remove it from " +
-                "KnownUnguardedRegistrations rather than leaving a stale exemption behind");
-            return;
-        }
+        KnownUnguardedRegistrations.Should().NotContain(
+            method,
+            "there are no exemptions left; a registration may not rejoin the list without changing " +
+            $"{nameof(The_exemption_list_is_empty_and_no_registration_may_rejoin_it)} too");
 
         transports[0].Should().BeOfType<WriteGuardedTransport>(
             $"{method} must not put an unguarded transport in the container — every execution target it " +
@@ -139,11 +136,12 @@ public class TransportWriteGuardArchitectureTests
     }
 
     [Fact]
-    public void The_exemption_list_holds_exactly_the_one_registration_documented_above()
+    public void The_exemption_list_is_empty_and_no_registration_may_rejoin_it()
     {
-        // A list that quietly grows is not an exemption list, it is a loophole. Anyone adding to it has to
-        // change this number and say why in the remarks.
-        KnownUnguardedRegistrations.Should().Equal("AddServyxLocalProcess");
+        // A list that quietly grows is not an exemption list, it is a loophole. It is empty now, and this is
+        // the assertion that keeps it empty: a fourth transport registered unguarded cannot be waved through
+        // by adding one line here, because that line fails this test as well as the guard theory above.
+        KnownUnguardedRegistrations.Should().BeEmpty();
     }
 
     [Fact]
@@ -155,7 +153,9 @@ public class TransportWriteGuardArchitectureTests
         {
             var services = Composed(register);
             var bare = services
-                .Where(d => d.ServiceType == typeof(DockerTransport) || d.ServiceType == typeof(SshTransport))
+                .Where(d => d.ServiceType == typeof(DockerTransport)
+                    || d.ServiceType == typeof(SshTransport)
+                    || d.ServiceType == typeof(LocalProcessTransport))
                 .ToList();
 
             bare.Should().BeEmpty($"{method} must expose the concrete transport under no service type at all");

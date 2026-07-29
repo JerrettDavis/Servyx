@@ -124,8 +124,8 @@ public sealed partial class LocalProcessProvisioner : IProvisioner
         }
 
         _transport = transport;
-        _machineId = string.IsNullOrWhiteSpace(machineId) ? Environment.MachineName : machineId;
-        _endpoint = $"local://{_machineId}";
+        _machineId = MachineIdOrDefault(machineId);
+        _endpoint = EndpointFor(machineId);
         _credentialUrn = credentialUrn;
         _transportOptions = transportOptions is null
             ? new Dictionary<string, string>(StringComparer.Ordinal)
@@ -146,6 +146,21 @@ public sealed partial class LocalProcessProvisioner : IProvisioner
     public static string DefaultMarkerRoot { get; } = OperatingSystem.IsWindows()
         ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "Servyx", "instances")
         : "/var/lib/servyx/instances";
+
+    /// <summary>
+    /// The <see cref="TargetDescriptor.Endpoint"/> a provisioner constructed with <paramref name="machineId"/>
+    /// stamps onto every descriptor it produces.
+    /// </summary>
+    /// <remarks>
+    /// Exposed so a composition root can scope a <see cref="WriteModeGrant"/> to exactly the endpoint this
+    /// provisioner will present, without re-deriving the format. The two must agree — a grant naming a
+    /// different string silently grants nothing — so there is one function and both callers use it.
+    /// </remarks>
+    /// <param name="machineId">The machine identifier, or null/blank for <see cref="Environment.MachineName"/>.</param>
+    public static string EndpointFor(string? machineId) => $"local://{MachineIdOrDefault(machineId)}";
+
+    private static string MachineIdOrDefault(string? machineId) =>
+        string.IsNullOrWhiteSpace(machineId) ? Environment.MachineName : machineId;
 
     /// <inheritdoc />
     public string ProvisionerId => Id;

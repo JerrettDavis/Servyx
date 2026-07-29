@@ -142,6 +142,87 @@ public class ProvisionedLocalTargetHandoffTests
         (await reader.ReadToEndAsync()).Should().Be("port=8211");
     }
 
+    /// <summary>
+    /// The transport as a composition root actually registers it: <c>AddServyxLocalProcess()</c> builds this
+    /// exact shape, over the grants the container holds.
+    /// </summary>
+    private static ITransport Registered(params WriteModeGrant[] grants) =>
+        new WriteGuardedTransport(new LocalProcessTransport(), new GrantedWriteModeResolver(grants));
+
+    [Fact]
+    public async Task The_registered_transport_completes_the_same_round_trip_when_the_machine_is_granted_writes()
+    {
+        // The twin of the bare-transport round trip above, through the guarded transport
+        // AddServyxLocalProcess() now registers and the endpoint-scoped grant
+        // AddServyxProcessProvisioning() registers alongside it. The claim is the same one the bare test
+        // makes — the provisioned descriptor is used, with no translation step, to write and read back a file
+        // in the reported data directory — and the guard neither needs nor gets a translation step of its own.
+        using var provisioned = await Provisioned.CreateAsync();
+        var transport = Registered(new WriteModeGrant(
+            WriteMode.Enabled,
+            LocalProcessTransport.Id,
+            LocalProcessProvisioner.EndpointFor("test-machine")));
+
+        await using var session = await transport.ConnectAsync(provisioned.Resource.RequireTarget());
+
+        ExecutionTargetWriteMode.Resolve(session).Should().Be(WriteMode.Enabled);
+
+        // TargetPath has no public constructor by design; it is obtained from the sandbox resolver for the
+        // same root, exactly as the bare-transport test obtains it by casting the session.
+        var path = new LocalExecutionTarget(provisioned.DataDirectory).Resolve("server.cfg");
+        await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("port=8211"), writable: false))
+        {
+            await session.WriteFileAsync(path, content, new FileWriteOptions(null));
+        }
+
+        File.Exists(Path.Combine(provisioned.DataDirectory, "server.cfg")).Should().BeTrue();
+
+        await using var read = await session.OpenReadAsync(path);
+        using var reader = new StreamReader(read);
+        (await reader.ReadToEndAsync()).Should().Be("port=8211");
+    }
+
+    [Fact]
+    public async Task The_registered_transport_refuses_the_write_but_not_the_read_when_no_grant_names_the_machine()
+    {
+        // Before the registration was guarded, ExecutionTargetWriteMode.Resolve answered null for every local
+        // target and this write simply happened. The refusal is the point; so is the read that follows it,
+        // because the guard refuses mutation, not observation.
+        using var provisioned = await Provisioned.CreateAsync();
+        var expected = Path.Combine(provisioned.DataDirectory, "server.cfg");
+
+        await using var session = await Registered().ConnectAsync(provisioned.Resource.RequireTarget());
+
+        var paths = new LocalExecutionTarget(provisioned.DataDirectory);
+        var write = async () =>
+        {
+            await using var content = new MemoryStream(Encoding.UTF8.GetBytes("port=8211"), writable: false);
+            await session.WriteFileAsync(paths.Resolve("server.cfg"), content, new FileWriteOptions(null));
+        };
+
+        await write.Should().ThrowAsync<WritesDisabledException>();
+        File.Exists(expected).Should().BeFalse("the refusal happens before any I/O");
+
+        // Observation is untouched: the provisioned directory is still listable through the same session.
+        var entries = await session.ListDirectoryAsync(paths.Resolve("."));
+        entries.Should().NotBeNull();
+    }
+
+    [Fact]
+    public async Task The_grant_the_provisioning_registration_writes_names_the_endpoint_the_provisioner_stamps()
+    {
+        // The two halves are derived from one function so they cannot drift, and this is the assertion that
+        // says so: a grant scoped with EndpointFor matches the descriptors the provisioner hands back, and a
+        // grant for another machine matches none of them.
+        using var provisioned = await Provisioned.CreateAsync();
+        var target = provisioned.Resource.RequireTarget();
+
+        new WriteModeGrant(WriteMode.Enabled, LocalProcessTransport.Id, LocalProcessProvisioner.EndpointFor("test-machine"))
+            .Matches(target).Should().BeTrue();
+        new WriteModeGrant(WriteMode.Enabled, LocalProcessTransport.Id, LocalProcessProvisioner.EndpointFor("another-machine"))
+            .Matches(target).Should().BeFalse();
+    }
+
     [Fact]
     public async Task The_provisioned_target_is_sandboxed_to_the_data_directory_the_provisioner_reported()
     {
