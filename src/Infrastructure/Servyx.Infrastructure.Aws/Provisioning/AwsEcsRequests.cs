@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace Servyx.Infrastructure.Aws.Provisioning;
@@ -126,10 +128,15 @@ internal static class AwsEcsRequests
     /// <param name="spec">The deployment to create a service for.</param>
     /// <param name="taskDefinitionArn">The revision ARN <see cref="RegisterTaskDefinition"/> produced.</param>
     /// <param name="tags">The service's tag set, applied inline in this same request.</param>
+    /// <param name="registryArn">
+    /// The ARN of the AWS Cloud Map service to register tasks into, or <see langword="null"/> for no service
+    /// discovery — which is the default and leaves the body byte-for-byte what it was before discovery existed.
+    /// </param>
     internal static JsonObject CreateService(
         AwsFargateServiceSpec spec,
         string taskDefinitionArn,
-        IReadOnlyDictionary<string, string> tags)
+        IReadOnlyDictionary<string, string> tags,
+        string? registryArn = null)
     {
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentException.ThrowIfNullOrWhiteSpace(taskDefinitionArn);
@@ -158,7 +165,7 @@ internal static class AwsEcsRequests
             awsvpc["securityGroups"] = groups;
         }
 
-        return new JsonObject
+        var body = new JsonObject
         {
             ["cluster"] = spec.ClusterName,
             ["serviceName"] = spec.ServiceName,
@@ -178,6 +185,21 @@ internal static class AwsEcsRequests
             ["propagateTags"] = "SERVICE",
             ["tags"] = TagsArray(tags, ServyxEcsTags.RoleService),
         };
+
+        if (registryArn is { Length: > 0 })
+        {
+            // The whole of the durable-address mechanism, and it is three words long. Naming a Cloud Map service
+            // here makes ECS register the task's elastic network interface into it when a task starts and
+            // deregister it when the task stops - on every routine replacement, for the life of the service,
+            // with no further call from Servyx. Because it is part of the call that creates the service, there
+            // is no window in which a running task exists and is not registered.
+            //
+            // No 'port', 'containerName' or 'containerPort' is sent, and that is not an omission: ECS requires
+            // those only for SRV records, and Servyx registers an A record. See AwsFargateServiceDiscovery.
+            body["serviceRegistries"] = new JsonArray(new JsonObject { ["registryArn"] = registryArn });
+        }
+
+        return body;
     }
 
     private static JsonArray PortMappings(AwsFargateServiceSpec spec)
@@ -225,6 +247,131 @@ internal static class AwsEcsRequests
             {
                 ["key"] = tag.Key,
                 ["value"] = string.Equals(tag.Key, ServyxEcsTags.RoleTag, StringComparison.Ordinal) ? role : tag.Value,
+            });
+        }
+
+        return array;
+    }
+}
+
+/// <summary>
+/// Translates a Fargate spec plus an <see cref="AwsFargateServiceDiscovery"/> into the one AWS Cloud Map request
+/// body a Servyx deployment needs: <c>CreateService</c>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>One body, and separate from <see cref="AwsEcsRequests"/> because it is a different service's
+/// protocol.</strong> Cloud Map's JSON is <c>PascalCase</c> throughout and its tag members are <c>Key</c> and
+/// <c>Value</c> rather than ECS's <c>key</c> and <c>value</c>. Putting the two builders in one class would put
+/// two casing conventions one method apart, which is exactly the kind of near-miss that produces a resource that
+/// exists and reads as untagged.
+/// </para>
+/// <para>
+/// <strong>There is no namespace-creating body here</strong>, deliberately, and no <c>RegisterInstance</c> body
+/// either — the first because Servyx must not manufacture a second unattributable monthly charge, the second
+/// because ECS performs every registration itself once the ECS service names this Cloud Map service. See
+/// <see cref="AwsFargateServiceDiscovery"/> and <see cref="ServiceDiscoveryJsonApiClient"/>.
+/// </para>
+/// </remarks>
+internal static class AwsCloudMapRequests
+{
+    /// <summary>The prefix of the deterministic <c>CreatorRequestId</c> every create carries.</summary>
+    internal const string CreatorRequestIdPrefix = "servyx-";
+
+    /// <summary>How many hex characters of the identity digest the <c>CreatorRequestId</c> carries.</summary>
+    /// <remarks>
+    /// Cloud Map caps <c>CreatorRequestId</c> at 64 characters. Thirty-two hex characters of SHA-256 plus the
+    /// prefix is well inside that and is far past any collision that matters for one AWS account's servers.
+    /// </remarks>
+    internal const int CreatorRequestIdDigestLength = 32;
+
+    /// <summary>Builds the full Cloud Map <c>CreateService</c> request body.</summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The <c>CreatorRequestId</c> is deterministic on purpose.</strong> Cloud Map treats a repeated
+    /// <c>CreatorRequestId</c> as a retry of the same request rather than as a second create, so a provision
+    /// retried after a timeout re-reads the service it already made instead of failing on
+    /// <c>ServiceAlreadyExists</c> or — worse — succeeding under a second name that nothing would ever clean up.
+    /// It is derived from the Servyx instance id and the service name, which are exactly the two things that make
+    /// this registration <em>this server's</em>.
+    /// </para>
+    /// <para>
+    /// <strong><c>HealthCheckCustomConfig</c> and never <c>HealthCheckConfig</c>.</strong> The latter is a Route
+    /// 53 health check: it works only for public namespaces, it bills per check, and it would probe a private
+    /// address it cannot reach. The former hands health to ECS, which already knows the container's state, and
+    /// AWS makes no charge for it. It is also the only one of the two that can serve a private namespace at all.
+    /// </para>
+    /// </remarks>
+    /// <param name="spec">The deployment being registered. Supplies the Cloud Map service's name and identity.</param>
+    /// <param name="discovery">The namespace, record TTL and reachability attestation.</param>
+    /// <param name="tags">The service's tag set, applied inline in this same request.</param>
+    internal static JsonObject CreateService(
+        AwsFargateServiceSpec spec,
+        AwsFargateServiceDiscovery discovery,
+        IReadOnlyDictionary<string, string> tags)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+        ArgumentNullException.ThrowIfNull(discovery);
+        ArgumentNullException.ThrowIfNull(tags);
+
+        return new JsonObject
+        {
+            ["Name"] = spec.ServiceName,
+            ["NamespaceId"] = discovery.NamespaceId,
+            ["CreatorRequestId"] = CreatorRequestId(spec),
+            ["Description"] =
+                "Created by Servyx so an ECS service on Fargate has a DNS name that outlives the tasks it "
+                + "replaces. Destroyed by Servyx when that ECS service is destroyed. The namespace this lives in "
+                + "was not created by Servyx and is never deleted by it.",
+            ["DnsConfig"] = new JsonObject
+            {
+                ["RoutingPolicy"] = AwsFargateServiceDiscovery.RoutingPolicy,
+                ["DnsRecords"] = new JsonArray(
+                    new JsonObject
+                    {
+                        ["Type"] = AwsFargateServiceDiscovery.RecordType,
+                        ["TTL"] = discovery.RecordTtlSeconds,
+                    }),
+            },
+            ["HealthCheckCustomConfig"] = new JsonObject
+            {
+                ["FailureThreshold"] = AwsFargateServiceDiscovery.HealthCheckFailureThreshold,
+            },
+            ["Tags"] = TagsArray(tags),
+        };
+    }
+
+    /// <summary>The deterministic idempotency token for <paramref name="spec"/>'s registration.</summary>
+    internal static string CreatorRequestId(AwsFargateServiceSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+
+        var digest = Convert.ToHexStringLower(
+            SHA256.HashData(
+                Encoding.UTF8.GetBytes(
+                    string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"{spec.Tags.InstanceId}\n{spec.ClusterName}\n{spec.ServiceName}"))));
+
+        return CreatorRequestIdPrefix + digest[..CreatorRequestIdDigestLength];
+    }
+
+    /// <summary>
+    /// Renders a tag dictionary as a Cloud Map <c>Tags</c> array — <c>Key</c>/<c>Value</c>, not
+    /// <c>key</c>/<c>value</c> — with the role forced to <see cref="ServyxEcsTags.RoleDiscoveryService"/>.
+    /// </summary>
+    private static JsonArray TagsArray(IReadOnlyDictionary<string, string> tags)
+    {
+        var array = new JsonArray();
+
+        foreach (var tag in tags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            array.Add(new JsonObject
+            {
+                ["Key"] = tag.Key,
+                ["Value"] = string.Equals(tag.Key, ServyxEcsTags.RoleTag, StringComparison.Ordinal)
+                    ? ServyxEcsTags.RoleDiscoveryService
+                    : tag.Value,
             });
         }
 

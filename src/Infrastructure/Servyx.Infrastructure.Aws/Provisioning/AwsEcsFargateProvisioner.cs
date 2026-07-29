@@ -95,9 +95,32 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// the task — which is the service's entire job — and <c>DescribeTasks</c> does not report a public address at
 /// all: obtaining one means calling <c>ec2:DescribeNetworkInterfaces</c>, a different AWS service this adapter
 /// does not call. <see cref="ResourceFacts.PublicAddress"/> is therefore always <see langword="null"/> and
-/// <see cref="ResourceFacts.PrivateAddress"/> carries the current task's private IPv4, with a plan stage saying
-/// out loud that no stable address exists and that obtaining one means a load balancer or Cloud Map, neither of
-/// which Servyx creates.
+/// <see cref="ResourceFacts.PrivateAddress"/> carries the current task's private IPv4.
+/// </para>
+/// <para>
+/// <strong>AWS Cloud Map service discovery is the one thing that changes that, and it changes exactly half of
+/// it.</strong> Constructed with an <see cref="AwsFargateServiceDiscovery"/>, this adapter creates a Cloud Map
+/// service alongside the ECS service and names it in <c>CreateService</c>'s <c>serviceRegistries</c>, after which
+/// <em>ECS itself</em> registers and deregisters the task's network interface on every replacement — no
+/// <c>RegisterInstance</c> from Servyx, and therefore no window in which a running task is unregistered. The
+/// result is a DNS name, <c>&lt;service&gt;.&lt;namespace&gt;</c>, that belongs to the service and genuinely
+/// survives every task replacement. What it does <em>not</em> give is a routable address: AWS registers the
+/// task's <strong>private</strong> IPv4 into the record — explicitly, and even when the namespace is a public one
+/// — so the name resolves inside the VPC and nowhere else, and <c>assignPublicIp</c> does not change it. That is
+/// why <see cref="AwsFargateServiceDiscovery"/> asks the operator to state how the control plane reaches that
+/// VPC, and why a Fargate deployment is operable only when somebody has said so. Without the configuration, the
+/// plan still says out loud that no stable address exists and that obtaining one means a load balancer or Cloud
+/// Map.
+/// </para>
+/// <para>
+/// <strong>A load balancer was considered and is still not built, and the reason is not cost alone.</strong> RCON
+/// is raw TCP, so an Application Load Balancer cannot carry it and a Network Load Balancer would be needed; an
+/// NLB bills an hourly charge plus capacity units that together dwarf a small Fargate task, provisions in
+/// minutes rather than seconds, and requires a target group and a listener — three more objects Servyx would
+/// create, tag, sweep and destroy. Cloud Map costs 0.10 USD per registered resource per month, provisions in one
+/// call, and is one object. The trade is that the NLB would have given a <em>public</em> name and Cloud Map does
+/// not; that is a real loss and it is stated rather than glossed, in the plan, in the refusal message, and in
+/// the durability justification.
 /// </para>
 /// <para>
 /// <strong>What <see cref="ReconcileAsync"/> finds, and what it structurally cannot.</strong> The sweep lists
@@ -137,6 +160,19 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// pointer is destroyed with it, and the file system carries on billing with nothing in AWS or in Servyx
 /// attributing the charge.
 /// </description></item>
+/// <item><description>
+/// <strong>The Cloud Map namespace, and — in one specific case — a Cloud Map service.</strong> The namespace is
+/// never created by Servyx, therefore never tagged, therefore invisible; it is a Route 53 private hosted zone and
+/// it bills monthly, which is exactly why this adapter refuses to create one and requires it to pre-exist. The
+/// Cloud Map <em>service</em> is Servyx's: tagged in the call that creates it, pointed at by
+/// <see cref="ServyxEcsTags.DiscoveryServiceTag"/>, and deleted on the destroy path. This sweep still does not
+/// enumerate it, because <see cref="ReconcileAsync"/> lists ECS services in one cluster and a
+/// <see cref="ResourceHandle"/> naming a Cloud Map service would go onto a delete list
+/// <see cref="DestroyAsync"/> refuses to act on. So one survives Servyx only when a destroy or a compensation
+/// could not release it — which is when instances are still registered — and it is then findable by the
+/// exception that said so, or by hand. The honest mitigation is that this is the cheapest orphan class here:
+/// Cloud Map bills per registered resource, and a service with nothing registered in it registers none.
+/// </description></item>
 /// </list>
 /// <para>
 /// <strong>Submission is never reported as success, at either end.</strong> <c>CreateService</c> answers
@@ -148,19 +184,25 @@ namespace Servyx.Infrastructure.Aws.Provisioning;
 /// </para>
 /// <para>
 /// <strong>Nothing is created that this adapter cannot destroy.</strong> No cluster, no EFS file system, no mount
-/// target, no security group, no IAM role, no log group, no load balancer. Every one of those is a precondition
-/// the operator supplies, named in the plan as REQUIRES rather than created — so unlike the Azure VM adapter,
-/// which upserts a resource group and then refuses to delete it, this adapter leaves behind exactly one class of
-/// thing it made (task definition revisions) and that class is free.
+/// target, no security group, no IAM role, no log group, no load balancer, and — deliberately — no Cloud Map
+/// <em>namespace</em>. Every one of those is a precondition the operator supplies, named in the plan as REQUIRES
+/// rather than created. Two things are created: a task definition revision, which is free and permanent, and (only
+/// when service discovery is configured) a Cloud Map service, which this adapter deletes on the destroy path after
+/// reading its tags back to confirm it is Servyx's. So unlike the Azure VM adapter, which upserts a resource group
+/// and then refuses to delete it, this adapter leaves behind by design exactly one class of thing it made, and
+/// that class is free.
 /// </para>
 /// <para>
-/// <strong>It implements <see cref="IControlChannelAddressSource"/> in order to answer no.</strong> The RCON
-/// control channel is what lifts a shape-M resource to the <c>Operate</c> tier, and it needs an address that
-/// outlives a replacement. ACI has one when a <c>dnsNameLabel</c> was requested; this adapter has none, for the
-/// reason its addressing finding already gave and which <see cref="NoControlAddressReason"/> states in full.
-/// The interface is implemented rather than omitted so that "this target still cannot be operated" is a value a
-/// caller receives and a test pins, instead of an absence that reads as an oversight. A load balancer or a Cloud
-/// Map registration would change the answer; nothing inside this adapter can.
+/// <strong>It implements <see cref="IControlChannelAddressSource"/> and the answer depends on how it was
+/// constructed.</strong> The RCON control channel is what lifts a shape-M resource to the <c>Operate</c> tier,
+/// and it needs an address that outlives a replacement. Without an <see cref="AwsFargateServiceDiscovery"/> there
+/// is none, and <see cref="NoControlAddressReason"/> states why in full — the interface is implemented rather
+/// than omitted so that "this target cannot be operated" is a value a caller receives and a test pins, instead of
+/// an absence that reads as an oversight. With one, there is a durable name, and
+/// <see cref="ControlChannelAddress.Durable"/> is returned <em>only</em> when the operator has additionally
+/// stated how the control plane routes into the namespace's VPC, because the record carries a private address.
+/// Both halves have to hold: a name that moves and a name that cannot be reached fail a control channel in the
+/// same way, and neither is reported as merely <see cref="ControlChannelAddress.Ephemeral"/>.
 /// </para>
 /// </remarks>
 public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddressSource
@@ -200,6 +242,8 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     internal const string StoppedDesiredStatus = "STOPPED";
 
     private readonly EcsJsonApiClient _api;
+    private readonly ServiceDiscoveryJsonApiClient? _discoveryApi;
+    private readonly AwsFargateServiceDiscovery? _discovery;
     private readonly string _region;
     private readonly string _cluster;
     private readonly TimeProvider _timeProvider;
@@ -232,6 +276,21 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     /// <param name="pollInterval">How long to wait between task-readiness and deletion polls. Defaults to five seconds.</param>
     /// <param name="pollAttempts">How many polls to make before giving up. Defaults to 60.</param>
     /// <param name="endpoint">Override for the regional ECS endpoint. Defaults to <c>https://ecs.{region}.amazonaws.com/</c>.</param>
+    /// <param name="serviceDiscovery">
+    /// The AWS Cloud Map registration to attach to every service this provisioner creates, or
+    /// <see langword="null"/> — the default — for none, in which case not one <c>servicediscovery</c> call is ever
+    /// made and this adapter behaves exactly as it did before service discovery existed. Adapter state rather than
+    /// a per-request parameter for the same structural reason the cluster is: it decides what a whole provisioner
+    /// can and cannot do (here, whether a control channel can ever be opened at all), and a caller must be able to
+    /// see that before approving a plan rather than discover it per server. See
+    /// <see cref="AwsFargateServiceDiscovery"/> — in particular for why reachability is an operator attestation
+    /// rather than something Servyx can determine.
+    /// </param>
+    /// <param name="serviceDiscoveryEndpoint">
+    /// Override for the regional Cloud Map endpoint. Defaults to
+    /// <c>https://servicediscovery.{region}.amazonaws.com/</c>. Unused when <paramref name="serviceDiscovery"/> is
+    /// <see langword="null"/>.
+    /// </param>
     /// <exception cref="ArgumentException"><paramref name="region"/> or <paramref name="cluster"/> is blank.</exception>
     public AwsEcsFargateProvisioner(
         HttpClient httpClient,
@@ -242,7 +301,9 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         TimeProvider? timeProvider = null,
         TimeSpan? pollInterval = null,
         int pollAttempts = 60,
-        Uri? endpoint = null)
+        Uri? endpoint = null,
+        AwsFargateServiceDiscovery? serviceDiscovery = null,
+        Uri? serviceDiscoveryEndpoint = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(region);
         ArgumentException.ThrowIfNullOrWhiteSpace(cluster);
@@ -253,12 +314,29 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         _timeProvider = timeProvider ?? TimeProvider.System;
         _pollInterval = pollInterval ?? TimeSpan.FromSeconds(5);
         _pollAttempts = pollAttempts;
+        _discovery = serviceDiscovery;
 
         _api = new EcsJsonApiClient(
             httpClient,
             new AwsRequestSigner(secretStore, identity, region, EcsProtocol.ServiceName, _timeProvider),
             region,
             endpoint);
+
+        // A second signer, not a second credential: the same key pair, resolved from the same store per request,
+        // with 'servicediscovery' replacing 'ecs' in the SigV4 credential scope. AwsRequestSigner needed no change
+        // for a fourth AWS service, exactly as it needed none for the third.
+        _discoveryApi = serviceDiscovery is null
+            ? null
+            : new ServiceDiscoveryJsonApiClient(
+                httpClient,
+                new AwsRequestSigner(
+                    secretStore,
+                    identity,
+                    region,
+                    ServiceDiscoveryProtocol.ServiceName,
+                    _timeProvider),
+                region,
+                serviceDiscoveryEndpoint);
     }
 
     /// <inheritdoc />
@@ -269,6 +347,19 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
 
     /// <summary>The ECS cluster this provisioner creates into and sweeps. Fixed at construction.</summary>
     public string Cluster => _cluster;
+
+    /// <summary>
+    /// The AWS Cloud Map registration attached to every service this provisioner creates, or
+    /// <see langword="null"/> when none is configured. Fixed at construction.
+    /// </summary>
+    /// <remarks>
+    /// The single most consequential thing about a Fargate provisioner, because it is what decides whether the
+    /// resources it makes can be <em>operated</em>. With it null, this adapter can plan, price, create, sweep and
+    /// destroy, and <see cref="ResolveControlAddressAsync"/> answers
+    /// <see cref="ControlChannelAddress.NoAddress"/> forever. Exposed so a caller can see which of those two
+    /// adapters it is holding without provisioning anything.
+    /// </remarks>
+    public AwsFargateServiceDiscovery? ServiceDiscovery => _discovery;
 
     /// <inheritdoc />
     /// <remarks>
@@ -290,6 +381,16 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     /// service's whole purpose is to replace the task — so the address changes as a matter of ordinary operation,
     /// not as an exception. Claiming the bit would mislead an operator about the one thing they would build a
     /// connection string on.
+    /// </para>
+    /// <para>
+    /// <strong>It stays absent even with service discovery configured, and that is a judgement rather than an
+    /// oversight.</strong> A Cloud Map registration really does produce a name that survives replacement, which
+    /// is what the bit sounds like it promises. It does not produce an address anyone outside the VPC can connect
+    /// to, because AWS registers the task's private IPv4 into the record even in a public namespace. An operator
+    /// reading <see cref="ProvisioningCapabilities.StaticAddress"/> would build a connection string on it and
+    /// hand that string to a player. The name is offered to the one consumer that is told the whole truth about
+    /// it — <see cref="ResolveControlAddressAsync"/>, whose answer carries the justification, the namespace type
+    /// and the operator's own reachability claim — and to nothing else.
     /// </para>
     /// <para>
     /// <see cref="ProvisioningCapabilities.FirewallRules"/> is absent for a different reason than ACI's, and the
@@ -424,7 +525,11 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
                 + "group with no NFS rule all produce a service that ECS considers healthy and a task that never "
                 + "starts. If no task reaches RUNNING, ECS's own stoppedReason is read and reported, and the "
                 + "create is failed so it can be compensated."),
-            new(
+        };
+
+        if (_discovery is null)
+        {
+            stages.Add(new ProvisioningStage(
                 "no-stable-address",
                 Id,
                 "NOT PROVIDED: a stable address. A Fargate task's address belongs to its elastic network "
@@ -433,12 +538,17 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
                 + "requires an ec2:DescribeNetworkInterfaces call this adapter does not make, and would be just "
                 + "as ephemeral. Servyx will report the current task's private address as a fact and no public "
                 + "address at all. Obtaining a stable endpoint means a load balancer or Cloud Map service "
-                + "discovery, neither of which Servyx creates, and both of which bill separately."),
-            new(
-                "handoff-unreachable",
-                Id,
-                "Hand back the service WITH NO TRANSPORT TARGET. " + UnreachableReason),
-        };
+                + "discovery, neither of which Servyx creates, and both of which bill separately."));
+        }
+        else
+        {
+            AddServiceDiscoveryStages(stages, spec, _discovery);
+        }
+
+        stages.Add(new ProvisioningStage(
+            "handoff-unreachable",
+            Id,
+            "Hand back the service WITH NO TRANSPORT TARGET. " + UnreachableReason));
 
         var restricted = spec.Ports.Where(p => !string.IsNullOrWhiteSpace(p.SourceCidr)).ToList();
         if (restricted.Count > 0)
@@ -472,12 +582,149 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
 
         var planHash = ComputePlanHash(spec, tags);
 
+        var compute = AwsFargatePricing.For(spec.CpuUnits, spec.MemoryMib);
+
         return new ProvisioningPlan(
             PlanId: $"{Id}:{spec.ServiceName}:{planHash[..12]}",
             PlanHash: planHash,
             Stages: stages,
-            EstimatedCost: AwsFargatePricing.For(spec.CpuUnits, spec.MemoryMib),
+            // Folded, not footnoted. A Cloud Map registration bills a fixed, knowable amount per server per month
+            // and Servyx is the thing creating it, so leaving it out of the number and mentioning it in prose
+            // would understate a cost this adapter is directly responsible for. What AwsCloudMapPricing does
+            // *not* fold in - the shared Route 53 hosted zone and volume-dependent query charges - it names.
+            EstimatedCost: _discovery is null ? compute : AwsCloudMapPricing.Fold(compute),
             ExpiresAt: _timeProvider.GetUtcNow().AddMinutes(15));
+    }
+
+    /// <summary>
+    /// Adds the stages that describe the AWS Cloud Map registration, in the order the create actually performs
+    /// them.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Six stages for one extra API call, and the count is the point. Four of them exist to say something an
+    /// operator would otherwise have to already know: that Servyx does not create the namespace and therefore
+    /// cannot leave one behind, that the registration is performed by ECS rather than by Servyx and so has no
+    /// unregistered window, that the durable name resolves to a <em>private</em> address even in a public
+    /// namespace, and — most importantly — whether that makes the deployment operable or not. Compressing them
+    /// into "create a Cloud Map service" would hide exactly the fact that decides whether the resulting server
+    /// can be talked to.
+    /// </para>
+    /// <para>
+    /// The two stages that describe work happening before <c>create-service</c> are inserted at their real
+    /// positions rather than appended, because a plan is read as a sequence and a reader who sees the Cloud Map
+    /// service created after the ECS service would draw the wrong conclusion about what a partial failure leaves
+    /// behind.
+    /// </para>
+    /// </remarks>
+    private static void AddServiceDiscoveryStages(
+        List<ProvisioningStage> stages,
+        AwsFargateServiceSpec spec,
+        AwsFargateServiceDiscovery discovery)
+    {
+        var ttlText = discovery.RecordTtlSeconds.ToString(CultureInfo.InvariantCulture);
+
+        Insert(
+            stages,
+            "register-task-definition",
+            new ProvisioningStage(
+                "require-cloud-map-namespace",
+                Id,
+                $"REQUIRES (does not create): AWS Cloud Map namespace '{discovery.NamespaceId}'. Servyx creates "
+                + "no namespace, so it can leave none behind; if the namespace is absent the Cloud Map create "
+                + "below fails with NamespaceNotFound before the billable ECS service exists. THIS IS A "
+                + "DELIBERATE REFUSAL AND NOT A GAP: a private DNS namespace is a Route 53 private hosted zone, "
+                + "which bills every month, is shared by every service registered in it, outlives any one "
+                + "server, and would be invisible to a sweep that enumerates ECS services in one cluster - the "
+                + "same unattributable-billing shape as the EFS file system above. Servyx already leaves one of "
+                + "those; it will not manufacture a second."));
+
+        Insert(
+            stages,
+            "create-service",
+            new ProvisioningStage(
+                "create-cloud-map-service",
+                Id,
+                $"Create AWS Cloud Map service '{spec.ServiceName}' in namespace '{discovery.NamespaceId}': one "
+                + $"{AwsFargateServiceDiscovery.RecordType} record, TTL {ttlText}s, routing policy "
+                + $"{AwsFargateServiceDiscovery.RoutingPolicy}, health delegated to ECS via "
+                + "HealthCheckCustomConfig (no Route 53 health check is created and none is billed), tagged with "
+                + "every Servyx tag by the same call so it never exists untagged. CREATED AND DESTROYED BY "
+                + "SERVYX - unlike the namespace above and the file system above it, this object is Servyx's, is "
+                + "deleted when the ECS service is destroyed, and is the reason a durable name exists at all. "
+                + AwsCloudMapPricing.DescribeCharge()));
+
+        Insert(
+            stages,
+            "await-running-task",
+            new ProvisioningStage(
+                "register-task-in-service-discovery",
+                Id,
+                "NO SEPARATE CALL IS MADE: the ECS service above is created with a serviceRegistries entry "
+                + "naming the Cloud Map service, and ECS then registers the task's elastic network interface "
+                + "itself when a task starts and deregisters it when the task stops - on every routine "
+                + "replacement, for the life of the service. Servyx issues no RegisterInstance and no "
+                + "DeregisterInstance, so there is no window in which a running task exists and is not "
+                + "registered, and no way for Servyx to fall behind a replacement it did not observe."));
+
+        stages.Add(new ProvisioningStage(
+            "discovery-name-resolves-privately",
+            Id,
+            $"THE NAME IS DURABLE AND THE ADDRESS BEHIND IT IS PRIVATE. Once registered, the service answers to "
+            + $"'{spec.ServiceName}.<namespace>' and that name survives every task replacement, because it "
+            + "belongs to the ECS service rather than to a task. What it resolves to does not help from outside "
+            + "the VPC: AWS registers the task's PRIVATE IPv4 into the record - explicitly, and even when the "
+            + "namespace is a public one, so assignPublicIp changes nothing here - and a private DNS namespace "
+            + "additionally answers only through its own VPC's Route 53 Resolver. A durable name that Servyx "
+            + "cannot route to is no more usable than an address that moves; the difference is only that it "
+            + "fails at connect time instead of silently."));
+
+        stages.Add(new ProvisioningStage(
+            "control-channel-address",
+            Id,
+            discovery.ControlPlaneVpcAccess is { Length: > 0 } access
+                ? "CONTROL CHANNEL WILL BE AVAILABLE. The operator has stated how Servyx's control plane reaches "
+                    + $"the namespace's VPC: \"{access}\". Servyx cannot verify that - no AWS call reports it, "
+                    + "and GetNamespace does not even say which VPC a private namespace was created for - so the "
+                    + "statement is carried verbatim into the durability justification and attributed to whoever "
+                    + "made it. On that basis the service-discovery name will be offered to the RCON control "
+                    + "channel as a durable address, which reaches the Operate tier and no higher; the Provision "
+                    + "tier needs a compose file, which a Fargate task does not have."
+                : "NO CONTROL CHANNEL WILL BE OPENED, even though a durable name will exist. No statement has "
+                    + "been made about how Servyx's control plane reaches the namespace's VPC, and Servyx will "
+                    + "not assume one: a name that resolves to a private address the control plane cannot route "
+                    + "to would produce a channel that appears configured and never connects. The resolved name "
+                    + "will still be reported, with this reason, so the one missing piece is visible. Supply the "
+                    + "provisioner's serviceDiscovery controlPlaneVpcAccess attestation to change this."));
+
+        stages.Add(new ProvisioningStage(
+            "destroy-deletes-cloud-map-service",
+            Id,
+            $"ON DESTROY: after the ECS service reaches INACTIVE - by which point ECS has deregistered the task "
+            + $"- Servyx deletes the Cloud Map service '{spec.ServiceName}', having first read its tags back and "
+            + "confirmed they are Servyx's. It does NOT delete the namespace, does not touch any other service "
+            + "in it, and does not deregister instances by hand. If Cloud Map still reports registered "
+            + "instances, the delete is retried and then FAILS LOUDLY rather than leaving a resource behind "
+            + "quietly."));
+    }
+
+    /// <summary>Inserts <paramref name="stage"/> immediately before the stage with <paramref name="beforeStageId"/>.</summary>
+    /// <remarks>
+    /// Positional rather than appended, so the plan reads in execution order. Falls back to appending if the
+    /// anchor is not present, which cannot happen for a plan this method is called on but is not worth throwing
+    /// over: a stage in the wrong place is a worse plan, not a broken deployment.
+    /// </remarks>
+    private static void Insert(List<ProvisioningStage> stages, string beforeStageId, ProvisioningStage stage)
+    {
+        var index = stages.FindIndex(s => string.Equals(s.StageId, beforeStageId, StringComparison.Ordinal));
+
+        if (index < 0)
+        {
+            stages.Add(stage);
+            return;
+        }
+
+        stages.Insert(index, stage);
     }
 
     /// <inheritdoc />
@@ -544,9 +791,11 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     /// <see cref="ResolveControlAddressAsync"/> call, whatever the service's state.
     /// </summary>
     /// <remarks>
-    /// The counterpart to <see cref="UnreachableReason"/>, and — unlike ACI's — it does not end in a route
-    /// that works. It names the two things that would create one, because a refusal with no next step reads
-    /// as a bug in Servyx rather than as a missing piece of infrastructure.
+    /// The counterpart to <see cref="UnreachableReason"/>. Returned only by a provisioner constructed
+    /// <em>without</em> an <see cref="AwsFargateServiceDiscovery"/> — which is the default — so it describes a
+    /// deployment shape rather than a permanent property of Fargate, and it names the configuration that changes
+    /// the answer. A refusal with no next step reads as a bug in Servyx rather than as a missing piece of
+    /// infrastructure.
     /// </remarks>
     public const string NoControlAddressReason =
         "an ECS service on Fargate has no address that outlives the workload. The only address that exists at any "
@@ -558,44 +807,217 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         + "private IPv4 inside the task's awsvpc subnet that Servyx generally cannot route to. A durable control "
         + "address therefore has to be created rather than discovered: put a load balancer in front of the service "
         + "and pin the channel to its DNS name, or register the service in AWS Cloud Map and pin the channel to "
-        + "the service-discovery name. This adapter creates neither, so until one exists a Fargate service can be "
-        + "planned, priced, created, swept and destroyed by Servyx, and cannot be operated by it.";
+        + "the service-discovery name. THIS PROVISIONER WAS CONSTRUCTED WITHOUT EITHER, so this service has "
+        + "neither and can be planned, priced, created, swept and destroyed by Servyx while not being operable by "
+        + "it. Servyx can create the second of the two: construct the provisioner with an "
+        + "AwsFargateServiceDiscovery naming a pre-existing Cloud Map namespace and it will register every "
+        + "service it creates, which produces a name that survives task replacement. Note before doing so that "
+        + "AWS registers the task's PRIVATE address into that record even in a public namespace, so the name is "
+        + "usable only from inside the namespace's VPC - which is why that type also asks the operator to state "
+        + "how the control plane reaches it.";
 
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// <strong>Always <see cref="ControlChannelAddress.NoAddress"/>, and that is the finding rather than a
-    /// gap in this method.</strong> The interface is implemented precisely so the answer is stated, tested
-    /// and visible instead of being an absence a reader has to notice. ACI's counterpart can answer
-    /// <see cref="ControlChannelAddress.Durable"/> when the group carries a <c>dnsNameLabel</c>; this one
-    /// has no equivalent, because a container group's DNS label belongs to the group and a Fargate task's
-    /// address belongs to a task the service exists to throw away. See <see cref="NoControlAddressReason"/>.
+    /// <strong>Two adapters live in this method, and which one a caller gets was decided at
+    /// construction.</strong> Without an <see cref="AwsFargateServiceDiscovery"/> this answers
+    /// <see cref="ControlChannelAddress.NoAddress"/> immediately, with <see cref="NoControlAddressReason"/>,
+    /// having issued <strong>no request of any kind</strong> — no <c>DescribeServices</c>, no
+    /// <c>servicediscovery</c> call, no signature computed and no credential resolved. The answer cannot depend
+    /// on the service's state, because no service this provisioner made has a durable name, so asking would bill
+    /// a caller for a round trip that could not change it. It does not even check whether the handle names a
+    /// service in this cluster: a handle that does not is equally unserviceable, and inventing a second reason
+    /// for it would suggest the first one was situational.
     /// </para>
     /// <para>
-    /// <strong>Not even <see cref="ControlChannelAddress.Ephemeral"/>.</strong> That case is for an address
-    /// that works now and will silently stop being right; the task's private IPv4 does not clear the first
-    /// half of that bar, since Servyx is not in the task's VPC and the ECS API exposes no public address to
-    /// offer instead. Reporting an unusable address as merely non-durable would overstate how close this
-    /// target is to being operable.
+    /// <strong>With service discovery configured it is a live read of three provider objects, and every part of
+    /// the answer comes from AWS.</strong> The ECS service gives the Cloud Map service ARN it registers into —
+    /// which is the authoritative link, and is why nothing here trusts a Servyx tag for it. Cloud Map's
+    /// <c>GetService</c> gives the first DNS label and the namespace id; <c>GetNamespace</c> gives the suffix
+    /// <em>and</em> the namespace type. The host is those two labels joined exactly as AWS documents the name of
+    /// a service-discovery service. Nothing is composed from this adapter's own configuration, for the reason
+    /// <c>AzureContainerInstanceProvisioner</c> reads its <c>fqdn</c> off the container group rather than
+    /// rebuilding it from a <c>dnsNameLabel</c>: a plausible string for a registration that has been deleted is
+    /// worse than no string.
     /// </para>
     /// <para>
-    /// <strong>Issues no request of any kind</strong> — no <c>DescribeServices</c>, no <c>DescribeTasks</c>,
-    /// no signature computed and no credential resolved. The answer does not depend on the service's state,
-    /// so asking would bill a caller for a round trip that could not change it. It does not even check
-    /// whether the handle names a service in this cluster: a handle that does not is equally unserviceable,
-    /// and inventing a second reason for it would suggest the first one was situational.
+    /// <strong><see cref="ControlChannelAddress.Durable"/> requires two independent things to be true, and only
+    /// one of them is AWS's to say.</strong> That the name survives replacement is a fact about ECS and Cloud
+    /// Map, and it is verified here — the ECS service really does name a Cloud Map service that really does
+    /// exist in a namespace that really does publish DNS records. That the name is <em>reachable</em> is a fact
+    /// about the operator's network, because AWS registers the task's <em>private</em> IPv4 into the record even
+    /// in a public namespace, and no API reports whether Servyx's control plane can route into that VPC. So the
+    /// second half is an explicit operator attestation supplied at construction, carried verbatim into the
+    /// justification, and absent by default — see <see cref="UnroutableNamespaceReason"/> and
+    /// <see cref="AwsFargateServiceDiscovery.ControlPlaneVpcAccess"/>.
+    /// </para>
+    /// <para>
+    /// <strong><see cref="ControlChannelAddress.Ephemeral"/> is never returned by this method, in either
+    /// mode.</strong> Without discovery, the task's private IPv4 does not clear even the first half of that
+    /// bar — <c>DescribeTasks</c> exposes no public address and Servyx is not in the task's subnet — so
+    /// reporting it as merely non-durable would overstate how close the target is to being operable. With
+    /// discovery, the name genuinely is durable, and reporting a durable name as ephemeral would be the same
+    /// error pointing the other way. Both unusable cases are therefore
+    /// <see cref="ControlChannelAddress.NoAddress"/>, whose reason carries the name when one exists so a
+    /// diagnostic can still show it.
     /// </para>
     /// </remarks>
-    public Task<ControlChannelAddress> ResolveControlAddressAsync(
+    public async Task<ControlChannelAddress> ResolveControlAddressAsync(
         ResourceHandle handle,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(handle);
         ct.ThrowIfCancellationRequested();
 
-        return Task.FromResult<ControlChannelAddress>(
-            new ControlChannelAddress.NoAddress(NoControlAddressReason));
+        if (_discovery is null || _discoveryApi is null)
+        {
+            return new ControlChannelAddress.NoAddress(NoControlAddressReason);
+        }
+
+        if (!TryReadServiceArn(handle.ProviderResourceId, out var cluster, out _)
+            || !BelongsToThisCluster(cluster))
+        {
+            return new ControlChannelAddress.NoAddress(ForeignHandleReason);
+        }
+
+        var service = await _api.DescribeServiceAsync(_cluster, handle.ProviderResourceId, ct).ConfigureAwait(false);
+        if (service is null || service.IsInactive || !ServyxEcsTags.IsManaged(service.Tags))
+        {
+            return new ControlChannelAddress.NoAddress(GoneOrUnmanagedReason);
+        }
+
+        if (service.ServiceRegistryArns.Count == 0)
+        {
+            return new ControlChannelAddress.NoAddress(NotRegisteredReason);
+        }
+
+        // Everything below is read back from AWS rather than composed from this adapter's configuration, on the
+        // same principle the ACI adapter reads its fqdn off the container group: the address Servyx hands a
+        // control channel has to be the address the provider actually publishes. Composing
+        // "<configured name>.<configured namespace>" would produce a plausible string for a registration that had
+        // been deleted, renamed, or never made.
+        var registered = await _discoveryApi
+            .GetServiceAsync(service.ServiceRegistryArns[0], ct)
+            .ConfigureAwait(false);
+
+        if (registered?.Name is not { Length: > 0 } serviceLabel
+            || registered.NamespaceId is not { Length: > 0 } namespaceId)
+        {
+            return new ControlChannelAddress.NoAddress(RegistrationGoneReason);
+        }
+
+        var discovered = await _discoveryApi.GetNamespaceAsync(namespaceId, ct).ConfigureAwait(false);
+        if (discovered?.Name is not { Length: > 0 } namespaceLabel)
+        {
+            return new ControlChannelAddress.NoAddress(NamespaceGoneReason);
+        }
+
+        if (!discovered.IsDns)
+        {
+            return new ControlChannelAddress.NoAddress(HttpNamespaceReason);
+        }
+
+        // AWS documents the DNS name of a service-discovery service as exactly
+        // "<service-discovery-service-name>.<service-discovery-namespace>". Both labels came from the provider a
+        // line ago; this is the join AWS itself specifies, not a guess about naming.
+        var host = serviceLabel + "." + namespaceLabel;
+
+        if (_discovery.ControlPlaneVpcAccess is not { Length: > 0 } access)
+        {
+            return new ControlChannelAddress.NoAddress(UnroutableNamespaceReason(host, discovered.Type));
+        }
+
+        return new ControlChannelAddress.Durable(host, DurabilityJustification(host, discovered.Type, access));
     }
+
+    /// <summary>Why a handle this provisioner could not have created has no control address.</summary>
+    public const string ForeignHandleReason =
+        "the handle does not name an ECS service in this provisioner's cluster, so this provisioner has no "
+        + "service to resolve a service-discovery name from. Nothing is broken; a provisioner is configured with "
+        + "exactly one cluster, and a resource created through a differently-configured one has to be resolved "
+        + "through that one.";
+
+    /// <summary>Why a service that is gone, or is not Servyx's, has no control address.</summary>
+    public const string GoneOrUnmanagedReason =
+        "ECS has no ACTIVE service at that ARN carrying servyx.managed=true - it is INACTIVE, absent, or not a "
+        + "resource Servyx created. A control channel is not opened against a service Servyx cannot attribute to "
+        + "itself, because the address it would resolve would belong to somebody else's workload.";
+
+    /// <summary>Why a service created without service discovery has no control address.</summary>
+    public const string NotRegisteredReason =
+        "the ECS service carries no serviceRegistries entry, so it was created without AWS Cloud Map service "
+        + "discovery and no durable name exists for it - most likely because it was provisioned before service "
+        + "discovery was configured on this provisioner. The registration cannot be added afterwards by this "
+        + "adapter: it does not implement IMaintainer and issues no UpdateService. Recreate the server with this "
+        + "provisioner to obtain one. Until then the only address in existence belongs to the current task's "
+        + "elastic network interface, and the service's whole purpose is to replace that task.";
+
+    /// <summary>Why a registration ECS still points at but Cloud Map no longer has yields no control address.</summary>
+    public const string RegistrationGoneReason =
+        "the ECS service names a Cloud Map service that AWS Cloud Map no longer has, or that it describes without "
+        + "a name or namespace. The registration has been deleted out from under the ECS service - by hand, or by "
+        + "a partially completed destroy - so there is no DNS name to resolve even though ECS still believes "
+        + "there is one. Nothing is guessed in its place: composing the name from Servyx's own configuration "
+        + "would hand a control channel an address with no record behind it.";
+
+    /// <summary>Why a namespace Cloud Map no longer has yields no control address.</summary>
+    public const string NamespaceGoneReason =
+        "AWS Cloud Map has no namespace at the id the registered service names, or describes it without a name, "
+        + "so the DNS suffix that completes the service's name is unknown. Servyx does not substitute the "
+        + "namespace id it was configured with: the name a control channel is given must be the one the provider "
+        + "actually publishes.";
+
+    /// <summary>Why a name in an HTTP-only Cloud Map namespace is not an address.</summary>
+    public const string HttpNamespaceReason =
+        "the Cloud Map namespace is an HTTP namespace, which publishes no DNS records at all - its instances are "
+        + "found only through Cloud Map's DiscoverInstances API, which is not a protocol any RCON client speaks "
+        + "and not something a TCP connect can do. The registration is real and the ECS service is genuinely "
+        + "registered in it; there is simply no host name to resolve. Register the service into a DNS namespace "
+        + "(private or public) for a name a socket can use.";
+
+    /// <summary>
+    /// Why a durable service-discovery name is still not an address a control channel may be opened on when no
+    /// route into the namespace's VPC has been attested.
+    /// </summary>
+    /// <remarks>
+    /// The most important refusal in this adapter, because it is the one a reader is most likely to think is
+    /// over-cautious. It is not: the name is durable and it resolves to an RFC 1918 address, so handing it to a
+    /// control channel that is not in the VPC produces a channel that is correctly configured, passes every
+    /// check, and times out. The message names the address so a diagnostic can show how close the deployment is,
+    /// and names the exact one thing that changes the answer.
+    /// </remarks>
+    /// <param name="host">The durable name that exists and may not be used.</param>
+    /// <param name="namespaceType">The Cloud Map namespace type, as the provider reports it.</param>
+    public static string UnroutableNamespaceReason(string host, string? namespaceType) =>
+        $"a durable service-discovery name DOES exist for this service - '{host}' - and Servyx will not open a "
+        + "control channel on it, because nothing has stated that Servyx's control plane can reach it. AWS "
+        + "registers a Fargate task's PRIVATE IPv4 into a service-discovery record, explicitly and even when the "
+        + $"namespace is a public one (this namespace is '{namespaceType ?? "of an unreported type"}'), so the "
+        + "name resolves to an address inside the task's VPC; a private DNS namespace additionally answers only "
+        + "through that VPC's own Route 53 Resolver. Whether the control plane sits in that VPC, is peered to "
+        + "it, or reaches it over a VPN is a fact about your topology that no AWS call reports - GetNamespace "
+        + "does not even say which VPC a private namespace was created for - so Servyx will not infer it. "
+        + "Construct the provisioner's AwsFargateServiceDiscovery with a controlPlaneVpcAccess statement "
+        + "describing how that route exists, and this name becomes a durable control address carrying your "
+        + "statement as its justification.";
+
+    /// <summary>Why a service-discovery name outlives the workload, for the <see cref="ControlChannelAddress.Durable"/> it is stamped on.</summary>
+    /// <param name="host">The durable name.</param>
+    /// <param name="namespaceType">The Cloud Map namespace type, as the provider reports it.</param>
+    /// <param name="controlPlaneVpcAccess">The operator's own statement of how the control plane reaches the VPC.</param>
+    public static string DurabilityJustification(string host, string? namespaceType, string controlPlaneVpcAccess) =>
+        $"'{host}' is an AWS Cloud Map service-discovery name that belongs to the ECS service, not to any task. "
+        + "ECS registers the running task's elastic network interface into it when a task starts and deregisters "
+        + "it when the task stops, on every replacement the scheduler makes - a host retirement, a "
+        + "platform-version rollout, an out-of-memory kill, a crash - so what changes across a replacement is the "
+        + "record's contents and never the name. Servyx created this Cloud Map service in the same provisioning "
+        + $"run as the ECS service and both names were read back from AWS, not composed. REACHABILITY IS THE "
+        + $"OPERATOR'S CLAIM AND NOT SERVYX'S: the record carries the task's private IPv4 (the namespace is "
+        + $"'{namespaceType ?? "of an unreported type"}', and AWS registers the private address even into a "
+        + "public namespace), so this address is usable only from inside the namespace's VPC. The operator "
+        + $"states that route exists as follows: \"{controlPlaneVpcAccess}\". No AWS call can verify that, and "
+        + "Servyx has not tried to; if it is wrong, the channel will fail at connect time naming this endpoint "
+        + "rather than silently pointing somewhere else.";
 
     /// <inheritdoc />
     /// <remarks>
@@ -698,6 +1120,16 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     /// <c>INACTIVE</c> revision for no gain.
     /// </para>
     /// <para>
+    /// <strong>The Cloud Map service, when there is one, IS deleted — and it is the only thing on this path that
+    /// is.</strong> Servyx made it, so Servyx removes it: the registry ARN is read off the live ECS service
+    /// <em>before</em> the delete (where <c>serviceRegistries</c> is authoritative), the Cloud Map service's tags
+    /// are read back afterwards to prove it is Servyx's, and only then is it deleted — after the ECS service has
+    /// reached <c>INACTIVE</c>, by which point ECS has deregistered the task. If Cloud Map still reports
+    /// registered instances the delete is retried and then <em>raises</em>, naming the leftover, because this
+    /// sweep will not find it again. The namespace is never deleted, no instance is ever deregistered by hand,
+    /// and a Cloud Map service whose tags are not Servyx's is left exactly where it is.
+    /// </para>
+    /// <para>
     /// <strong>A handle this adapter could not have created deletes nothing.</strong> An id that is not an ECS
     /// service ARN, or one naming a different cluster, is refused without an API call.
     /// </para>
@@ -720,6 +1152,13 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
             return false;
         }
 
+        // Read before the delete, and only when there is a registration to find. Afterwards the service is
+        // DRAINING or INACTIVE and this adapter would be reading a record ECS is actively tearing down; before
+        // it, serviceRegistries is authoritative and the tags prove the service is Servyx's.
+        var registryArn = _discoveryApi is null
+            ? null
+            : await RegisteredCloudMapArnAsync(handle.ProviderResourceId, ct).ConfigureAwait(false);
+
         var deleted = await _api.DeleteServiceAsync(_cluster, handle.ProviderResourceId, ct).ConfigureAwait(false);
         if (deleted is null)
         {
@@ -728,6 +1167,7 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
 
         if (deleted.IsInactive)
         {
+            await DeleteCloudMapServiceAsync(registryArn, handle.ProviderResourceId, ct).ConfigureAwait(false);
             return true;
         }
 
@@ -738,6 +1178,7 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
             var service = await _api.DescribeServiceAsync(_cluster, handle.ProviderResourceId, ct).ConfigureAwait(false);
             if (service is null || service.IsInactive)
             {
+                await DeleteCloudMapServiceAsync(registryArn, handle.ProviderResourceId, ct).ConfigureAwait(false);
                 return true;
             }
         }
@@ -925,7 +1366,7 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
     /// <see cref="ServyxEcsTags"/>: while the service exists, a sweep that finds it can name everything it
     /// depends on. This does not make any of those things sweepable and is not claimed to.
     /// </remarks>
-    private static IReadOnlyDictionary<string, string> TagsFor(AwsFargateServiceSpec spec)
+    private IReadOnlyDictionary<string, string> TagsFor(AwsFargateServiceSpec spec)
     {
         var extras = new Dictionary<string, string>(spec.AdditionalTags, StringComparer.Ordinal)
         {
@@ -938,6 +1379,14 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         if (spec.Mount.AccessPointId is { Length: > 0 } accessPoint)
         {
             extras[ServyxEcsTags.AccessPointTag] = accessPoint;
+        }
+
+        if (_discovery is not null)
+        {
+            // Written only when discovery is configured, so a provisioner without it produces exactly the tag set
+            // it always did. The Cloud Map service's NAME and not its ARN; see ServyxEcsTags.DiscoveryServiceTag.
+            extras[ServyxEcsTags.DiscoveryNamespaceTag] = _discovery.NamespaceId;
+            extras[ServyxEcsTags.DiscoveryServiceTag] = spec.ServiceName;
         }
 
         return spec.Tags.ToTags(extras);
@@ -991,6 +1440,95 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
             : AwsFargatePricing.For(definition.Cpu, definition.Memory);
     }
 
+    /// <summary>
+    /// The ARN of the Cloud Map service a live, Servyx-managed ECS service registers into, or
+    /// <see langword="null"/> if there is none to clean up.
+    /// </summary>
+    /// <remarks>
+    /// Read from the ECS service's own <c>serviceRegistries</c> rather than from
+    /// <see cref="ServyxEcsTags.DiscoveryServiceTag"/>, even though the tag names the same object. The tag carries
+    /// a name Servyx chose before anything existed; <c>serviceRegistries</c> carries the ARN ECS is actually
+    /// using. On a destroy path only the second is safe: if the two ever disagree, the tag would name a Cloud Map
+    /// service this ECS service is not registered in, and this method's answer is about to be deleted.
+    /// </remarks>
+    private async Task<string?> RegisteredCloudMapArnAsync(string serviceArn, CancellationToken ct)
+    {
+        var service = await _api.DescribeServiceAsync(_cluster, serviceArn, ct).ConfigureAwait(false);
+
+        return service is not null
+            && !service.IsInactive
+            && ServyxEcsTags.IsManaged(service.Tags)
+            && service.ServiceRegistryArns.Count > 0
+                ? service.ServiceRegistryArns[0]
+                : null;
+    }
+
+    /// <summary>
+    /// Deletes the Cloud Map service an ECS service was registered into, once that ECS service is <c>INACTIVE</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>It asks whose it is before deleting it.</strong> The ARN came from a Servyx-tagged ECS service,
+    /// which is good evidence and not proof: an operator could have pointed a Servyx-created ECS service at a
+    /// Cloud Map service they made themselves and share with other workloads. So the tags are read back and the
+    /// delete happens only for a resource carrying <c>servyx.managed=true</c>. A Cloud Map service that is not
+    /// Servyx's is left exactly as it is, silently — it is not an orphan, it is somebody's infrastructure.
+    /// </para>
+    /// <para>
+    /// <strong>It retries on <c>ResourceInUse</c> and then fails loudly.</strong> Cloud Map refuses to delete a
+    /// service that still has instances registered, and after an ECS service reaches <c>INACTIVE</c> its task has
+    /// stopped and ECS has deregistered it — so this is a race with deregistration rather than a wall, and the
+    /// same poll budget the deletion wait uses is spent on it. If it never clears, this raises: leaving a
+    /// registration behind quietly is how an operator ends up with a name that resolves to nothing and no record
+    /// anywhere that Servyx made it. The ECS service is already gone at that point, which the message says, so
+    /// nobody is left believing compute is still billing.
+    /// </para>
+    /// <para>
+    /// <strong>It never deletes the namespace</strong>, never touches another service in it, and never
+    /// deregisters an instance by hand. Deregistration is ECS's, and the namespace is the operator's.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="AwsApiException">Cloud Map would not delete the service within the poll budget.</exception>
+    private async Task DeleteCloudMapServiceAsync(string? registryArn, string serviceArn, CancellationToken ct)
+    {
+        if (_discoveryApi is null || registryArn is not { Length: > 0 })
+        {
+            return;
+        }
+
+        var tags = await _discoveryApi.ListTagsAsync(registryArn, ct).ConfigureAwait(false);
+        if (!ServyxEcsTags.IsManaged(tags))
+        {
+            return;
+        }
+
+        AwsApiException? refusal = null;
+
+        for (var attempt = 0; attempt < _pollAttempts; attempt++)
+        {
+            try
+            {
+                await _discoveryApi.DeleteServiceAsync(registryArn, ct).ConfigureAwait(false);
+                return;
+            }
+            catch (AwsApiException e) when (
+                string.Equals(e.ErrorCode, ServiceDiscoveryErrorCodes.ResourceInUse, StringComparison.Ordinal))
+            {
+                refusal = e;
+            }
+
+            await Task.Delay(_pollInterval, _timeProvider, ct).ConfigureAwait(false);
+        }
+
+        var refused = string.Create(
+                CultureInfo.InvariantCulture,
+                $"ECS service '{serviceArn}' was destroyed - it reached {EcsService.InactiveStatus}, so no Fargate task is billing for it - but AWS Cloud Map would not delete the service-discovery service '{registryArn}' Servyx created for it within {_pollAttempts} attempt(s), because it still reports registered instances. Deregistration is ECS's to perform and Servyx will not tear an instance out by hand. The Cloud Map service is Servyx-tagged but is NOT reachable by this adapter's reconcile, which enumerates ECS services in cluster '{_cluster}' and nothing else - so it will not be found again automatically. Delete it with servicediscovery:DeleteService once Cloud Map reports no instances. Cloud Map's own last words: {refusal?.Message ?? "none recorded."}");
+
+        throw refusal is null
+            ? new AwsApiException(HttpStatusCode.Conflict, ServiceDiscoveryErrorCodes.ResourceInUse, refused)
+            : new AwsApiException(HttpStatusCode.Conflict, ServiceDiscoveryErrorCodes.ResourceInUse, refused, refusal);
+    }
+
     private static string DescribePorts(AwsFargateServiceSpec spec) =>
         spec.Ports.Count == 0
             ? "none"
@@ -1029,6 +1567,17 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         builder.Append(spec.TaskRoleArn ?? string.Empty).Append('\n');
         builder.Append(spec.LogGroup ?? string.Empty).Append('\n');
         builder.Append(CultureInfo.InvariantCulture, $"{spec.AssignPublicIp}\n");
+
+        // Appended only when discovery is configured, so a provisioner without it hashes exactly what it always
+        // did. The attestation is deliberately NOT hashed: it changes what Servyx will offer a control channel,
+        // not what gets created at AWS, and a plan whose hash moved because somebody wrote a better sentence
+        // about their VPC peering would be a plan invalidated by prose.
+        if (_discovery is not null)
+        {
+            builder.Append("cloud-map ").Append(_discovery.NamespaceId).Append('\n');
+            builder.Append(CultureInfo.InvariantCulture, $"cloud-map-ttl {_discovery.RecordTtlSeconds}\n");
+            builder.Append("cloud-map-record ").Append(AwsFargateServiceDiscovery.RecordType).Append('\n');
+        }
 
         foreach (var subnet in spec.SubnetIds)
         {
@@ -1139,6 +1688,18 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
         private readonly AwsFargateServiceSpec _spec;
         private readonly IReadOnlyDictionary<string, string> _tags;
 
+        /// <summary>
+        /// The Cloud Map service this operation created, once it has. Null until then, and null forever if this
+        /// operation never created one.
+        /// </summary>
+        /// <remarks>
+        /// Compensation deletes only what this operation made, and this field is the whole record of that. It is
+        /// deliberately not read back from tags or from configuration: a Cloud Map service carrying Servyx's tags
+        /// that this operation did not create belongs to another server, and a compensation path is the worst
+        /// possible place to widen a delete by one resource.
+        /// </remarks>
+        private string? _createdRegistryArn;
+
         internal FargateServiceCreateOperation(AwsEcsFargateProvisioner owner, AwsFargateServiceSpec spec)
         {
             _owner = owner;
@@ -1149,7 +1710,7 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
             // provider. Validated here too, so a tag ECS would reject fails before the ledger row is written.
             // This is also why servyx.aws-ecs-task-definition-family records the family and not the revision
             // ARN: the ARN does not exist until RegisterTaskDefinition has already run.
-            _tags = ServyxEcsTags.Validate(TagsFor(spec));
+            _tags = ServyxEcsTags.Validate(owner.TagsFor(spec));
         }
 
         public string ProvisionerId => Id;
@@ -1195,8 +1756,23 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
                 .RegisterTaskDefinitionAsync(AwsEcsRequests.RegisterTaskDefinition(_spec, _tags, _owner._region), ct)
                 .ConfigureAwait(false);
 
+            // Third, only when configured, and deliberately here: after the free validating write and before the
+            // billable one. A Cloud Map service with no instances registered in it costs nothing, so a create
+            // that fails at the next step leaves behind a free object rather than a running task - and the ECS
+            // service cannot name a registry that does not exist yet, so this cannot be done afterwards.
+            if (_owner._discoveryApi is { } discoveryApi && _owner._discovery is { } discovery)
+            {
+                var registered = await discoveryApi
+                    .CreateServiceAsync(AwsCloudMapRequests.CreateService(_spec, discovery, _tags), ct)
+                    .ConfigureAwait(false);
+
+                _createdRegistryArn = registered.Arn;
+            }
+
             var service = await api
-                .CreateServiceAsync(AwsEcsRequests.CreateService(_spec, definition.TaskDefinitionArn, _tags), ct)
+                .CreateServiceAsync(
+                    AwsEcsRequests.CreateService(_spec, definition.TaskDefinitionArn, _tags, _createdRegistryArn),
+                    ct)
                 .ConfigureAwait(false);
 
             var task = await WaitForRunningTaskAsync(ct).ConfigureAwait(false);
@@ -1254,19 +1830,58 @@ public sealed class AwsEcsFargateProvisioner : IProvisioner, IControlChannelAddr
                 .DescribeServiceAsync(_owner._cluster, _spec.ServiceName, ct)
                 .ConfigureAwait(false);
 
-            if (existing is null || existing.IsInactive)
+            if (existing is not null
+                && !existing.IsInactive
+                && ServyxEcsTags.IsManaged(existing.Tags)
+                && existing.Tags.TryGetValue(ServyxTagKeys.InstanceId, out var instanceId)
+                && string.Equals(instanceId, _spec.Tags.InstanceId, StringComparison.Ordinal))
+            {
+                await api.DeleteServiceAsync(_owner._cluster, _spec.ServiceName, ct).ConfigureAwait(false);
+            }
+
+            await CompensateCloudMapAsync(ct).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Attempts to remove the Cloud Map service this operation created, if it created one.
+        /// </summary>
+        /// <remarks>
+        /// <para>
+        /// <strong>It very often cannot, and that is expected rather than a failure.</strong> The ECS delete just
+        /// issued is not polled — compensation deliberately does not wait for <c>INACTIVE</c> — so the task is
+        /// usually still draining and still registered, and Cloud Map refuses to delete a service with instances
+        /// in it. Tearing the instance out by hand to force the delete would deregister a task that is still
+        /// serving, which is worse than the leftover.
+        /// </para>
+        /// <para>
+        /// <strong>So the leftover is accepted and is honestly cheap.</strong> A Cloud Map service that ends up
+        /// with no instances registers no billable resource, and the namespace's hosted zone was never Servyx's
+        /// and bills whether this object exists or not. What it costs is tidiness and a name that resolves to
+        /// nothing — and, since this adapter's reconcile enumerates ECS services and not Cloud Map services, it
+        /// costs a resource no sweep will find. That is stated on the provisioner type rather than hidden here.
+        /// </para>
+        /// <para>
+        /// <strong>Nothing is thrown from this method.</strong> It runs while an earlier failure is already being
+        /// handled, and replacing that failure's exception with a cleanup's would lose the reason the create
+        /// failed.
+        /// </para>
+        /// </remarks>
+        private async Task CompensateCloudMapAsync(CancellationToken ct)
+        {
+            if (_owner._discoveryApi is not { } discoveryApi || _createdRegistryArn is not { Length: > 0 } arn)
             {
                 return;
             }
 
-            if (!ServyxEcsTags.IsManaged(existing.Tags)
-                || !existing.Tags.TryGetValue(ServyxTagKeys.InstanceId, out var instanceId)
-                || !string.Equals(instanceId, _spec.Tags.InstanceId, StringComparison.Ordinal))
+            try
             {
-                return;
+                await discoveryApi.DeleteServiceAsync(arn, ct).ConfigureAwait(false);
             }
-
-            await api.DeleteServiceAsync(_owner._cluster, _spec.ServiceName, ct).ConfigureAwait(false);
+            catch (AwsApiException)
+            {
+                // Most often ResourceInUse, because the ECS service is still draining a registered task. See the
+                // remarks: the leftover is the correct outcome and the alternative is deregistering a live task.
+            }
         }
 
         /// <summary>

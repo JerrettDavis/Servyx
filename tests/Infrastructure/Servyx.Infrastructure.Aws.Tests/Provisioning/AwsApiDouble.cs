@@ -39,6 +39,19 @@ internal sealed record RecordedRequest(
     internal bool IsEcs => Uri.Host.StartsWith("ecs.", StringComparison.Ordinal)
         && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
 
+    /// <summary>Whether this request went to a regional AWS Cloud Map endpoint.</summary>
+    /// <remarks>
+    /// Load-bearing rather than decorative. ECS and Cloud Map both have actions called <c>CreateService</c> and
+    /// <c>DeleteService</c>, so a routing function that switched on the action name alone would answer a Cloud
+    /// Map create with an ECS service object and the test would pass for the wrong reason. Every route in the
+    /// service-discovery suite discriminates on the host first.
+    /// </remarks>
+    internal bool IsServiceDiscovery => Uri.Host.StartsWith("servicediscovery.", StringComparison.Ordinal)
+        && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
+
+    /// <summary>The AWS Cloud Map action this request names, read off the <see cref="Target"/> header.</summary>
+    internal string? CloudMapAction => Target is null ? null : Target[(Target.IndexOf('.') + 1)..];
+
     /// <summary>The Lightsail action this request names, read off the <see cref="Target"/> header.</summary>
     internal string? LightsailAction => Target is null ? null : Target[(Target.IndexOf('.') + 1)..];
 

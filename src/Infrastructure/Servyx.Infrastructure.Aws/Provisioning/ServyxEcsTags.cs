@@ -93,6 +93,38 @@ public sealed class ServyxEcsTags
     /// <summary>Records the EFS access point the task mounts through, when one is used.</summary>
     public const string AccessPointTag = ServyxTagKeys.Prefix + "aws-efs-access-point";
 
+    /// <summary>
+    /// Records the AWS Cloud Map namespace the service is registered into, when service discovery is configured.
+    /// A pointer; the namespace is never created or destroyed by Servyx.
+    /// </summary>
+    /// <remarks>
+    /// The same kind of key as <see cref="FileSystemTag"/> and worth much less, which is the point of saying so.
+    /// The namespace is billable — it is a Route 53 hosted zone — but it is shared by every service in it and has
+    /// a lifetime no single server governs, so this pointer is for an operator reading a swept service, not for
+    /// anything that could clean up.
+    /// </remarks>
+    public const string DiscoveryNamespaceTag = ServyxTagKeys.Prefix + "aws-cloud-map-namespace";
+
+    /// <summary>
+    /// Records the <em>name</em> of the AWS Cloud Map service Servyx created alongside this ECS service.
+    /// </summary>
+    /// <remarks>
+    /// The name and not the ARN, for exactly the reason <see cref="TaskDefinitionFamilyTag"/> records the family
+    /// and not the revision ARN: the tag set is materialised at operation construction so it can reach the
+    /// write-ahead ledger before any create runs, and the Cloud Map service's ARN does not exist until Cloud
+    /// Map's own <c>CreateService</c> has returned. The ARN is not lost by this — it is read back from the ECS
+    /// service's <c>serviceRegistries</c>, which is where the authoritative link lives.
+    /// </remarks>
+    public const string DiscoveryServiceTag = ServyxTagKeys.Prefix + "aws-cloud-map-service";
+
+    /// <summary>The <see cref="RoleTag"/> value stamped on the Cloud Map service.</summary>
+    /// <remarks>
+    /// A third kind of object a create can produce, and the second one Servyx must destroy. Without a role of its
+    /// own, a Cloud Map service carrying the same identity keys as the ECS service would be indistinguishable
+    /// from it in a tag read taken on the destroy path.
+    /// </remarks>
+    public const string RoleDiscoveryService = "cloud-map-service";
+
     /// <summary>Identifies the Servyx server/instance the resource backs.</summary>
     public const string InstanceIdTag = ServyxTagKeys.InstanceId;
 

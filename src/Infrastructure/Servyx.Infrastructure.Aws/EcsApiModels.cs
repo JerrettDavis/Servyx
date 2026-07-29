@@ -112,6 +112,13 @@ internal sealed record EcsFailure(string? Arn, string? Reason, string? Detail)
 /// <param name="LaunchType">The launch type, e.g. <c>FARGATE</c>.</param>
 /// <param name="CreatedAt">When ECS reports the service was created.</param>
 /// <param name="Tags">The service's tags, decoded from its <c>tags</c> array. Empty unless <c>include: ["TAGS"]</c> was asked for.</param>
+/// <param name="ServiceRegistryArns">
+/// The ARNs of the AWS Cloud Map services this ECS service registers its tasks into, from its
+/// <c>serviceRegistries</c> array. Empty for a service created without service discovery — which is the default,
+/// and which is why this is a list read back from the provider rather than a flag Servyx remembers. It is the
+/// only route from a resource handle to the durable name a control channel can be pinned to; see
+/// <c>AwsEcsFargateProvisioner.ResolveControlAddressAsync</c>. ECS documents at most one entry per service.
+/// </param>
 internal sealed record EcsService(
     string ServiceArn,
     string? ServiceName,
@@ -122,7 +129,8 @@ internal sealed record EcsService(
     int RunningCount,
     string? LaunchType,
     DateTimeOffset? CreatedAt,
-    IReadOnlyDictionary<string, string> Tags)
+    IReadOnlyDictionary<string, string> Tags,
+    IReadOnlyList<string> ServiceRegistryArns)
 {
     /// <summary>The status a live service reports.</summary>
     internal const string ActiveStatus = "ACTIVE";
@@ -161,7 +169,29 @@ internal sealed record EcsService(
             Count(item, "runningCount"),
             LightsailJson.Text(item, "launchType"),
             LightsailJson.UnixSeconds(item, "createdAt"),
-            LightsailJson.Tags(item?["tags"] as JsonArray));
+            LightsailJson.Tags(item?["tags"] as JsonArray),
+            RegistryArns(item?["serviceRegistries"] as JsonArray));
+    }
+
+    /// <summary>Reads the <c>registryArn</c> of every <c>serviceRegistries</c> entry, skipping any that has none.</summary>
+    private static IReadOnlyList<string> RegistryArns(JsonArray? registries)
+    {
+        if (registries is null)
+        {
+            return [];
+        }
+
+        var arns = new List<string>();
+
+        foreach (var node in registries)
+        {
+            if (node is JsonObject registry && LightsailJson.Text(registry, "registryArn") is { } arn)
+            {
+                arns.Add(arn);
+            }
+        }
+
+        return arns;
     }
 
     private static int Count(JsonObject? item, string property)

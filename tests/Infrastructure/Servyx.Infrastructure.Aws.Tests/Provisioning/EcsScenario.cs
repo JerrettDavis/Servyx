@@ -122,11 +122,17 @@ internal sealed class EcsScenario
     /// <param name="region">The region the provisioner acts on.</param>
     /// <param name="cluster">The cluster the provisioner creates into and sweeps.</param>
     /// <param name="pollAttempts">How many readiness/deletion polls before giving up.</param>
+    /// <param name="serviceDiscovery">
+    /// The AWS Cloud Map registration to attach, or <see langword="null"/> — the default — for a provisioner that
+    /// makes no <c>servicediscovery</c> call at all. Defaulting to null is what keeps every test written before
+    /// service discovery existed exercising exactly the adapter it was written against.
+    /// </param>
     internal AwsEcsFargateProvisioner Provisioner(
         bool withCredentials = true,
         string region = Region,
         string cluster = Cluster,
-        int pollAttempts = 3)
+        int pollAttempts = 3,
+        AwsFargateServiceDiscovery? serviceDiscovery = null)
     {
         if (withCredentials)
         {
@@ -142,7 +148,232 @@ internal sealed class EcsScenario
             cluster,
             timeProvider: TimeProvider.System,
             pollInterval: TimeSpan.Zero,
-            pollAttempts: pollAttempts);
+            pollAttempts: pollAttempts,
+            serviceDiscovery: serviceDiscovery);
+    }
+
+    /// <summary>The pre-existing AWS Cloud Map namespace every discovery test registers into.</summary>
+    internal const string NamespaceId = "ns-0123456789abcdef";
+
+    /// <summary>The namespace's DNS name — the suffix a service-discovery name is completed by.</summary>
+    internal const string NamespaceName = "servyx.local";
+
+    /// <summary>The Cloud Map service id the substituted Cloud Map reports for a create.</summary>
+    internal const string CloudMapServiceId = "srv-0123456789abcdef";
+
+    /// <summary>The Cloud Map service ARN — what an ECS <c>serviceRegistries</c> entry names.</summary>
+    internal const string CloudMapServiceArn =
+        "arn:aws:servicediscovery:" + Region + ":" + AccountId + ":service/" + CloudMapServiceId;
+
+    /// <summary>A Cloud Map service ARN for a registration Servyx did not create.</summary>
+    internal const string ForeignCloudMapServiceArn =
+        "arn:aws:servicediscovery:" + Region + ":" + AccountId + ":service/srv-someoneelses000";
+
+    /// <summary>The durable name a registered service answers to: service label, then namespace.</summary>
+    internal const string DiscoveryHost = ServiceName + "." + NamespaceName;
+
+    /// <summary>An operator's statement of how the control plane reaches the namespace's VPC.</summary>
+    internal const string ControlPlaneVpcAccess =
+        "the Servyx control plane runs in the same VPC and subnets as the tasks";
+
+    /// <summary>A service-discovery configuration, with or without the reachability attestation.</summary>
+    internal static AwsFargateServiceDiscovery Discovery(
+        string? controlPlaneVpcAccess = null,
+        string namespaceId = NamespaceId) =>
+        new(namespaceId, controlPlaneVpcAccess);
+
+    /// <summary>The canonical tags a discovery-configured provisioner stamps: the usual set plus two pointers.</summary>
+    /// <remarks>
+    /// Computed on each read rather than cached in a static initialiser, because <see cref="CanonicalTags"/> is
+    /// declared later in this file and a cached copy would be built from a null.
+    /// </remarks>
+    internal static IReadOnlyDictionary<string, string> DiscoveryTags =>
+        new Dictionary<string, string>(CanonicalTags, StringComparer.Ordinal)
+        {
+            ["servyx.aws-cloud-map-namespace"] = NamespaceId,
+            ["servyx.aws-cloud-map-service"] = ServiceName,
+        };
+
+    /// <summary>One Cloud Map <c>Service</c> JSON object. Note the PascalCase — Cloud Map is not ECS.</summary>
+    internal static string CloudMapServiceJson(
+        string arn = CloudMapServiceArn,
+        string id = CloudMapServiceId,
+        string? name = ServiceName,
+        string? namespaceId = NamespaceId,
+        int instanceCount = 1) =>
+        $$"""
+        {
+            "Arn": "{{arn}}",
+            "Id": "{{id}}",
+            {{(name is null ? string.Empty : $"\"Name\": \"{name}\",")}}
+            {{(namespaceId is null ? string.Empty : $"\"NamespaceId\": \"{namespaceId}\",")}}
+            "InstanceCount": {{instanceCount.ToString(CultureInfo.InvariantCulture)}}
+        }
+        """;
+
+    /// <summary>A Cloud Map <c>CreateService</c>/<c>GetService</c> response envelope.</summary>
+    internal static string CloudMapServiceEnvelopeJson(string? serviceJson = null) =>
+        $$"""{ "Service": {{serviceJson ?? CloudMapServiceJson()}} }""";
+
+    /// <summary>One Cloud Map <c>Namespace</c> JSON object.</summary>
+    internal static string CloudMapNamespaceJson(
+        string id = NamespaceId,
+        string? name = NamespaceName,
+        string type = "DNS_PRIVATE") =>
+        $$"""
+        {
+            "Arn": "arn:aws:servicediscovery:{{Region}}:{{AccountId}}:namespace/{{id}}",
+            "Id": "{{id}}",
+            {{(name is null ? string.Empty : $"\"Name\": \"{name}\",")}}
+            "Type": "{{type}}"
+        }
+        """;
+
+    /// <summary>A Cloud Map <c>GetNamespace</c> response envelope.</summary>
+    internal static string CloudMapNamespaceEnvelopeJson(string? namespaceJson = null) =>
+        $$"""{ "Namespace": {{namespaceJson ?? CloudMapNamespaceJson()}} }""";
+
+    /// <summary>A Cloud Map <c>ListTagsForResource</c> response envelope — <c>Key</c>/<c>Value</c>, not <c>key</c>/<c>value</c>.</summary>
+    internal static string CloudMapTagsJson(IReadOnlyDictionary<string, string>? tags = null) =>
+        "{ \"Tags\": ["
+        + string.Join(
+            ',',
+            (tags ?? DiscoveryTags)
+                .OrderBy(t => t.Key, StringComparer.Ordinal)
+                .Select(t => $$"""{"Key":"{{t.Key}}","Value":"{{t.Value}}"}"""))
+        + "] }";
+
+    /// <summary>A Cloud Map AWS-JSON-1.1 error document.</summary>
+    /// <remarks>
+    /// Cloud Map capitalises <c>Message</c> where ECS uses <c>message</c>, which is exactly the sort of near-miss
+    /// a fixture should reproduce rather than smooth over.
+    /// </remarks>
+    internal static string CloudMapErrorJson(string type, string message) =>
+        $$"""{ "__type": "{{type}}", "Message": "{{message}}" }""";
+
+    /// <summary>The Cloud Map error type for a service that still has instances registered in it.</summary>
+    internal const string ResourceInUseErrorType = "ResourceInUse";
+
+    /// <summary>The Cloud Map error type for a service it does not have.</summary>
+    internal const string CloudMapServiceNotFoundErrorType = "ServiceNotFound";
+
+    /// <summary>The Cloud Map error type for a namespace it does not have.</summary>
+    internal const string NamespaceNotFoundErrorType = "NamespaceNotFound";
+
+    /// <summary>
+    /// Routes a create for a discovery-configured provisioner: Cloud Map create, then the ordinary ECS exchange.
+    /// </summary>
+    /// <remarks>
+    /// Discriminates on the host before the action, because both services answer to <c>CreateService</c>. See
+    /// <see cref="RecordedRequest.IsServiceDiscovery"/>.
+    /// </remarks>
+    internal void RouteSuccessfulDiscoveryCreate(string? cloudMapCreateJson = null) =>
+        Api.Responder = request => request.IsServiceDiscovery
+            ? request.CloudMapAction switch
+            {
+                "CreateService" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    cloudMapCreateJson ?? CloudMapServiceEnvelopeJson()),
+                _ => throw new InvalidOperationException(
+                    $"A create issued the Cloud Map action '{request.CloudMapAction}'. Creating a deployment "
+                    + "registers a service and nothing else - in particular it never registers an instance, "
+                    + "because ECS does that itself, and never creates a namespace."),
+            }
+            : request.EcsAction switch
+            {
+                "RegisterTaskDefinition" => AwsApiDouble.Json(HttpStatusCode.OK, TaskDefinitionEnvelopeJson()),
+                "CreateService" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    ServiceEnvelopeJson(ServiceJson(tags: DiscoveryTags, registryArn: CloudMapServiceArn))),
+                "ListTasks" => AwsApiDouble.Json(HttpStatusCode.OK, ListTasksJson()),
+                "DescribeTasks" => AwsApiDouble.Json(HttpStatusCode.OK, DescribeTasksJson(TaskJson())),
+                _ => throw new InvalidOperationException(
+                    $"Unexpected ECS action '{request.EcsAction}' during a discovery create."),
+            };
+
+    /// <summary>
+    /// Routes a control-address resolution: describe the ECS service, then read the Cloud Map service and its
+    /// namespace.
+    /// </summary>
+    internal void RouteDiscoveryResolve(
+        string? describeServicesJson = null,
+        string? cloudMapServiceJson = null,
+        string? namespaceJson = null) =>
+        Api.Responder = request => request.IsServiceDiscovery
+            ? request.CloudMapAction switch
+            {
+                "GetService" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    CloudMapServiceEnvelopeJson(cloudMapServiceJson)),
+                "GetNamespace" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    CloudMapNamespaceEnvelopeJson(namespaceJson)),
+                _ => throw new InvalidOperationException(
+                    $"Resolving a control address issued the Cloud Map action '{request.CloudMapAction}'. It "
+                    + "reads, and never writes."),
+            }
+            : request.EcsAction switch
+            {
+                "DescribeServices" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    describeServicesJson
+                        ?? DescribeServicesJson(
+                            ServiceJson(tags: DiscoveryTags, registryArn: CloudMapServiceArn))),
+                _ => throw new InvalidOperationException(
+                    $"Resolving a control address issued the ECS action '{request.EcsAction}'. It reads the "
+                    + "service and nothing else - not its tasks, whose addresses are exactly what service "
+                    + "discovery exists to stop anyone pinning to."),
+            };
+
+    /// <summary>
+    /// Routes a destroy for a discovery-configured provisioner: read the registry, delete, settle, then delete
+    /// the Cloud Map service.
+    /// </summary>
+    /// <param name="cloudMapDelete">
+    /// How the Cloud Map <c>DeleteService</c> answers. Defaults to an empty 200 — Cloud Map's success shape.
+    /// </param>
+    /// <param name="cloudMapTagsJson">The tags <c>ListTagsForResource</c> reports for the registration.</param>
+    internal void RouteDiscoveryDestroy(
+        Func<HttpResponseMessage>? cloudMapDelete = null,
+        string? cloudMapTagsJson = null)
+    {
+        // The first DescribeServices is the destroy's pre-read - it happens before the delete and must report a
+        // live, Servyx-tagged, registered service, because that is where the Cloud Map ARN comes from. Every
+        // describe after it is the settle poll and reports INACTIVE.
+        var describes = 0;
+
+        Api.Responder = request => request.IsServiceDiscovery
+            ? request.CloudMapAction switch
+            {
+                "ListTagsForResource" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    cloudMapTagsJson ?? CloudMapTagsJson()),
+                "DeleteService" => (cloudMapDelete ?? (() => AwsApiDouble.Json(HttpStatusCode.OK, "{}")))(),
+                _ => throw new InvalidOperationException(
+                    $"A destroy issued the Cloud Map action '{request.CloudMapAction}'. It reads tags and "
+                    + "deletes the service - it never deletes a namespace and never deregisters an instance."),
+            }
+            : request.EcsAction switch
+            {
+                "DescribeServices" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    DescribeServicesJson(
+                        ServiceJson(
+                            status: ++describes == 1 ? "ACTIVE" : "INACTIVE",
+                            runningCount: 0,
+                            tags: DiscoveryTags,
+                            registryArn: CloudMapServiceArn))),
+                "DeleteService" => AwsApiDouble.Json(
+                    HttpStatusCode.OK,
+                    ServiceEnvelopeJson(
+                        ServiceJson(
+                            status: "DRAINING",
+                            runningCount: 1,
+                            tags: DiscoveryTags,
+                            registryArn: CloudMapServiceArn))),
+                _ => throw new InvalidOperationException(
+                    $"A destroy issued the ECS action '{request.EcsAction}', which is not part of one."),
+            };
     }
 
     /// <summary>A provisioning request for a Palworld Fargate service with the mandatory mount and subnet configured.</summary>
@@ -224,7 +455,8 @@ internal sealed class EcsScenario
         string status = "ACTIVE",
         int runningCount = 1,
         string? taskDefinition = TaskDefinitionArn,
-        IReadOnlyDictionary<string, string>? tags = null) =>
+        IReadOnlyDictionary<string, string>? tags = null,
+        string? registryArn = null) =>
         $$"""
         {
             "serviceArn": "{{arn}}",
@@ -236,6 +468,7 @@ internal sealed class EcsScenario
             "pendingCount": 0,
             "launchType": "FARGATE",
             {{(taskDefinition is null ? string.Empty : $"\"taskDefinition\": \"{taskDefinition}\",")}}
+            {{(registryArn is null ? string.Empty : $"\"serviceRegistries\": [{{ \"registryArn\": \"{registryArn}\" }}],")}}
             "createdAt": 1785000000.0,
             "tags": {{TagsJson(tags)}}
         }
