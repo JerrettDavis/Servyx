@@ -56,14 +56,31 @@ public class SandboxedPathResolverTests
         act.Should().Throw<PathEscapesSandboxException>();
     }
 
+    /// <summary>
+    /// <c>\</c> is a path separator on Windows but an ordinary file-name character on POSIX, so the same
+    /// input is a genuine traversal on one platform and a single literal file name on the other. The
+    /// resolver delegates separator semantics to <see cref="Path"/> and is therefore correct on both; this
+    /// test asserts the truth of whichever platform it runs on rather than assuming Windows everywhere.
+    /// </summary>
     [Fact]
-    public void Resolve_BackslashDotDotEscapingRoot_Throws()
+    public void Resolve_BackslashDotDot_EscapesOnWindowsButIsALiteralNameOnPosix()
     {
         var resolver = new SandboxedPathResolver(MakeRoot());
 
         var act = () => resolver.Resolve(@"..\escape.txt");
 
-        act.Should().Throw<PathEscapesSandboxException>();
+        if (OperatingSystem.IsWindows())
+        {
+            act.Should().Throw<PathEscapesSandboxException>();
+        }
+        else
+        {
+            // One literal name that cannot leave the root. Rejecting it would wrongly refuse a legal
+            // POSIX file name, so the assertion here is that it resolves to exactly that name — not
+            // merely that "nothing was thrown".
+            act.Should().NotThrow();
+            resolver.Resolve(@"..\escape.txt").Value.Should().Be(@"..\escape.txt");
+        }
     }
 
     [Fact]

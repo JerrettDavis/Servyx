@@ -21,7 +21,6 @@ public class PathSandboxingTests(ITestOutputHelper output) : TinyBddXunitBase(ou
         var data = new TheoryData<string, string>
         {
             { "a parent-directory traversal", "../etc/passwd" },
-            { "a backslash parent-directory traversal", @"..\windows\system32" },
             { "an absolute path outside the root", Path.Combine(Path.GetTempPath(), "servyx-bdd-outside-" + Guid.NewGuid().ToString("N"), "secret.txt") },
             { "a UNC path", @"\\server\share\file.txt" },
             { "a reserved device name", "CON" },
@@ -54,6 +53,41 @@ public class PathSandboxingTests(ITestOutputHelper output) : TinyBddXunitBase(ou
                 }
             })
             .Then("it is rejected with PathEscapesSandboxException", ex => Task.FromResult(ex is PathEscapesSandboxException))
+            .AssertPassed();
+
+    /// <summary>
+    /// Kept out of <see cref="EscapeAttempts"/> because, unlike every entry there, this input is not an
+    /// escape on every platform: <c>\</c> separates path segments on Windows but is an ordinary file-name
+    /// character on POSIX — Servyx's production target, and the filesystem of every remote (SSH, Docker)
+    /// target. So the same string is a real parent-directory traversal on Windows and a single literal
+    /// file name on Linux, and the resolver — which delegates separator semantics to <see cref="Path"/> —
+    /// is right in both cases. Rejecting it on POSIX would not harden anything; it would refuse a legal
+    /// file name.
+    /// </summary>
+    [Scenario("A backslash traversal is rejected wherever a backslash separates path segments", "unit")]
+    [Fact]
+    [DisableOptimization]
+    public async Task BackslashTraversal_IsRejectedOnWindowsAndIsALiteralNameOnPosix()
+        => await Given("a sandboxed path resolver scoped to a server's data root", () => new SandboxedPathResolver(MakeRoot()))
+            .When(@"the backslash parent-directory traversal ""..\windows\system32"" is resolved", async Task<(Exception? Error, string? Value)> (resolver) =>
+            {
+                try
+                {
+                    return (null, await Task.FromResult(resolver.Resolve(@"..\windows\system32").Value));
+                }
+                catch (Exception ex)
+                {
+                    return (ex, null);
+                }
+            })
+            .Then(
+                OperatingSystem.IsWindows()
+                    ? @"it is rejected, because on Windows ""..\"" really does climb out of the root"
+                    : @"it is accepted as the single literal file name ""..\windows\system32"", which stays inside the root, because on POSIX a backslash is an ordinary file-name character",
+                outcome => Task.FromResult(
+                    OperatingSystem.IsWindows()
+                        ? outcome.Error is PathEscapesSandboxException
+                        : outcome.Error is null && outcome.Value == @"..\windows\system32"))
             .AssertPassed();
 
     [Scenario("A sibling-directory prefix attack is rejected", "unit")]
