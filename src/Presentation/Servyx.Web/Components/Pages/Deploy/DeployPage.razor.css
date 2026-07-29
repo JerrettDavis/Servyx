@@ -1,0 +1,171 @@
+.svx-deploy-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 0.75rem 1rem;
+    margin: 0.75rem 0 0.25rem;
+}
+
+.svx-deploy-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.8rem;
+    opacity: 0.85;
+}
+
+.svx-deploy-form input,
+.svx-deploy-form select {
+    min-width: 12rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: 0.35rem;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background: rgba(255, 255, 255, 0.04);
+    color: inherit;
+    font-size: 0.85rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: #ff8f8f;
+}
+
+.svx-deploy-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+}
+
+.svx-deploy-facts dt {
+    opacity: 0.7;
+    font-weight: 500;
+}
+
+.svx-deploy-facts dd {
+    margin: 0;
+}
+
+.svx-deploy-stages {
+    margin: 0;
+    padding-left: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.svx-deploy-stages li p {
+    margin: 0.2rem 0 0;
+    font-size: 0.85rem;
+    opacity: 0.85;
+}
+
+.svx-deploy-confirm {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-applied {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(120, 220, 160, 0.35);
+    background: rgba(120, 220, 160, 0.08);
+}
+
+.svx-deploy-applied h4 {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.svx-deploy-applied .svx-deploy-facts {
+    margin-bottom: 0;
+}
+
+.svx-deploy-progress {
+    font-size: 0.85rem;
+    opacity: 0.85;
+}
+
+.svx-ledger-entry {
+    display: block;
+}
+
+.svx-ledger-maintenance {
+    padding: 0.5rem 0.75rem 0.85rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.svx-drift-badge.svx-drift-matches {
+    border-color: rgba(120, 220, 160, 0.45);
+    color: #7fdca6;
+}
+
+.svx-drift-badge.svx-drift-diverged {
+    border-color: rgba(255, 178, 92, 0.55);
+    color: #ffb25c;
+}
+
+/* Every "not an answer" badge, muted the same amount. They are deliberately not styled like a match:
+   "could not be checked" must never read as "checked and clean". */
+.svx-drift-badge.svx-drift-unsupported,
+.svx-drift-badge.svx-drift-not-created,
+.svx-drift-badge.svx-drift-unchecked,
+.svx-drift-badge.svx-drift-error {
+    opacity: 0.75;
+}
+
+.svx-drift-divergences {
+    margin: 0 0 0.6rem;
+    padding-left: 1.1rem;
+    font-size: 0.82rem;
+    opacity: 0.9;
+}
+
+.svx-update-panel {
+    margin-top: 0.75rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.svx-update-changes {
+    margin: 0.75rem 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    font-size: 0.85rem;
+}
+
+.svx-update-arrow {
+    margin: 0 0.35rem;
+    opacity: 0.7;
+}
+
+/* The acknowledgement is a visibly separate block from the confirmation button below it — the two-step
+   discipline is only real if the two steps do not look like one. */
+.svx-data-impact-ack {
+    margin: 0.75rem 0;
+    padding: 0.6rem 0.75rem;
+    border-radius: 0.4rem;
+    border: 2px dashed rgba(255, 92, 92, 0.65);
+    background: rgba(255, 92, 92, 0.08);
+    font-size: 0.85rem;
+}
+
+.svx-data-impact-ack label {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
+    cursor: pointer;
+}

@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <!-- Design-time only: needed so `dotnet ef migrations add` can build a model from this project.
+         PrivateAssets="all" keeps it out of the transitive closure of anything referencing us. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application: the entities persisted here are
+         domain types, and Application's job is to consume this store via DI, so a reference the other
+         way would create a cycle — same discipline as Servyx.Infrastructure.Docker/.Ssh.
+         This is also why IProvisioningLedger is declared in Servyx.Domain: EfProvisioningLedger here
+         implements it, and an abstraction infrastructure must implement cannot live in Application
+         without dragging an Application reference in behind it. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

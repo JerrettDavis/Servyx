@@ -1,5 +1,6 @@
 @implements IDisposable
 @inject NavigationManager Nav
+@inject IServiceProvider Services
 
 <div class="svx-brand">
     <span class="svx-brand-mark" aria-hidden="true">S</span>
@@ -8,7 +9,7 @@
 
 <nav class="svx-nav" aria-label="Primary">
     <ul class="svx-nav-list">
-        @foreach (var entry in NavCatalog.Entries)
+        @foreach (var entry in NavCatalog.EntriesFor(_provisioningEnabled))
         {
             var href = entry.Href;
             var isActive = IsActive(href);
@@ -25,8 +26,18 @@
 </nav>
 
 @code {
+    private bool _provisioningEnabled;
+
+    /// <summary>
+    /// The gate is resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>d, because a
+    /// host that never wired provisioning must not be required to register anything for the sidebar to
+    /// render — and because "the gate is not registered" and "the gate is closed" must produce the same
+    /// nine-entry sidebar. Required injection would turn the first case into a render-time exception.
+    /// </summary>
     protected override void OnInitialized()
     {
+        _provisioningEnabled = (Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate ?? ProvisioningGate.Closed).Enabled;
+
         Nav.LocationChanged += OnLocationChanged;
     }
 

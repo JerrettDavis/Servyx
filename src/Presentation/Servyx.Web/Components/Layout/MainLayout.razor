@@ -2,6 +2,7 @@
 @implements IDisposable
 @inject NavigationManager Nav
 @inject IDashboardDataService Data
+@inject IServiceProvider Services
 
 <div class="svx-shell">
     <input type="checkbox" id="svx-sidebar-toggle" class="svx-sidebar-toggle-input" />
@@ -31,6 +32,18 @@
                     <span class="svx-connection-dot" aria-hidden="true"></span>
                     Docker host: @_connectionLabel
                 </span>
+
+                @if (_authenticationEnabled)
+                {
+                    @* An ordinary HTML form, not an EditForm: sign-out has to reach the server's cookie
+                       handler through a real request, which an interactive component's event handler cannot
+                       do. It carries no antiforgery token because it does not need one — the auth cookie is
+                       SameSite=Strict, so a cross-site POST never carries it and therefore never signs
+                       anyone out. *@
+                    <form method="post" action="logout" class="svx-signout-form">
+                        <button type="submit" class="svx-signout" data-testid="sign-out">Sign out</button>
+                    </form>
+                }
             </div>
         </header>
 
@@ -49,6 +62,13 @@
 @code {
     private string _pageTitle = "Servyx";
     private ConnectionStatus _status = ConnectionStatus.Connected;
+
+    /// <summary>
+    /// Whether this process requires a login, and therefore whether there is a session to end. Resolved
+    /// through <see cref="IServiceProvider"/> so a host that never registered the gate still renders — and,
+    /// unlike the provisioning lookup in <c>NavMenu</c>, defaults to enforced when absent.
+    /// </summary>
+    private bool _authenticationEnabled = true;
 
     private string _connectionCss => _status switch
     {
@@ -73,6 +93,10 @@
 
     protected override async Task OnInitializedAsync()
     {
+        _authenticationEnabled =
+            (Services.GetService(typeof(AuthenticationGate)) as AuthenticationGate
+                ?? AuthenticationGate.Enforced).Enabled;
+
         _status = await Data.GetDockerConnectionStatusAsync();
         UpdateTitle();
         Nav.LocationChanged += OnLocationChanged;

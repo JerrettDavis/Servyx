@@ -1,0 +1,1093 @@
+@page "/deploy"
+@using Servyx.Application.Provisioning
+@using Servyx.Domain.Provisioning
+@using Servyx.Web.Definitions
+@inject ProvisioningGate Gate
+@inject IServiceProvider Services
+
+<PageTitle>Deploy - Servyx</PageTitle>
+
+<div class="svx-page-header">
+    <h2>Deploy</h2>
+    <p class="svx-page-description">
+        Preview what provisioning a new server would do, stage by stage, before anything is created.
+    </p>
+</div>
+
+@if (!Gate.Enabled)
+{
+    @* Closed gate: an explanation, and deliberately not a single control. There is nothing to disable
+       here, because there is nothing registered to drive — see Program.cs. *@
+    <div class="svx-empty-state" data-testid="provisioning-disabled">
+        <h3>Provisioning is disabled on this instance</h3>
+        <p>
+            Servyx is running in its default read-only configuration. No provisioner is registered in this
+            process at all, so nothing here can create, start, or remove infrastructure — there is no
+            disabled button to enable, and no hidden path around it.
+        </p>
+        <p>
+            Provisioning is enabled by setting <code>@ProvisioningGate.ConfigurationKey</code> to
+            <code>true</code> in configuration. It defaults to <code>false</code> whenever the key is
+            absent.
+        </p>
+        @if (_authenticationEnabled)
+        {
+            <p data-testid="provisioning-disabled-auth">
+                <strong>Before enabling it:</strong> this instance requires the operator password before any
+                page — including this one — can be reached, so turning provisioning on grants the ability to
+                create real infrastructure, and at any provider other than a local Docker daemon to spend
+                real money, to whoever holds that password. That is one person, and there is no second
+                credential and no way to revoke a session short of changing the password.
+            </p>
+        }
+        else
+        {
+            <p data-testid="provisioning-disabled-auth">
+                <strong>Before enabling it:</strong> authentication is <em>switched off</em> on this instance
+                (<code>@AuthenticationGate.ConfigurationKey</code> is <code>false</code>), so
+                <strong>Servyx has no authentication of any kind</strong>. Turning this on grants the ability
+                to create real infrastructure — and, at any provider other than a local Docker daemon, to
+                spend real money — to <em>anyone</em> who can reach this web port.
+            </p>
+        }
+    </div>
+}
+else if (_dashboard is null)
+{
+    <div class="svx-empty-state" data-testid="provisioning-misconfigured">
+        <h3>Provisioning is enabled but not wired</h3>
+        <p>
+            <code>@ProvisioningGate.ConfigurationKey</code> is <code>true</code>, but no
+            <code>IProvisioningDashboard</code> is registered in this process. Nothing can be planned or
+            provisioned until the composition root registers one.
+        </p>
+    </div>
+}
+else
+{
+    @* The enabled-state counterpart of the closed-gate copy above. The warning does not stop being true
+       once the flag is on — it becomes more true, because from here a click creates real infrastructure. *@
+    <div class="svx-empty-state" data-testid="provisioning-enabled-warning">
+        <h3>Provisioning is enabled on this instance</h3>
+        @if (_authenticationEnabled)
+        {
+            <p data-testid="provisioning-enabled-auth">
+                <code>@ProvisioningGate.ConfigurationKey</code> is <code>true</code>, so this page can create
+                real infrastructure. Reaching it required the operator password, so that capability belongs
+                to whoever holds it — a single credential, shared by nobody, revocable only by changing it.
+            </p>
+        }
+        else
+        {
+            <p data-testid="provisioning-enabled-auth">
+                <code>@ProvisioningGate.ConfigurationKey</code> is <code>true</code>, so this page can create
+                real infrastructure, and <code>@AuthenticationGate.ConfigurationKey</code> is
+                <code>false</code>, so <strong>Servyx has no authentication of any kind</strong> — no login,
+                no session, no API key. That capability belongs to anyone who can reach this web port, not
+                just to you.
+            </p>
+        }
+    </div>
+
+    <div class="svx-card" data-testid="provisioner-list">
+        <h3>Available provisioners</h3>
+
+        @if (_provisioners.Count == 0)
+        {
+            <p class="svx-page-description" data-testid="no-provisioners">
+                Provisioning is enabled, but no provisioner is registered. There is nothing to plan against.
+            </p>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Provisioners">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 2.4fr 1fr;" aria-hidden="true">
+                    <span>Provisioner</span>
+                    <span>Capabilities</span>
+                    <span>Cost estimates</span>
+                </div>
+
+                @foreach (var provisioner in _provisioners)
+                {
+                    <div class="svx-row-link" role="listitem" data-testid="provisioner-row"
+                         data-provisioner-id="@provisioner.ProvisionerId"
+                         style="grid-template-columns: 1.2fr 2.4fr 1fr;">
+                        <span data-col-label="Provisioner"><strong>@provisioner.ProvisionerId</strong></span>
+                        <span data-col-label="Capabilities" class="svx-ports-cell">
+                            @foreach (var capability in DescribeCapabilities(provisioner.Capabilities))
+                            {
+                                <span class="port-chip">@capability</span>
+                            }
+                        </span>
+                        <span data-col-label="Cost estimates">
+                            @* An adapter without EstimatesCost can only ever answer "unknown"; saying so up
+                               front is more useful than letting the reader discover it in the plan. *@
+                            @(provisioner.Capabilities.HasFlag(ProvisioningCapabilities.EstimatesCost)
+                                ? "yes"
+                                : "no — costs render as unknown")
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+
+    @if (_provisioners.Count > 0)
+    {
+        <div class="svx-card" data-testid="plan-section">
+            <h3>Plan preview</h3>
+            <p class="svx-page-description">
+                Building a plan is pure computation — it issues no provider call and changes nothing. Review
+                the stages below before anything is applied.
+            </p>
+
+            <div class="svx-deploy-form">
+                <label>
+                    <span>Provisioner</span>
+                    <select @bind="_selectedProvisionerId" data-testid="provisioner-select">
+                        @foreach (var provisioner in _provisioners)
+                        {
+                            <option value="@provisioner.ProvisionerId">@provisioner.ProvisionerId</option>
+                        }
+                    </select>
+                </label>
+                <label>
+                    <span>Container name</span>
+                    <input @bind="_containerName" data-testid="container-name" />
+                </label>
+                <label>
+                    <span>Image</span>
+                    <input @bind="_image" data-testid="image" />
+                </label>
+                <label>
+                    <span>Port (host → container, tcp)</span>
+                    <input @bind="_hostPort" type="number" data-testid="host-port" />
+                </label>
+                <button type="button" class="btn btn-primary" data-testid="preview-plan"
+                        @onclick="PreviewPlanAsync">
+                    Preview plan
+                </button>
+            </div>
+
+            @if (_planError is not null)
+            {
+                <p class="svx-deploy-error" data-testid="plan-error">@_planError</p>
+            }
+
+            @if (_plan is not null)
+            {
+                <div data-testid="plan-preview">
+                    <dl class="svx-deploy-facts">
+                        <dt>Plan</dt>
+                        <dd data-testid="plan-id">@_plan.PlanId</dd>
+                        <dt>Content hash</dt>
+                        <dd><code>@_plan.PlanHash</code></dd>
+                        <dt>Estimated cost</dt>
+                        <dd><CostEstimateView Estimate="@_plan.EstimatedCost" /></dd>
+                        <dt>Figures expire</dt>
+                        <dd>@_plan.ExpiresAt.ToString("yyyy-MM-dd HH:mm 'UTC'")</dd>
+                    </dl>
+
+                    <ol class="svx-deploy-stages" data-testid="plan-stages">
+                        @foreach (var stage in _plan.Stages)
+                        {
+                            <li data-testid="plan-stage" data-stage-id="@stage.StageId">
+                                <strong>@stage.StageId</strong>
+                                <span class="port-chip">@stage.ProvisionerId</span>
+                                <p>@stage.Description</p>
+                            </li>
+                        }
+                    </ol>
+
+                    @* The confirmation step. Nothing above this point touched a provider — previewing is
+                       pure computation. Only the explicit click below reaches ProvisioningExecutor, and
+                       only after the plan hash is revalidated against the one rendered above. *@
+                    <div class="svx-deploy-confirm" data-testid="confirm-step">
+                        @if (_applyResult is ProvisioningApplyResult.Applied)
+                        {
+                            @* "Nothing has been created" stops being true the moment it stops being true. *@
+                            <p>
+                                This plan has been applied. Its @_plan.Stages.Count stage(s) ran against
+                                <strong>@_selectedProvisionerId</strong>; the resource is described below.
+                            </p>
+                        }
+                        else
+                        {
+                            <p>
+                                Nothing has been created. Applying this plan would run all
+                                @_plan.Stages.Count stage(s) against
+                                <strong>@_selectedProvisionerId</strong> at an estimated cost of
+                                <CostEstimateView Estimate="@_plan.EstimatedCost" ShowConfidence="false" />.
+                            </p>
+                        }
+
+                        @if (!_dashboard.ExecutionConfigured)
+                        {
+                            @* No executor in this process, so there is nothing to click. Gated rather than
+                               hidden: a reader deserves to see that the control exists and why it cannot
+                               be used. *@
+                            <GatedButton Label="Apply this plan" Reason="@ApplyGateReason">
+                                Apply this plan
+                            </GatedButton>
+                        }
+                        else
+                        {
+                            <button type="button" class="btn btn-primary" data-testid="apply-plan"
+                                    disabled="@ApplyDisabled"
+                                    @onclick="ApplyPlanAsync">
+                                @(_applying ? "Applying…" : "Apply this plan")
+                            </button>
+
+                            @if (_applying)
+                            {
+                                <p class="svx-deploy-progress" data-testid="apply-progress" role="status" aria-live="polite">
+                                    Applying — the write-ahead ledger row is committed first, then the
+                                    provider is asked to create the resource. Do not close this page.
+                                </p>
+                            }
+                        }
+                    </div>
+
+                    @if (_applyResult is ProvisioningApplyResult.Applied applied)
+                    {
+                        <div class="svx-deploy-applied" data-testid="apply-success">
+                            <h4>Resource created</h4>
+                            <dl class="svx-deploy-facts">
+                                <dt>Provisioner</dt>
+                                <dd data-testid="applied-provisioner">@applied.Resource.Handle.ProvisionerId</dd>
+                                <dt>Provider resource id</dt>
+                                <dd><code data-testid="applied-resource-id">@applied.Resource.Handle.ProviderResourceId</code></dd>
+                                <dt>Connector</dt>
+                                <dd data-testid="applied-connector">@applied.Resource.ConnectorId</dd>
+                                <dt>Transport</dt>
+                                <dd data-testid="applied-transport">@applied.Resource.Target.TransportId</dd>
+                                <dt>Endpoint</dt>
+                                <dd>
+                                    <code data-testid="applied-endpoint">@(string.IsNullOrWhiteSpace(applied.Resource.Target.Endpoint)
+                                        ? "(resolved from the environment at connect time)"
+                                        : applied.Resource.Target.Endpoint)</code>
+                                </dd>
+                                <dt>Applied plan hash</dt>
+                                <dd><code data-testid="applied-plan-hash">@applied.PlanHash</code></dd>
+                            </dl>
+                        </div>
+                    }
+                    else if (_applyResult is ProvisioningApplyResult.Stale stale)
+                    {
+                        @* Refused, and it says so as a refusal rather than a failure: nothing ran. *@
+                        <p class="svx-deploy-error" data-testid="apply-stale">@stale.Message</p>
+                    }
+                    else if (_applyResult is ProvisioningApplyResult.Failed failed)
+                    {
+                        <div class="svx-deploy-error" data-testid="apply-error">
+                            <p>@failed.Message</p>
+                            <p>
+                                Ledger row <code data-testid="apply-error-ledger-row">@failed.LedgerRowId</code>
+                                remains <strong>Intended</strong> for reconciliation.
+                                @if (!failed.Compensated)
+                                {
+                                    <strong>Compensation did not complete — a resource may still exist at the provider.</strong>
+                                }
+                            </p>
+                        </div>
+                    }
+
+                    @* Rendered independently of the result above, not as another branch of it: a ledger
+                       re-read can fail after a perfectly successful apply, and hiding that behind the
+                       success box would be exactly the silent discard this page must not do. *@
+                    @if (_applyError is not null)
+                    {
+                        <p class="svx-deploy-error" data-testid="apply-unexpected-error">@_applyError</p>
+                    }
+                </div>
+            }
+        </div>
+    }
+
+    <div class="svx-card" data-testid="ledger-section">
+        <h3>Provisioning ledger</h3>
+
+        @if (!_dashboard.LedgerConfigured)
+        {
+            <p class="svx-page-description" data-testid="ledger-unconfigured">
+                No provisioning ledger is configured in this process, so no write-ahead record of intent is
+                being kept. That is not the same as "nothing has been provisioned" — it means nothing is
+                recording it. A resource created without a ledger row has no local trace at all.
+            </p>
+        }
+        else if (_ledgerEntries.Count == 0)
+        {
+            <p class="svx-page-description" data-testid="ledger-empty">
+                No unresolved ledger rows. Every recorded intent has been reconciled.
+            </p>
+        }
+        else
+        {
+            <p class="svx-page-description" data-testid="drift-basis">
+                Drift is checked against the provider-assigned id the ledger recorded when the provider
+                confirmed the resource — so a row in <strong>Created</strong> is compared against the resource
+                Servyx actually owns, by the name the provider itself gave it. A row still in
+                <strong>Intended</strong> was committed <em>before</em> the provider was contacted, so no such
+                id was ever learned: it is listed here because it may be an in-flight or orphaned resource that
+                a sweep must resolve, and it offers no drift or update controls because there is nothing yet to
+                inspect.
+            </p>
+
+            <div class="svx-row-grid" role="list" aria-label="Ledger entries">
+                <div class="svx-row-grid-header" style="@LedgerColumns" aria-hidden="true">
+                    <span>Row</span>
+                    <span>Provisioner</span>
+                    <span>Region</span>
+                    <span>State</span>
+                    <span>Provider resource</span>
+                    <span>Recorded</span>
+                    <span>Drift</span>
+                </div>
+
+                @foreach (var entry in _ledgerEntries)
+                {
+                    <div class="svx-ledger-entry" role="listitem" data-testid="ledger-entry"
+                         data-ledger-row-id="@entry.Intent.LedgerRowId">
+                        <div class="svx-row-link" data-testid="ledger-row" style="@LedgerColumns">
+                            <span data-col-label="Row"><code>@entry.Intent.LedgerRowId</code></span>
+                            <span data-col-label="Provisioner">@entry.Intent.ProvisionerId</span>
+                            <span data-col-label="Region">@(entry.Intent.Region ?? "—")</span>
+                            <span data-col-label="State">
+                                <span class="badge" data-testid="ledger-state">@entry.State</span>
+                            </span>
+                            <span data-col-label="Provider resource">
+                                @* The real, provider-assigned id for a confirmed row — and, for an Intended
+                                   one, a statement that none exists rather than a substitute scraped from
+                                   the row's tags. *@
+                                @if (entry.Handle is not null)
+                                {
+                                    <code data-testid="ledger-provider-resource-id">@entry.Handle.ProviderResourceId</code>
+                                }
+                                else
+                                {
+                                    <span data-testid="ledger-provider-resource-none">not assigned yet</span>
+                                }
+                            </span>
+                            <span data-col-label="Recorded">@entry.Intent.RecordedAt.ToString("yyyy-MM-dd HH:mm 'UTC'")</span>
+                            <span data-col-label="Drift">
+                                @{
+                                    var driftState = DriftStateFor(entry);
+                                }
+                                <span class="badge svx-drift-badge svx-drift-@driftState"
+                                      data-testid="ledger-drift" data-drift="@driftState">@DriftLabelFor(entry)</span>
+                            </span>
+                        </div>
+
+                        @* Everything below is a read: DetectDriftAsync and PlanUpdateAsync both inspect the
+                           live resource and neither has a member that can change it. The only control here
+                           that can change anything is the explicit confirmation at the very bottom. *@
+                        <div class="svx-ledger-maintenance" data-testid="ledger-maintenance">
+                            @if (DriftFor(entry) is DriftCheckResult.Checked { Result.Matches: false } diverged)
+                            {
+                                <ul class="svx-drift-divergences" data-testid="drift-divergences">
+                                    @foreach (var divergence in diverged.Result.Divergences)
+                                    {
+                                        <li data-testid="drift-divergence" data-aspect="@divergence.Aspect">
+                                            @divergence.Description
+                                        </li>
+                                    }
+                                </ul>
+                            }
+
+                            @if (_driftErrors.TryGetValue(entry.Intent.LedgerRowId, out var driftError))
+                            {
+                                <p class="svx-deploy-error" data-testid="drift-error">@driftError</p>
+                            }
+
+                            @if (entry.Handle is null)
+                            {
+                                @* The row exists precisely because the provider had not been contacted when it
+                                   was written, so there is no resource to inspect and no honest way to invent
+                                   one. Stated in place of the controls rather than by omitting them silently. *@
+                                <p class="svx-page-description" data-testid="maintenance-not-created">
+                                    This row is still <strong>@entry.State</strong>: it was committed before the
+                                    provider was contacted, so Servyx never learned a provider-assigned id for
+                                    it. There is nothing to compare a live resource against and no update can be
+                                    planned for it. Reconcile it before acting on it.
+                                </p>
+                            }
+                            else if (DriftFor(entry) is DriftCheckResult.Unsupported unsupportedDrift)
+                            {
+                                @* Stated plainly and in place of the control, not silently omitted. There is
+                                   nothing to plan here, so offering a button that could only ever answer
+                                   "unsupported" would be theatre. *@
+                                <p class="svx-page-description" data-testid="maintenance-unsupported">
+                                    @MaintenanceUnsupportedText Reported by the provisioner itself:
+                                    @unsupportedDrift.Message
+                                </p>
+                            }
+                            else
+                            {
+                                <button type="button" class="btn" data-testid="plan-update"
+                                        disabled="@(_updatePlanning && _updateRowId == entry.Intent.LedgerRowId)"
+                                        @onclick="() => PlanUpdateAsync(entry)">
+                                    Plan update
+                                </button>
+                            }
+
+                            @if (_updateRowId == entry.Intent.LedgerRowId)
+                            {
+                                @RenderUpdatePanel(entry)
+                            }
+                        </div>
+                    </div>
+                }
+            </div>
+        }
+    </div>
+}
+
+@* ── Update preview and confirmation ───────────────────────────────────────────────────────────────
+   Kept as one fragment rather than inlined per row so the two-step discipline — preview, then an
+   explicit confirmation, plus a *separate* acknowledgement when data is at stake — exists in exactly
+   one place and cannot be half-applied by a second copy. *@
+@code {
+    private RenderFragment RenderUpdatePanel(ProvisioningLedgerEntry entry) =>
+        @<div class="svx-update-panel" data-testid="update-panel">
+            @if (_updateError is not null)
+            {
+                <p class="svx-deploy-error" data-testid="update-error">@_updateError</p>
+            }
+
+            @if (_updateResult is PlanUpdateResult.Unsupported unsupported)
+            {
+                <p class="svx-page-description" data-testid="update-unsupported">
+                    @MaintenanceUnsupportedText @unsupported.Message
+                </p>
+            }
+            else if (_updateResult is PlanUpdateResult.ResourceGone gone)
+            {
+                <p class="svx-deploy-error" data-testid="update-resource-gone">@gone.Message</p>
+            }
+            else if (_updateResult is PlanUpdateResult.Planned planned)
+            {
+                var plan = planned.Plan;
+
+                <dl class="svx-deploy-facts">
+                    <dt>Update plan</dt>
+                    <dd data-testid="update-plan-id">@plan.PlanId</dd>
+                    <dt>Strategy</dt>
+                    <dd><span class="badge" data-testid="update-strategy">@plan.Strategy</span></dd>
+                    <dt>Content hash</dt>
+                    <dd><code data-testid="update-plan-hash">@plan.PlanHash</code></dd>
+                    <dt>Observation expires</dt>
+                    <dd>@plan.ExpiresAt.ToString("yyyy-MM-dd HH:mm 'UTC'")</dd>
+                </dl>
+
+                @* The data impact goes above the changes and the stages on purpose: it is the fact that
+                   decides whether this update is safe to approve at all. *@
+                <DataImpactBanner Impact="@plan.DataImpact" />
+
+                @if (plan.Changes.Count > 0)
+                {
+                    <ul class="svx-update-changes" data-testid="update-changes">
+                        @foreach (var change in plan.Changes)
+                        {
+                            <li data-testid="update-change" data-aspect="@change.Aspect">
+                                <strong>@change.Aspect</strong>
+                                <code data-testid="update-change-current">@Render(change.Current)</code>
+                                <span class="svx-update-arrow" aria-label="becomes">→</span>
+                                <code data-testid="update-change-desired">@Render(change.Desired)</code>
+                                @if (change.RequiresRecreate)
+                                {
+                                    <span class="port-chip" data-testid="update-change-recreate">requires recreate</span>
+                                }
+                            </li>
+                        }
+                    </ul>
+                }
+
+                <ol class="svx-deploy-stages" data-testid="update-stages">
+                    @foreach (var stage in plan.Stages)
+                    {
+                        <li data-testid="update-stage" data-stage-id="@stage.StageId">
+                            <strong>@stage.StageId</strong>
+                            <span class="port-chip">@stage.ProvisionerId</span>
+                            <p>@stage.Description</p>
+                        </li>
+                    }
+                </ol>
+
+                <div class="svx-deploy-confirm" data-testid="update-confirm-step">
+                    @if (_updateApplyResult is UpdateApplyResult.Applied)
+                    {
+                        <p>
+                            This update has been applied to <strong>@entry.Intent.ProvisionerId</strong> by
+                            @plan.Strategy.
+                        </p>
+                    }
+                    else
+                    {
+                        <p>
+                            Nothing has been changed. Applying this plan would run its @plan.Stages.Count
+                            stage(s) against <strong>@entry.Intent.ProvisionerId</strong>.
+                        </p>
+                    }
+
+                    @if (DataImpactBanner.IsRisky(plan.DataImpact))
+                    {
+                        @* The second, deliberate step. It exists only for a non-preserving plan, it is a
+                           different control from the confirmation below it, and until it is completed the
+                           confirmation cannot be clicked — so the click that approves a safe update is never
+                           the click that destroys data. The Application layer refuses independently: it wants
+                           a DataImpactAcknowledgement, a type with no factory for Preserved. *@
+                        <div class="svx-data-impact-ack" data-testid="update-acknowledgement-step"
+                             data-impact="@plan.DataImpact">
+                            <label>
+                                <input type="checkbox" data-testid="update-acknowledge"
+                                       @bind="_updateAcknowledged" />
+                                <span>
+                                    I have read the above and accept that this update's impact on persistent
+                                    data is <strong>@plan.DataImpact</strong>. This is a separate approval from
+                                    confirming the plan.
+                                </span>
+                            </label>
+                        </div>
+                    }
+
+                    @if (!_dashboard!.ExecutionConfigured)
+                    {
+                        <GatedButton Label="Apply this update" Reason="@ApplyGateReason">
+                            Apply this update
+                        </GatedButton>
+                    }
+                    else
+                    {
+                        <button type="button" class="btn btn-primary" data-testid="apply-update"
+                                disabled="@UpdateApplyDisabled(plan)"
+                                @onclick="() => ApplyUpdateAsync(entry, plan)">
+                            @(_updateApplying ? "Applying…" : "Apply this update")
+                        </button>
+
+                        @if (_updateApplying)
+                        {
+                            <p class="svx-deploy-progress" data-testid="update-progress" role="status" aria-live="polite">
+                                Applying — the write-ahead ledger row is committed first, then the provider is
+                                asked to change the resource. Do not close this page.
+                            </p>
+                        }
+                    }
+                </div>
+
+                @if (_updateApplyResult is UpdateApplyResult.Applied appliedUpdate)
+                {
+                    <div class="svx-deploy-applied" data-testid="update-success">
+                        <h4>Update applied</h4>
+                        <dl class="svx-deploy-facts">
+                            <dt>Provider resource id</dt>
+                            <dd><code data-testid="updated-resource-id">@appliedUpdate.Resource.Handle.ProviderResourceId</code></dd>
+                            <dt>Strategy</dt>
+                            <dd data-testid="updated-strategy">@appliedUpdate.Strategy</dd>
+                            <dt>Persistent data</dt>
+                            <dd data-testid="updated-data-impact">@appliedUpdate.DataImpact</dd>
+                            <dt>Applied plan hash</dt>
+                            <dd><code data-testid="updated-plan-hash">@appliedUpdate.PlanHash</code></dd>
+                        </dl>
+                    </div>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.Stale staleUpdate)
+                {
+                    <p class="svx-deploy-error" data-testid="update-stale">@staleUpdate.Message</p>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.RequiresAcknowledgement needsAck)
+                {
+                    <p class="svx-deploy-error" data-testid="update-requires-acknowledgement">@needsAck.Message</p>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.NoChangeRequired noChange)
+                {
+                    <p class="svx-page-description" data-testid="update-no-change">@noChange.Message</p>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.ResourceGone goneOnApply)
+                {
+                    <p class="svx-deploy-error" data-testid="update-apply-resource-gone">@goneOnApply.Message</p>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.Unsupported unsupportedOnApply)
+                {
+                    <p class="svx-deploy-error" data-testid="update-apply-unsupported">@unsupportedOnApply.Message</p>
+                }
+                else if (_updateApplyResult is UpdateApplyResult.Failed failedUpdate)
+                {
+                    <div class="svx-deploy-error" data-testid="update-apply-error">
+                        <p>@failedUpdate.Message</p>
+                        <p>
+                            Ledger row <code data-testid="update-error-ledger-row">@failedUpdate.LedgerRowId</code>
+                            remains <strong>Intended</strong> for reconciliation.
+                            @if (!failedUpdate.Compensated)
+                            {
+                                <strong>Compensation did not complete — a resource may still exist at the provider.</strong>
+                            }
+                        </p>
+                    </div>
+                }
+
+                @if (_updateApplyError is not null)
+                {
+                    <p class="svx-deploy-error" data-testid="update-unexpected-error">@_updateApplyError</p>
+                }
+            }
+        </div>;
+}
+
+@code {
+    /// <summary>
+    /// Why the confirmation control is gated <em>when this host registered no executor</em>. Stated
+    /// specifically rather than reusing <see cref="GatedButton.DefaultReason"/>: this control is not gated
+    /// by the milestone-wide read-only rule, it is gated because the execution path genuinely is not
+    /// connected in this process, and a reader deserves to know which. When an executor <em>is</em>
+    /// registered, this string is never rendered — a real, clickable control is.
+    /// </summary>
+    public const string ApplyGateReason =
+        "Plan execution is not wired in this process. Applying a plan runs through ProvisioningExecutor "
+        + "over a durable provisioning ledger, neither of which this host registers.";
+
+    /// <summary>
+    /// Said whenever a provisioner turns out not to be an <see cref="IMaintainer"/>. Stated plainly and in
+    /// place of the update control rather than by omitting it silently: "we did not offer you a button" and
+    /// "this provider cannot do this" look identical on screen, and only one of them is an answer.
+    /// </summary>
+    public const string MaintenanceUnsupportedText =
+        "This resource type does not support maintenance operations.";
+
+    /// <summary>The ledger grid's column template, shared by the header and every row so they cannot drift.</summary>
+    private const string LedgerColumns = "grid-template-columns: 1.4fr 1.1fr 0.8fr 0.9fr 1.4fr 1.1fr 1.3fr;";
+
+    private IProvisioningDashboard? _dashboard;
+    private IReadOnlyList<ProvisionerDescriptor> _provisioners = [];
+    private IReadOnlyList<ProvisioningLedgerEntry> _ledgerEntries = [];
+
+    // Drift is per ledger row and is a read, so it is computed for every row as the page loads rather than
+    // hidden behind a click. Errors are kept beside the results, not instead of them: a row whose check
+    // threw must not render as a row that matched.
+    private readonly Dictionary<Guid, DriftCheckResult> _drift = [];
+    private readonly Dictionary<Guid, string> _driftErrors = [];
+
+    // Exactly one ledger row may have an open update preview at a time. Keeping a single set of fields
+    // rather than a per-row dictionary is deliberate: an acknowledgement must belong to the one plan the
+    // user is looking at, and a map of half-acknowledged plans is precisely how the wrong one gets applied.
+    private Guid? _updateRowId;
+    private PlanUpdateResult? _updateResult;
+    private string? _updateError;
+    private bool _updatePlanning;
+    private bool _updateAcknowledged;
+    private UpdateApplyResult? _updateApplyResult;
+    private string? _updateApplyError;
+    private bool _updateApplying;
+    private ProvisioningPlan? _plan;
+    private string? _planError;
+    private ProvisioningApplyResult? _applyResult;
+    private string? _applyError;
+    private bool _applying;
+
+    private string _selectedProvisionerId = string.Empty;
+    private string _containerName = "servyx-preview";
+    private string _image = "ghcr.io/thijsvanloef/palworld-server-docker:latest";
+    private int _hostPort = 8211;
+    private string _instanceId = string.Empty;
+    private string _jobId = string.Empty;
+    private string _gameDefinitionId = "palworld";
+
+    /// <summary>
+    /// Whether this process actually requires a login, which is what decides whether the warnings above may
+    /// still say "no authentication". Resolved through <see cref="IServiceProvider"/> and defaulting to
+    /// <see cref="AuthenticationGate.Enforced"/> when absent, so an unregistered gate produces the cautious
+    /// copy rather than a claim this page cannot back up.
+    /// </summary>
+    private bool _authenticationEnabled = true;
+
+    protected override async Task OnInitializedAsync()
+    {
+        _authenticationEnabled =
+            (Services.GetService(typeof(AuthenticationGate)) as AuthenticationGate
+                ?? AuthenticationGate.Enforced).Enabled;
+
+        if (!Gate.Enabled)
+        {
+            return;
+        }
+
+        // Resolved through IServiceProvider rather than @inject: when the gate is closed the composition
+        // root registers nothing, and a required injection would turn "provisioning is off" — the default
+        // configuration — into a render-time exception on this page.
+        _dashboard = Services.GetService(typeof(IProvisioningDashboard)) as IProvisioningDashboard;
+        if (_dashboard is null)
+        {
+            return;
+        }
+
+        if (Services.GetService(typeof(PalworldDefinitionInfo)) is PalworldDefinitionInfo definition)
+        {
+            _gameDefinitionId = definition.GameId;
+            _image = definition.DefaultImage;
+        }
+
+        // Fixed once per page instance so repeated previews of unchanged inputs produce the same plan hash.
+        _instanceId = $"preview-{Guid.NewGuid():n}"[..20];
+        _jobId = $"job-{Guid.NewGuid():n}"[..16];
+
+        _provisioners = _dashboard.ListProvisioners();
+        _selectedProvisionerId = _provisioners.Count > 0 ? _provisioners[0].ProvisionerId : string.Empty;
+        await RefreshLedgerAsync();
+    }
+
+    /// <summary>
+    /// Re-reads the ledger and then, for every row it returned, asks whether the live resource still
+    /// matches what that row recorded.
+    /// </summary>
+    /// <remarks>
+    /// Both halves are reads. <see cref="IProvisioningDashboard.DetectDriftAsync"/> goes through the same
+    /// type test <see cref="IProvisioningDashboard.PlanUpdateAsync"/> uses, so a provisioner that is not an
+    /// <see cref="IMaintainer"/> is never asked and answers
+    /// <see cref="DriftCheckResult.Unsupported"/> — which this page renders as "unknown", never as "clean".
+    /// </remarks>
+    private async Task RefreshLedgerAsync()
+    {
+        if (_dashboard is null)
+        {
+            return;
+        }
+
+        _ledgerEntries = await _dashboard.ListLedgerEntriesAsync();
+
+        _drift.Clear();
+        _driftErrors.Clear();
+
+        foreach (var entry in _ledgerEntries)
+        {
+            var handle = entry.Handle;
+            if (handle is null)
+            {
+                // An Intended row identifies nothing at the provider, so there is nothing to compare. Left
+                // absent from _drift on purpose: an absent answer renders as "cannot check", not as a match.
+                continue;
+            }
+
+            try
+            {
+                _drift[entry.Intent.LedgerRowId] =
+                    await _dashboard.DetectDriftAsync(entry.Intent.ProvisionerId, handle);
+            }
+            catch (Exception ex)
+            {
+                // Surfaced per row rather than swallowed: a check that could not run must not read as a
+                // check that found nothing wrong.
+                _driftErrors[entry.Intent.LedgerRowId] = $"Could not check drift for this row: {ex.Message}";
+            }
+        }
+    }
+
+    private DriftCheckResult? DriftFor(ProvisioningLedgerEntry entry) =>
+        _drift.TryGetValue(entry.Intent.LedgerRowId, out var result) ? result : null;
+
+    /// <summary>
+    /// The machine-readable drift state for a row, emitted as <c>data-drift</c>. Five distinct answers,
+    /// none of which collapses into another — in particular "unsupported" and "not-created" are not
+    /// "matches".
+    /// </summary>
+    /// <remarks>
+    /// A row with no <see cref="ProvisioningLedgerEntry.Handle"/> is answered before the drift dictionary is
+    /// consulted at all: it was never checked, so the only truthful answer is that it could not be, and the
+    /// answer names the reason rather than reusing the generic "unknown" every other branch would give.
+    /// </remarks>
+    private string DriftStateFor(ProvisioningLedgerEntry entry) => entry.Handle is null
+        ? "not-created"
+        : DriftFor(entry) switch
+        {
+            DriftCheckResult.Checked { Result.Matches: true } => "matches",
+            DriftCheckResult.Checked => "diverged",
+            DriftCheckResult.Unsupported => "unsupported",
+            _ when _driftErrors.ContainsKey(entry.Intent.LedgerRowId) => "error",
+            _ => "unchecked",
+        };
+
+    private string DriftLabelFor(ProvisioningLedgerEntry entry) => entry.Handle is null
+        ? "unknown — not created yet"
+        : DriftFor(entry) switch
+        {
+            DriftCheckResult.Checked { Result.Matches: true } => "matches",
+            DriftCheckResult.Checked checkedDrift => $"diverged ({checkedDrift.Result.Divergences.Count})",
+            DriftCheckResult.Unsupported => "unknown — not checkable",
+            _ when _driftErrors.ContainsKey(entry.Intent.LedgerRowId) => "unknown — check failed",
+            _ => "unknown — not checked",
+        };
+
+    /// <summary>
+    /// Asks the maintainer what an update <em>would</em> do to the resource behind
+    /// <paramref name="entry"/>. Reads the live resource; changes nothing.
+    /// </summary>
+    private async Task PlanUpdateAsync(ProvisioningLedgerEntry entry)
+    {
+        if (_dashboard is null || _updatePlanning)
+        {
+            return;
+        }
+
+        // No confirmed provider identity, no update plan. An Intended row offers no control that reaches
+        // here, and driving the handler directly is refused for the same reason rather than falling back to
+        // an identifier guessed from the row's tags.
+        var handle = entry.Handle;
+        if (handle is null)
+        {
+            return;
+        }
+
+        // A new preview supersedes everything the previous one earned — including, above all, the
+        // acknowledgement. Carrying a tick across from one plan to another would be exactly the laundered
+        // human-in-the-loop step DataImpactAcknowledgement exists to prevent.
+        _updateRowId = entry.Intent.LedgerRowId;
+        _updateResult = null;
+        _updateError = null;
+        _updateAcknowledged = false;
+        _updateApplyResult = null;
+        _updateApplyError = null;
+        _updatePlanning = true;
+
+        try
+        {
+            _updateResult = await _dashboard.PlanUpdateAsync(
+                entry.Intent.ProvisionerId, handle, BuildRequest());
+        }
+        catch (Exception ex)
+        {
+            _updateError = $"Could not build an update plan: {ex.Message}";
+        }
+        finally
+        {
+            _updatePlanning = false;
+        }
+    }
+
+    /// <summary>
+    /// Whether the update confirmation is currently unclickable: while a call is in flight, permanently
+    /// once applied, and — for any plan that does not preserve data — until the separate acknowledgement
+    /// step has actually been completed.
+    /// </summary>
+    /// <remarks>
+    /// This is the UI half of the guarantee. The other half is
+    /// <see cref="IProvisioningDashboard.ApplyUpdateAsync"/> refusing without a matching
+    /// <see cref="DataImpactAcknowledgement"/>, which is what makes the guarantee hold even if this
+    /// expression were wrong.
+    /// </remarks>
+    private bool UpdateApplyDisabled(UpdatePlan plan) =>
+        _updateApplying
+        || _updateApplyResult is UpdateApplyResult.Applied
+        || (DataImpactBanner.IsRisky(plan.DataImpact) && !_updateAcknowledged);
+
+    /// <summary>
+    /// The update confirmation. The only method on this page besides <see cref="ApplyPlanAsync"/> that can
+    /// change anything, and it is reachable only from a control that exists only after a preview.
+    /// </summary>
+    /// <remarks>
+    /// Two independent approvals travel to the dashboard: the plan hash rendered above, and — only for a
+    /// non-preserving plan — a <see cref="DataImpactAcknowledgement"/> minted from the factory named after
+    /// the impact the plan actually states. There is no factory for
+    /// <see cref="DataImpact.Preserved"/>, so a safe update cannot carry a token, and a risky one cannot be
+    /// applied without one.
+    /// </remarks>
+    private async Task ApplyUpdateAsync(ProvisioningLedgerEntry entry, UpdatePlan plan)
+    {
+        if (_dashboard is null || _updateApplying || _updateApplyResult is UpdateApplyResult.Applied)
+        {
+            return;
+        }
+
+        var risky = DataImpactBanner.IsRisky(plan.DataImpact);
+        if (risky && !_updateAcknowledged)
+        {
+            // Belt as well as braces. The control is disabled in this state, so reaching here means
+            // something drove the handler directly — and the answer is still "no call is made".
+            return;
+        }
+
+        // Same refusal as the preview: an update is applied against the provider-assigned id the ledger
+        // recorded, and a row that has none is not updated against a substitute.
+        var handle = entry.Handle;
+        if (handle is null)
+        {
+            return;
+        }
+
+        DataImpactAcknowledgement? acknowledgement = plan.DataImpact switch
+        {
+            DataImpact.AtRisk => DataImpactAcknowledgement.AtRisk(),
+            DataImpact.Destroyed => DataImpactAcknowledgement.Destroyed(),
+            _ => null,
+        };
+
+        _updateApplying = true;
+        _updateApplyResult = null;
+        _updateApplyError = null;
+
+        try
+        {
+            _updateApplyResult = await _dashboard.ApplyUpdateAsync(
+                entry.Intent.ProvisionerId,
+                handle,
+                BuildRequest(),
+                plan.PlanHash,
+                acknowledgement,
+                entry.Intent.JobId);
+        }
+        catch (Exception ex)
+        {
+            _updateApplyError = $"Could not apply this update: {ex.Message}";
+        }
+        finally
+        {
+            _updateApplying = false;
+        }
+
+        // The ledger and every drift answer on the page are now out of date either way.
+        try
+        {
+            await RefreshLedgerAsync();
+        }
+        catch (Exception ex)
+        {
+            _updateApplyError = string.IsNullOrEmpty(_updateApplyError)
+                ? $"The update ran, but the ledger could not be re-read: {ex.Message}"
+                : $"{_updateApplyError} The ledger could also not be re-read: {ex.Message}";
+        }
+    }
+
+    /// <summary>Renders an absent value as the same "(none)" <see cref="PlannedChange.Description"/> uses.</summary>
+    private static string Render(string? value) => value ?? "(none)";
+
+    /// <summary>
+    /// Asks the selected provisioner what it <em>would</em> do. This is the only provider-facing call this
+    /// page makes, and <see cref="IProvisioner.PlanAsync"/>'s contract forbids it from changing anything.
+    /// </summary>
+    private async Task PreviewPlanAsync()
+    {
+        _plan = null;
+        _planError = null;
+
+        // A new preview supersedes whatever the last confirmation said. Leaving a stale success box on
+        // screen beside a freshly computed plan would read as "this plan was applied".
+        _applyResult = null;
+        _applyError = null;
+
+        if (_dashboard is null || string.IsNullOrWhiteSpace(_selectedProvisionerId))
+        {
+            return;
+        }
+
+        try
+        {
+            _plan = await _dashboard.PlanAsync(_selectedProvisionerId, BuildRequest());
+        }
+        catch (Exception ex)
+        {
+            // Surfaced to the user rather than swallowed: a plan that could not be computed must not look
+            // like a plan with no stages.
+            _planError = $"Could not build a plan: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Whether the Apply control is currently unclickable: while a call is in flight, and permanently once
+    /// this plan has actually been applied. The second half is not cosmetic — re-clicking would create a
+    /// second container.
+    /// </summary>
+    private bool ApplyDisabled => _applying || _applyResult is ProvisioningApplyResult.Applied;
+
+    /// <summary>
+    /// The confirmation. This is the only method on this page that can create anything, and it is reachable
+    /// only from an explicit click on a control that exists only after a plan has been previewed.
+    /// </summary>
+    /// <remarks>
+    /// The plan hash rendered above is passed back to the dashboard, which recomputes the plan and refuses
+    /// to execute if it no longer matches — so editing an input after previewing produces a refusal, not a
+    /// surprise container. There is no control on this page that skips that check.
+    /// </remarks>
+    private async Task ApplyPlanAsync()
+    {
+        if (_dashboard is null || _plan is null || _applying || string.IsNullOrWhiteSpace(_selectedProvisionerId))
+        {
+            return;
+        }
+
+        if (_applyResult is ProvisioningApplyResult.Applied)
+        {
+            return;
+        }
+
+        _applying = true;
+        _applyResult = null;
+        _applyError = null;
+
+        try
+        {
+            _applyResult = await _dashboard.ApplyAsync(
+                _selectedProvisionerId,
+                BuildRequest(),
+                _plan.PlanHash,
+                _jobId);
+        }
+        catch (Exception ex)
+        {
+            // Anything the dashboard did not model as a result — a misconfigured host, a malformed
+            // request — is still shown. Never swallowed: an apply that vanished silently would be
+            // indistinguishable from one that quietly succeeded.
+            _applyError = $"Could not apply this plan: {ex.Message}";
+        }
+        finally
+        {
+            _applying = false;
+        }
+
+        // The ledger view is now out of date either way: a success added and resolved a row, a failure left
+        // one Intended. Re-read it so what the page shows matches what a sweep would find.
+        try
+        {
+            await RefreshLedgerAsync();
+        }
+        catch (Exception ex)
+        {
+            _applyError = string.IsNullOrEmpty(_applyError)
+                ? $"The plan was applied, but the ledger could not be re-read: {ex.Message}"
+                : $"{_applyError} The ledger could also not be re-read: {ex.Message}";
+        }
+    }
+
+    private ProvisioningRequest BuildRequest()
+    {
+        var connectorId = $"{_selectedProvisionerId}-local";
+        var parameters = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["image"] = _image,
+            ["containerName"] = _containerName,
+            ["instanceId"] = _instanceId,
+            ["jobId"] = _jobId,
+            ["connectorId"] = connectorId,
+            ["restartPolicy"] = "unless-stopped",
+            [$"port:{_hostPort}/tcp"] = _hostPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+        };
+
+        return new ProvisioningRequest(
+            GameDefinitionId: _gameDefinitionId,
+            DeploymentProfileId: "docker",
+            ConnectorId: connectorId,
+            Parameters: parameters);
+    }
+
+    /// <summary>Splits a flags value into its individual set bits, or a single "none" chip.</summary>
+    private static IReadOnlyList<string> DescribeCapabilities(ProvisioningCapabilities capabilities)
+    {
+        if (capabilities == ProvisioningCapabilities.None)
+        {
+            return [nameof(ProvisioningCapabilities.None)];
+        }
+
+        return
+        [
+            .. Enum.GetValues<ProvisioningCapabilities>()
+                .Where(c => c != ProvisioningCapabilities.None && capabilities.HasFlag(c))
+                .Select(c => c.ToString())
+        ];
+    }
+}

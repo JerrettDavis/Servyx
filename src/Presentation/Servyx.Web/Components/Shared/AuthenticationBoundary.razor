@@ -1,0 +1,105 @@
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@using Servyx.Web.Authentication
+@using Servyx.Web.Services
+
+@*
+    The router's own fail-closed gate: nothing inside it renders for a caller the circuit does not know.
+
+    This is default-deny by construction rather than by annotation. It does not ask "does this page carry an
+    [Authorize] attribute?" — that question answers "no, so render it" for every page nobody remembered to
+    decorate, which is exactly the failure mode a new page introduces. It asks the opposite question: is this
+    route explicitly marked [AllowAnonymous], and if not, is the user authenticated? A page added tomorrow is
+    protected because it exists, not because its author remembered.
+
+    It is defence in depth, not the defence. The real gate is the FallbackPolicy in the composition root,
+    which stops an anonymous HTTP request before a component is ever resolved — including the request that
+    would open the SignalR circuit this component runs in. This exists for the navigation that happens
+    *inside* an established circuit, where no new HTTP request is made and therefore no middleware runs.
+*@
+
+@if (_allowed)
+{
+    @ChildContent
+}
+
+@code {
+    /// <summary>The route being rendered, whose page type carries any <see cref="AllowAnonymousAttribute"/>.</summary>
+    [Parameter, EditorRequired]
+    public RouteData RouteData { get; set; } = default!;
+
+    /// <summary>What to render once the route has been allowed.</summary>
+    [Parameter]
+    public RenderFragment? ChildContent { get; set; }
+
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationStateTask { get; set; }
+
+    [Inject]
+    private NavigationManager Nav { get; set; } = default!;
+
+    [Inject]
+    private IServiceProvider Services { get; set; } = default!;
+
+    private bool _allowed;
+    private bool _leaving;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        _allowed = await IsAllowedAsync();
+
+        if (_allowed || _leaving)
+        {
+            return;
+        }
+
+        // Said once, and once only. /login is deliberately not a route in this Router — it is a static
+        // document served by its own endpoint — so the Router cannot match it, and asking again on the
+        // re-render that follows would be an unbounded loop rather than a second chance. forceLoad because
+        // reaching a non-route has to be a real navigation: an anonymous caller leaves the circuit entirely.
+        _leaving = true;
+        Nav.NavigateTo(LoginUrlFor(Nav.Uri), forceLoad: true);
+    }
+
+    private async Task<bool> IsAllowedAsync()
+    {
+        // Resolved through IServiceProvider rather than required-injected, and defaulting to Enforced when
+        // absent: "the gate was never
+        // registered" must mean "demand a login", not "wave everyone through". This is the opposite default
+        // from NavMenu's ProvisioningGate lookup, and deliberately so — see AuthenticationGate.
+        var gate = Services.GetService(typeof(AuthenticationGate)) as AuthenticationGate
+            ?? AuthenticationGate.Enforced;
+
+        if (!gate.Enabled)
+        {
+            // The documented, explicitly-configured unauthenticated mode. Program.cs logs about it loudly at
+            // startup; there is nothing more for this component to do about it.
+            return true;
+        }
+
+        if (RouteData is not null && IsAnonymousRoute(RouteData.PageType))
+        {
+            return true;
+        }
+
+        if (AuthenticationStateTask is null)
+        {
+            // No cascading authentication state means nothing can vouch for this caller.
+            return false;
+        }
+
+        var state = await AuthenticationStateTask;
+        return state.User.Identity?.IsAuthenticated == true;
+    }
+
+    private static bool IsAnonymousRoute(Type pageType)
+        => pageType.GetCustomAttributes(typeof(AllowAnonymousAttribute), inherit: true).Length > 0;
+
+    private string LoginUrlFor(string currentUri)
+    {
+        var relative = "/" + Nav.ToBaseRelativePath(currentUri);
+        var returnUrl = AuthenticationEndpoints.SanitizeReturnUrl(relative);
+
+        return $"{OperatorAuthentication.LoginPath}?{OperatorAuthentication.ReturnUrlParameter}={Uri.EscapeDataString(returnUrl)}";
+    }
+}

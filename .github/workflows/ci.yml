@@ -1,0 +1,128 @@
+# Servyx CI
+#
+# This is the project's first-ever CI workflow. It is intentionally
+# conservative in scope: it restores, builds, and runs only the test
+# projects that are hermetic on a stock GitHub-hosted `ubuntu-latest`
+# runner (no Docker daemon guaranteed available with the right images,
+# no Playwright browser binaries installed).
+#
+# Deliberately NOT run here, and why:
+#
+#   - tests/Servyx.E2E.Tests
+#       References Microsoft.Playwright directly and launches Servyx.Web
+#       as a real subprocess, driving it with a real browser. Per
+#       docs/testing.md, PlaywrightFixture/E2ETestBase will skip cleanly
+#       if Chromium isn't installed rather than fail outright, but a skip
+#       is not a meaningful signal for CI - it would mean these scenarios
+#       silently exercise nothing on every run. Installing and trusting
+#       browser binaries in CI is a deliberate follow-up, not a default.
+#
+#   - tests/Servyx.E2E.Bdd.Tests
+#       Reqnroll/Gherkin E2E suite that itself references
+#       Microsoft.Playwright and project-references Servyx.E2E.Tests
+#       (which also references Playwright). Same reasoning as above.
+#
+# tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests is included below:
+# it references Testcontainers, but its .csproj sets
+# `VSTestTestCaseFilter` to `Category!=Integration` by default, so a bare
+# `dotnet test` (no explicit --filter) never starts a container - verified
+# locally per docs/testing.md's "Hermeticity policy" section. The
+# Docker-backed `Category=Integration` tests in that project remain
+# opt-in only and are not run by this workflow.
+#
+# Note: TreatWarningsAsErrors=true is already set solution-wide in
+# Directory.Build.props, so `-warnaserror` is deliberately omitted from
+# the build step below - adding it would be redundant.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET (honors global.json pin)
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          # Keyed on packages.lock.json when present; falls back to
+          # Directory.Packages.props (central package management) since
+          # this repo currently has no committed lock files.
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/packages.lock.json', 'Directory.Packages.props') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        # -warnaserror is intentionally omitted: TreatWarningsAsErrors=true
+        # is already set solution-wide in Directory.Build.props.
+        run: dotnet build --no-restore --configuration Release
+
+      # Test projects run individually rather than via `dotnet test Servyx.sln`
+      # or a broad filter, so inclusion is an explicit, deliberate decision
+      # per project - a newly added test project does not silently join CI.
+      #
+      # Included (hermetic - no Docker, no browser binaries required):
+      #   tests/Core/Servyx.Domain.Tests
+      #   tests/Core/Servyx.Application.Tests
+      #   tests/Infrastructure/Servyx.Infrastructure.Tests
+      #   tests/Infrastructure/Servyx.Infrastructure.Docker.Tests
+      #   tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests   (Testcontainers-backed
+      #     Integration-category tests are excluded by the project's own default
+      #     VSTestTestCaseFilter; not overridden here)
+      #   tests/Infrastructure/Servyx.Infrastructure.Process.Tests   (each test runs in
+      #     its own temp directory and cleans up after itself; the handful that need a
+      #     real interpreter to prove argv handling, or the privilege to create a
+      #     symlink, use [SkippableFact] and skip with a stated reason rather than
+      #     failing where the capability is absent)
+      #   tests/Infrastructure/Servyx.Infrastructure.DigitalOcean.Tests   (substitutes
+      #     HttpMessageHandler, so no DigitalOcean account, API token, or outbound
+      #     network access is required or attempted)
+      #   tests/Infrastructure/Servyx.Infrastructure.Azure.Tests   (substitutes
+      #     HttpMessageHandler for BOTH Azure hosts - login.microsoftonline.com and
+      #     management.azure.com - so no Azure subscription, service principal,
+      #     client secret, or outbound network access is required or attempted)
+      #   tests/Infrastructure/Servyx.Config.Tests
+      #   tests/Servyx.Bdd.Tests
+      #   tests/Presentation/Servyx.Web.Tests
+      #
+      # Excluded (see header comment for why):
+      #   tests/Servyx.E2E.Tests
+      #   tests/Servyx.E2E.Bdd.Tests
+      - name: Test
+        run: |
+          set -e
+          projects=(
+            "tests/Core/Servyx.Domain.Tests"
+            "tests/Core/Servyx.Application.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Docker.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Process.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.DigitalOcean.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Azure.Tests"
+            "tests/Infrastructure/Servyx.Config.Tests"
+            "tests/Servyx.Bdd.Tests"
+            "tests/Presentation/Servyx.Web.Tests"
+          )
+          for project in "${projects[@]}"; do
+            echo "::group::dotnet test $project"
+            dotnet test "$project" --no-build --configuration Release
+            echo "::endgroup::"
+          done

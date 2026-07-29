@@ -1,0 +1,47 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- No PackageReference at all, deliberately - and here the omission costs more argument than it did for
+       DigitalOcean, so it is worth spelling out. Microsoft *does* publish a first-party, maintained SDK
+       (Azure.ResourceManager.Compute / .Network / .Resources plus Azure.Identity), which is the obvious
+       thing to reach for. It is declined on purpose:
+
+         * It is not one dependency. The compute/network/resources trio plus Azure.Identity drags in
+           Azure.Core, System.ClientModel, Microsoft.Identity.Client, Microsoft.IdentityModel.Abstractions,
+           System.Memory.Data and their transitive closure. This repo pins and hand-justifies every package
+           in Directory.Packages.props, and a closure that size is not something a reviewer can justify per
+           entry.
+         * Azure.Identity in particular is an ambient-credential discovery chain (environment variables,
+           managed identity, shared token cache, Azure CLI, Visual Studio). Servyx's whole secret discipline
+           is that credentials come from ISecretStore by URN and from nowhere else; a library whose default
+           behaviour is to go looking for credentials in the environment is the opposite of that rule, and
+           suppressing it would mean configuring away most of what the library is for.
+         * The surface actually needed is small: one OAuth2 token exchange and five ARM verbs
+           (PUT/GET/DELETE a resource, list resources by tag). That is well under the cost of the closure.
+
+       So this adapter hand-rolls ARM REST over System.Net.Http / System.Net.Http.Json / System.Text.Json,
+       all three of which ship in the net10.0 shared framework - "no new dependency" here is a fact about the
+       build, not an aspiration. Note the sibling infra projects reference
+       Microsoft.Extensions.{DependencyInjection,Logging}.Abstractions for their DI registration helpers;
+       this project has neither, which is also why it can carry no logger and therefore no code path that
+       could log the Azure client secret or an access token. -->
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application, for the same reason
+         Servyx.Infrastructure.Docker, .Ssh and .DigitalOcean do: Application's purpose is to consume
+         IProvisioner/ITransport via DI, so a reference the other way would create a cycle. It also
+         references no other infrastructure project - in particular not Servyx.Infrastructure.Ssh, even
+         though every TargetDescriptor it produces is consumed by the SSH transport, and not
+         Servyx.Infrastructure.DigitalOcean, even though this adapter is the second instance of the same
+         shape. That is the layering rule and it is load-bearing here: if this project could see the SSH
+         adapter, "shape I contains no install logic" would be a matter of discipline rather than a matter
+         of what is reachable. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

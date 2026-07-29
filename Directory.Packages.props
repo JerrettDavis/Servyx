@@ -11,6 +11,10 @@
     <!-- Infrastructure -->
     <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <!-- Design-time tooling only (referenced with PrivateAssets="all" by Servyx.Infrastructure.Persistence):
+         `dotnet ef migrations add` / `dotnet ef database update` will not run without it. Pinned to the same
+         10.0.10 as the runtime EF packages above so the design-time model matches what actually executes. -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />

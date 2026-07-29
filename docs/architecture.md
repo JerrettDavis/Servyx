@@ -345,3 +345,22 @@ refused at load time.
 Tests mirror this layout 1:1, plus `Servyx.IntegrationTests`, which uses
 Testcontainers — CI spins up its own Palworld container for these tests, it
 never touches a user's own server.
+
+### Where infrastructure-implemented abstractions must live
+
+Any abstraction that infrastructure must *implement* has to live in
+`Servyx.Domain`. `Servyx.Application` may only own abstractions it *consumes*
+from other Application-layer types.
+
+This follows directly from the dependency graph above: `Servyx.Infrastructure.Persistence`,
+`Servyx.Infrastructure.Docker`, and `Servyx.Infrastructure.Ssh` each reference
+**only** `Servyx.Domain` — deliberately, with defending comments in their
+`.csproj` files, to prevent a dependency cycle. An interface declared in
+`Servyx.Application` is therefore structurally unimplementable by any
+infrastructure project, no matter how reasonable it looks in isolation.
+
+The rule was learned the hard way: an `IProvisioningLedger` interface was
+initially placed in `Servyx.Application`, and `Servyx.Infrastructure.Persistence`
+could not implement it despite already owning the correct durable row type.
+The same collision forced `IProvisioningOperation` into `Servyx.Domain.Provisioning`,
+where `IProvisioner` and `ITransport` already live for exactly this reason.

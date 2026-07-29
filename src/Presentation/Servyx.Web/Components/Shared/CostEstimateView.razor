@@ -1,0 +1,58 @@
+@* The one place a CostEstimate is turned into text. No page may format a cost by hand: the
+   CostConfidence.Unknown rule (below) is a product-wide invariant and it is only an invariant if there
+   is exactly one implementation of it. *@
+@using Servyx.Domain.Provisioning
+
+<span class="svx-cost" data-testid="cost-estimate" title="@Source">@Format(Estimate)</span>
+@if (ShowConfidence)
+{
+    <span class="badge svx-cost-confidence" data-testid="cost-confidence">@(Estimate?.Confidence.ToString() ?? nameof(CostConfidence.Unknown))</span>
+}
+
+@code {
+    /// <summary>The literal word every unknown cost renders as. Never a number, never zero, never blank.</summary>
+    public const string UnknownText = "unknown";
+
+    [Parameter]
+    public CostEstimate? Estimate { get; set; }
+
+    /// <summary>Whether to render the confidence level alongside the figure.</summary>
+    [Parameter]
+    public bool ShowConfidence { get; set; } = true;
+
+    private string Source => Estimate?.Source ?? "No cost estimate was supplied.";
+
+    /// <summary>
+    /// Renders <paramref name="estimate"/> as text.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong><see cref="CostConfidence.Unknown"/> renders as the literal word "unknown".</strong> This is
+    /// required by <see cref="CostConfidence.Unknown"/>'s own contract: a fabricated zero is
+    /// indistinguishable from a real zero-cost figure to the person reading it, and "we do not know what
+    /// this costs" is the only truthful thing to say. A null estimate, and an estimate carrying no figures
+    /// at all, are the same answer and render the same way.
+    /// </para>
+    /// </remarks>
+    public static string Format(CostEstimate? estimate)
+    {
+        if (estimate is null || estimate.Confidence == CostConfidence.Unknown)
+        {
+            return UnknownText;
+        }
+
+        var parts = new List<string>(2);
+        if (estimate.Hourly is { } hourly)
+        {
+            parts.Add($"{hourly.ToString("0.####", System.Globalization.CultureInfo.InvariantCulture)} {estimate.Currency}/hr");
+        }
+
+        if (estimate.Monthly is { } monthly)
+        {
+            parts.Add($"{monthly.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)} {estimate.Currency}/mo");
+        }
+
+        // A confidence better than Unknown but with no figures attached is still "we have no number".
+        return parts.Count == 0 ? UnknownText : string.Join(" · ", parts);
+    }
+}

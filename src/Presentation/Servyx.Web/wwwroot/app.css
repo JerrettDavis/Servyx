@@ -616,3 +616,55 @@ h1:focus {
         display: inline;
     }
 }
+/* ── Data impact ──────────────────────────────────────────────────────────────────────────────────
+   AtRisk and Destroyed must be unmissable: a loud border, a filled background, and a glyph — not a
+   muted badge sitting in a row of muted badges. Preserved is deliberately quiet, so that the loud
+   treatment keeps meaning something. */
+.svx-data-impact {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.6rem;
+    margin: 0.85rem 0;
+    padding: 0.7rem 0.9rem;
+    border-radius: 0.5rem;
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.svx-data-impact-glyph {
+    font-size: 1.35rem;
+    line-height: 1.2;
+}
+
+.svx-data-impact-headline {
+    display: block;
+    font-size: 0.9rem;
+}
+
+.svx-data-impact-detail {
+    margin: 0.25rem 0 0;
+    font-size: 0.82rem;
+    opacity: 0.9;
+}
+
+.svx-data-impact-calm {
+    border-color: rgba(120, 220, 160, 0.35);
+    background: rgba(120, 220, 160, 0.07);
+}
+
+.svx-data-impact-calm .svx-data-impact-headline {
+    color: #7fdca6;
+    font-weight: 500;
+}
+
+.svx-data-impact-danger {
+    border: 2px solid #ff5c5c;
+    background: rgba(255, 92, 92, 0.14);
+    box-shadow: 0 0 0 1px rgba(255, 92, 92, 0.25) inset;
+}
+
+.svx-data-impact-danger .svx-data-impact-headline {
+    color: #ff8f8f;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+}

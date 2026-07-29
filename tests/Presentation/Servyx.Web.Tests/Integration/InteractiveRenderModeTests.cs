@@ -61,6 +61,14 @@ public sealed class InteractiveRenderModeTests
         startInfo.Environment["Servyx__DataSource"] = "Mock";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
 
+        // This test is about render-mode resolution, and it reads the HTML of "/". With authentication left
+        // at its default (on), "/" is a 302 to /login — a deliberately static, circuit-free document that has
+        // no interactive component boundary in it by design, so the assertion below would fail for a reason
+        // that has nothing to do with what this test guards. The app is therefore started in its documented
+        // unauthenticated mode; the authentication behaviour it is opting out of is asserted directly by
+        // OperatorAuthenticationEndpointTests, against the same real subprocess with authentication ON.
+        startInfo.Environment["Servyx__Authentication__Enabled"] = "false";
+
         using var process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         process.Start();
 

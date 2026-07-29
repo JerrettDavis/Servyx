@@ -18,7 +18,12 @@
          models are built on. -->
     <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
     <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <!-- Servyx.Infrastructure supplies the Data Protection-backed ISecretStore. The operator password's
+         PBKDF2 verifier is a secret like any other, so it is written through the same store, at the same
+         kind of secret:// URN, rather than through a storage mechanism invented for authentication. -->
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
     <ProjectReference Include="..\..\Hosting\Servyx.ServiceDefaults\Servyx.ServiceDefaults.csproj" />
   </ItemGroup>
 

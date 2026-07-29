@@ -63,6 +63,14 @@ public sealed class ServyxAppProcess : IAsyncDisposable
         startInfo.Environment["Servyx__DataSource"] = "Mock";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
 
+        // Servyx authenticates by default (Servyx:Authentication:Enabled defaults to true), so every page in
+        // this app now redirects an anonymous caller to /login. These E2E scenarios are about the dashboard's
+        // behaviour, not about the login flow, and they drive the app as a browser with no session — so the
+        // host under test is started in its documented unauthenticated mode rather than every scenario
+        // growing a sign-in preamble. The authentication path itself is covered directly, against a host
+        // started with authentication ON, by Servyx.Web.Tests' OperatorAuthenticationEndpointTests.
+        startInfo.Environment["Servyx__Authentication__Enabled"] = "false";
+
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         _process.OutputDataReceived += (_, e) => { if (e.Data is not null) Output.Enqueue(e.Data); };
         _process.ErrorDataReceived += (_, e) => { if (e.Data is not null) Output.Enqueue("[stderr] " + e.Data); };

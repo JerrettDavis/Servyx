@@ -31,6 +31,12 @@
     <!-- Read-only use of FileHostKeyStore (a real IHostKeyStore) in integration tests, for genuine
          pinning behavior rather than a hand-rolled fake. Servyx.Infrastructure itself is not modified. -->
     <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
+    <!-- The two provisioning adapters must stamp an identical Servyx tag vocabulary onto the resources they
+         create, or each one's orphan sweep goes blind to the other's resources with nothing raised anywhere.
+         Neither *source* project may reference the other (infrastructure references Servyx.Domain only), so
+         the only place that invariant can actually be asserted is a test assembly that sees both. This
+         reference exists for exactly that assertion — see CanonicalTagVocabularyTests. -->
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
   </ItemGroup>
 
 </Project>

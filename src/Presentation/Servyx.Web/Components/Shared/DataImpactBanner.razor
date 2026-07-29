@@ -1,0 +1,76 @@
+@* The one place a DataImpact is turned into UI. No page may style a data impact by hand: "AtRisk and
+   Destroyed must be unmissable" is only a guarantee if there is exactly one implementation of it.
+
+   The severity — not the impact name — is what drives the treatment, and it is emitted as a
+   data-severity attribute so a test can assert that a risky plan is rendered differently from a safe
+   one rather than merely that some words appeared on screen. *@
+@using Servyx.Domain.Provisioning
+
+<div class="svx-data-impact svx-data-impact-@SeverityClass"
+     data-testid="data-impact"
+     data-impact="@Impact"
+     data-severity="@Severity"
+     role="@Role">
+    <span class="svx-data-impact-glyph" aria-hidden="true">@Glyph</span>
+    <div class="svx-data-impact-body">
+        <strong class="svx-data-impact-headline" data-testid="data-impact-headline">@Headline</strong>
+        <p class="svx-data-impact-detail" data-testid="data-impact-detail">@Detail</p>
+    </div>
+</div>
+
+@code {
+    /// <summary>The value emitted as <c>data-severity</c> for a plan that does not preserve data.</summary>
+    public const string DangerSeverity = "danger";
+
+    /// <summary>The value emitted as <c>data-severity</c> for a plan that preserves data.</summary>
+    public const string CalmSeverity = "calm";
+
+    [Parameter, EditorRequired]
+    public DataImpact Impact { get; set; }
+
+    /// <summary>
+    /// Whether this impact is one an operator must be stopped by. Public so the confirmation flow can ask
+    /// the same question the banner answers, instead of restating the rule with its own switch.
+    /// </summary>
+    public static bool IsRisky(DataImpact impact) => impact != DataImpact.Preserved;
+
+    private bool IsDangerous => IsRisky(Impact);
+
+    private string Severity => IsDangerous ? DangerSeverity : CalmSeverity;
+
+    /// <summary>
+    /// <c>alert</c> for a non-preserving impact so assistive technology announces it without being asked,
+    /// and no role at all for a preserving one — a calm statement is not an alert, and marking it as one
+    /// would make the real alerts easier to skim past.
+    /// </summary>
+    private string? Role => IsDangerous ? "alert" : null;
+
+    private string SeverityClass => IsDangerous ? DangerSeverity : CalmSeverity;
+
+    private string Glyph => Impact switch
+    {
+        DataImpact.Destroyed => "☠",
+        DataImpact.AtRisk => "⚠",
+        _ => "✓",
+    };
+
+    private string Headline => Impact switch
+    {
+        DataImpact.Destroyed => "DATA WILL BE DESTROYED",
+        DataImpact.AtRisk => "DATA IS AT RISK",
+        _ => "Persistent data is preserved",
+    };
+
+    private string Detail => Impact switch
+    {
+        DataImpact.Destroyed =>
+            "This update deletes a store this resource's persistent data lives in. Approving it is approving "
+            + "data loss. There is no undo, and Servyx takes no backup on your behalf.",
+        DataImpact.AtRisk =>
+            "This update may separate the workload from some of its state. The adapter could not demonstrate "
+            + "that every data store survives and stays attached, so the resource may come up on fresh state.",
+        _ =>
+            "Every store this resource's persistent data lives in survives the update, and the resource that "
+            + "exists afterwards is attached to the same stores it was attached to before.",
+    };
+}

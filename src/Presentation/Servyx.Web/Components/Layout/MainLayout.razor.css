@@ -92,6 +92,27 @@
     cursor: default;
 }
 
+.svx-signout-form {
+    margin: 0;
+    display: inline-flex;
+}
+
+.svx-signout {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--svx-text-muted, #5b5f6b);
+    background: transparent;
+    border: 1px solid var(--svx-border, #e2e4ea);
+    border-radius: 999px;
+    padding: 0.35rem 0.75rem;
+    cursor: pointer;
+}
+
+.svx-signout:hover {
+    color: var(--svx-text, #1d2030);
+    border-color: var(--svx-text-muted, #5b5f6b);
+}
+
 .svx-connection {
     display: inline-flex;
     align-items: center;

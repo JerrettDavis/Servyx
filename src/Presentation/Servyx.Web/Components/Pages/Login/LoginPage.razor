@@ -1,0 +1,197 @@
+@using Servyx.Web.Authentication
+@*
+    The sign-in page, and the only thing in Servyx an anonymous caller is ever served.
+
+    It is deliberately NOT a routable Blazor component and has no @@page directive: it is rendered as a
+    complete, static HTML document straight from the `/login` endpoint (see AuthenticationEndpoints), outside
+    the interactive Router entirely. That is what lets the SignalR circuit endpoint itself require
+    authentication — an anonymous visitor never needs a circuit here, because this page is a plain HTML form
+    that the browser posts on its own. No JavaScript, no WebSocket, no components resolved for a caller who
+    has not yet proved anything.
+
+    The form posts back to `/login`; the endpoint on the other side decides everything. Nothing on this page
+    knows whether a password is correct, and nothing on it can be persuaded to skip the check.
+*@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/" />
+    <title>Sign in - Servyx</title>
+    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+        .svx-login {
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem 1rem;
+            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        }
+
+        .svx-login-card {
+            width: 100%;
+            max-width: 26rem;
+            border: 1px solid rgba(127, 127, 127, 0.35);
+            border-radius: 0.75rem;
+            padding: 2rem;
+        }
+
+        .svx-login-card h1 {
+            margin: 0 0 0.25rem;
+            font-size: 1.5rem;
+        }
+
+        .svx-login-lede {
+            margin: 0 0 1.5rem;
+            opacity: 0.8;
+            font-size: 0.9rem;
+            line-height: 1.5;
+        }
+
+        .svx-login-card label {
+            display: block;
+            margin-bottom: 1rem;
+        }
+
+        .svx-login-card label span {
+            display: block;
+            margin-bottom: 0.35rem;
+            font-size: 0.85rem;
+            font-weight: 600;
+        }
+
+        .svx-login-card input[type="password"] {
+            width: 100%;
+            padding: 0.6rem 0.7rem;
+            border-radius: 0.4rem;
+            border: 1px solid rgba(127, 127, 127, 0.5);
+            font: inherit;
+        }
+
+        .svx-login-card button {
+            width: 100%;
+            padding: 0.65rem 1rem;
+            border: 0;
+            border-radius: 0.4rem;
+            font: inherit;
+            font-weight: 600;
+            cursor: pointer;
+            background: #0d6efd;
+            color: #fff;
+        }
+
+        .svx-login-error {
+            margin: 0 0 1rem;
+            padding: 0.6rem 0.75rem;
+            border-radius: 0.4rem;
+            border: 1px solid #dc3545;
+            color: #dc3545;
+            font-size: 0.9rem;
+        }
+    </style>
+</head>
+
+<body>
+    <main class="svx-login">
+        <div class="svx-login-card">
+            <h1>Servyx</h1>
+
+            @if (SetupRequired)
+            {
+                <p class="svx-login-lede" data-testid="setup-lede">
+                    No operator password has been set on this install yet. Choose one now — it is the only
+                    credential Servyx has, and this first-run form disappears the moment it is set.
+                </p>
+            }
+            else
+            {
+                <p class="svx-login-lede" data-testid="signin-lede">
+                    Enter the operator password to continue.
+                </p>
+            }
+
+            @if (!string.IsNullOrEmpty(ErrorMessage))
+            {
+                <p class="svx-login-error" role="alert" data-testid="login-error">@ErrorMessage</p>
+            }
+
+            @if (SetupRequired)
+            {
+                <form method="post" action="login" data-testid="setup-form">
+                    <input type="hidden" name="@AntiforgeryFieldName" value="@AntiforgeryToken" />
+                    <input type="hidden" name="@OperatorAuthentication.ReturnUrlParameter" value="@ReturnUrl" />
+                    <input type="hidden" name="intent" value="@SetPasswordIntent" />
+
+                    <label>
+                        <span>New operator password (at least @OperatorCredentialStore.MinimumPasswordLength characters)</span>
+                        <input type="password" name="newPassword" autocomplete="new-password"
+                               minlength="@OperatorCredentialStore.MinimumPasswordLength" required
+                               data-testid="new-password" />
+                    </label>
+                    <label>
+                        <span>Confirm password</span>
+                        <input type="password" name="confirmPassword" autocomplete="new-password" required
+                               data-testid="confirm-password" />
+                    </label>
+
+                    <button type="submit" data-testid="set-password">Set password and sign in</button>
+                </form>
+            }
+            else
+            {
+                <form method="post" action="login" data-testid="login-form">
+                    <input type="hidden" name="@AntiforgeryFieldName" value="@AntiforgeryToken" />
+                    <input type="hidden" name="@OperatorAuthentication.ReturnUrlParameter" value="@ReturnUrl" />
+
+                    <label>
+                        <span>Operator password</span>
+                        <input type="password" name="password" autocomplete="current-password" required
+                               autofocus data-testid="password" />
+                    </label>
+
+                    <button type="submit" data-testid="sign-in">Sign in</button>
+                </form>
+            }
+        </div>
+    </main>
+</body>
+
+</html>
+
+@code {
+    /// <summary>The hidden field value that asks the endpoint to run the one-time bootstrap.</summary>
+    public const string SetPasswordIntent = "set-password";
+
+    /// <summary>
+    /// Whether this install has never had a password set, in which case the first-run form is offered
+    /// instead of the sign-in form. Decided by the endpoint against the secret store, never by this page.
+    /// </summary>
+    [Parameter]
+    public bool SetupRequired { get; set; }
+
+    /// <summary>The antiforgery form field's name, supplied by the endpoint that issued the token.</summary>
+    [Parameter]
+    public string AntiforgeryFieldName { get; set; } = string.Empty;
+
+    /// <summary>The antiforgery request token paired with the cookie the endpoint set.</summary>
+    [Parameter]
+    public string AntiforgeryToken { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Where to go after a successful sign-in. Already validated as a local path by the endpoint — this page
+    /// only echoes it back, and the endpoint validates it again on the way in.
+    /// </summary>
+    [Parameter]
+    public string ReturnUrl { get; set; } = "/";
+
+    /// <summary>
+    /// What went wrong on the previous attempt, if anything. Deliberately unspecific about which half of a
+    /// credential was wrong, because there is only one half.
+    /// </summary>
+    [Parameter]
+    public string? ErrorMessage { get; set; }
+}

@@ -1,7 +1,13 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Servyx.Application;
+using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
+using Servyx.Domain.Provisioning;
 using Servyx.Infrastructure.Docker;
+using Servyx.Infrastructure.Docker.Provisioning;
+using Servyx.Infrastructure.Persistence;
+using Servyx.Web.Authentication;
 using Servyx.Web.Components;
 using Servyx.Web.Definitions;
 using Servyx.Web.Services;
@@ -52,7 +58,114 @@ else
     builder.Services.AddSingleton<IDashboardDataService, LiveDashboardDataService>();
 }
 
+// ── Authentication gate ──────────────────────────────────────────────────────────────────────────
+//
+// Servyx is a single-operator, self-hosted application: one person, one password, one session. There is no
+// user table, no roles, no API keys — see AddServyxOperatorAuthentication's remarks for the full list of
+// what this deliberately does not provide.
+//
+// Servyx:Authentication:Enabled defaults to TRUE. That is the opposite default from the provisioning gate
+// immediately below, and both defaults follow the same rule: a misconfiguration must never widen what an
+// anonymous caller can do. Provisioning is a capability, so an unreadable flag leaves it off; authentication
+// is a protection, so an unreadable flag leaves it on. Only an explicit, parseable `false` turns it off.
+//
+// What "on" means in practice is one line inside AddServyxOperatorAuthentication: an authorization
+// FallbackPolicy requiring an authenticated user. It applies to every endpoint that does not carry
+// authorization metadata of its own — every page in this app, including pages nobody has written yet, and
+// the Blazor SignalR endpoint itself. The only things that opt out are /login and the static assets the
+// login page needs to render.
+var authenticationGate = AuthenticationGate.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(authenticationGate);
+builder.Services.AddServyxOperatorAuthentication(
+    authenticationGate,
+    builder.Environment.IsDevelopment(),
+    // Lets an operator (or a test host) point the encrypted secret files somewhere other than the default
+    // servyx-data/secrets beside the binaries, in the same spirit as Servyx:Persistence:ConnectionString.
+    builder.Configuration["Servyx:Secrets:RootDirectory"]);
+
+// ── Provisioning gate ────────────────────────────────────────────────────────────────────────────
+//
+// !! WARNING — READ BEFORE SETTING Servyx:Provisioning:Enabled TO true !!
+//
+// Setting this flag to true registers an IProvisioner in this container, which is a MUTATING,
+// MONEY-SPENDING capability: it can create real infrastructure, and at any provider other than a local
+// Docker daemon that infrastructure is billed to a real account for as long as it exists. With the
+// authentication gate above open (the default), that capability belongs to whoever holds the operator
+// password. With the authentication gate CLOSED, it belongs to anyone who can reach this web port —
+// which is why that exact combination is logged at Critical during startup (see StartupSafetyWarnings).
+//
+// Defaults to false whenever the key is absent, empty, or unparseable — see ProvisioningGate. When it is
+// false, nothing below the `if` runs: no IProvisioner, no dashboard service, and no /deploy nav entry
+// exist in this process, and AddServyxDocker()'s read-only registration above remains the only Docker
+// wiring, exactly as it was before this gate existed.
+var provisioningGate = ProvisioningGate.FromConfiguration(builder.Configuration);
+builder.Services.AddSingleton(provisioningGate);
+
+if (provisioningGate.Enabled)
+{
+    // The one call in this file that makes container creation/destruction reachable at all. It is
+    // deliberately NOT part of AddServyxDocker() — see AddServyxDockerProvisioning's own remarks.
+    builder.Services.AddServyxDockerProvisioning();
+
+    // Durable storage for the provisioning ledger — only composed when provisioning itself is enabled, so
+    // a read-only host never gets a ServyxDbContext, a SQLite file, or an IProvisioningLedger in its
+    // container. Servyx:Persistence:ConnectionString lets an operator point at a different file (or a
+    // different provider-compatible connection string) without touching code; the default keeps the
+    // database alongside the other on-disk state under servyx-data/, matching the convention
+    // SecretsOptions already uses for secrets/host-keys (see Servyx.Infrastructure.Secrets.SecretsOptions).
+    var persistenceConnectionString = builder.Configuration["Servyx:Persistence:ConnectionString"]
+        ?? $"Data Source={Path.Combine(AppContext.BaseDirectory, "servyx-data", "servyx.db")}";
+    builder.Services.AddServyxPersistence(persistenceConnectionString);
+
+    // Binds IProvisioningLedger to the durable EfProvisioningLedger. A separate call from
+    // AddServyxPersistence() on purpose — see that method's own remarks in
+    // Servyx.Infrastructure.Persistence.ServiceCollectionExtensions.
+    builder.Services.AddServyxProvisioningLedger();
+
+    // Registers ProvisioningExecutor over the durable IProvisioningLedger registered above. This is the
+    // only sanctioned route by which an IProvisioningOperation gets driven, and it is deliberately its own
+    // opt-in call — see AddServyxProvisioningExecution's remarks — so the mutating path is visible here
+    // rather than folded into AddServyxApplication().
+    builder.Services.AddServyxProvisioningExecution();
+
+    // The dashboard can now plan AND apply. Applying still runs through ProvisioningExecutor over the
+    // durable ledger, and still refuses a plan whose hash has drifted since the user previewed it. When
+    // the executor is absent the dashboard reports ExecutionConfigured == false and /deploy renders a
+    // gated, non-functional Apply control rather than a live one.
+    //
+    // Scoped, not singleton, and it must be: both IProvisioningLedger (EfProvisioningLedger) and
+    // ProvisioningExecutor are scoped because they ride on ServyxDbContext. A singleton resolving them
+    // from the root provider throws "Cannot resolve scoped service from root provider" the first time
+    // /deploy is opened — a failure that only appears once someone actually turns this flag on, which is
+    // the worst possible moment to discover it. In Blazor Server the scope is the user's circuit, so the
+    // dashboard, its ledger and its DbContext all live and die with the page the operator is looking at.
+    builder.Services.AddScoped<IProvisioningDashboard>(sp => new ProvisioningDashboardService(
+        sp.GetServices<IProvisioner>(),
+        sp.GetService<IProvisioningLedger>(),
+        sp.GetService<ProvisioningExecutor>()));
+}
+
 var app = builder.Build();
+
+// The one cross-check between the two gates. Each is defensible alone; "no authentication" plus "can create
+// billable infrastructure" is not, and an operator who arrives in that state by editing one line of
+// configuration deserves to be told so at Critical rather than to discover it from a bill.
+StartupSafetyWarnings.LogDangerousCombinations(
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(OperatorAuthentication.AuditLogCategory),
+    authenticationGate,
+    provisioningGate);
+
+// Migrations are applied here — inside the flag-gated startup path — rather than inside
+// AddServyxPersistence(). Registration stays side-effect-free and testable in isolation (a test fixture
+// can compose the container without anything touching disk); migrating the schema is an explicit,
+// startup-time action that should only ever happen when provisioning is actually enabled, so it is gated
+// by the exact same provisioningGate.Enabled check as the registrations above. With the flag off, this
+// block does not run and nothing here touches the database file.
+if (provisioningGate.Enabled)
+{
+    using var migrationScope = app.Services.CreateScope();
+    migrationScope.ServiceProvider.GetRequiredService<ServyxDbContext>().Database.Migrate();
+}
 
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
@@ -64,9 +177,29 @@ if (!app.Environment.IsDevelopment())
 app.UseStatusCodePagesWithReExecute("/not-found", createScopeForStatusCodePages: true);
 app.UseHttpsRedirection();
 
+// Authentication resolves who the caller is; authorization enforces the FallbackPolicy installed by
+// AddServyxOperatorAuthentication. Both must run before the endpoints below, and before UseAntiforgery, so
+// that an anonymous request to any page is turned away by the framework rather than by anything Servyx
+// wrote. When the authentication gate is closed no fallback policy exists and UseAuthorization is a no-op,
+// which is exactly the pre-authentication behaviour, reachable only by setting the flag on purpose.
+app.UseAuthentication();
+app.UseAuthorization();
+
 app.UseAntiforgery();
 
-app.MapStaticAssets();
+// The single anonymous exception, and it is a deliberate one: the sign-in page is served before anyone has
+// authenticated, so the stylesheet and favicon it references have to be too. These endpoints serve files
+// from wwwroot only — there is no application data behind them.
+app.MapStaticAssets().AllowAnonymous();
+
+// GET/POST /login and POST /logout. The two login endpoints are the only AllowAnonymous endpoints in the
+// application besides the static assets above.
+app.MapServyxOperatorAuthentication();
+
+// Every routable component is mapped here, and not one of them carries authorization metadata — which is
+// precisely why the FallbackPolicy is the mechanism: these endpoints, plus the interactive-server SignalR
+// endpoint that AddInteractiveServerRenderMode adds, all inherit "an authenticated user is required" without
+// anyone having to remember to say so per page.
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();
 

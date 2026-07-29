@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <!-- No PackageReference at all, deliberately. DigitalOcean publishes no first-party .NET SDK, and the
+       community clients are unmaintained, so this adapter hand-rolls its REST v2 calls over
+       System.Net.Http / System.Net.Http.Json / System.Text.Json - all three are in the net10.0 shared
+       framework, so "no new dependency" here is a fact about the build, not an aspiration. Note the
+       sibling infra projects reference Microsoft.Extensions.{DependencyInjection,Logging}.Abstractions for
+       their DI registration helpers; this project has neither, which is also why it can carry no logger and
+       therefore no code path that could log the DigitalOcean API token. -->
+
+  <ItemGroup>
+    <!-- Depends on Servyx.Domain directly, not Servyx.Application, for the same reason
+         Servyx.Infrastructure.Docker and Servyx.Infrastructure.Ssh do: Application's purpose is to consume
+         IProvisioner/ITransport via DI, so a reference the other way would create a cycle. It also
+         references no other infrastructure project - in particular not Servyx.Infrastructure.Ssh, even
+         though every TargetDescriptor it produces is consumed by the SSH transport. That is the layering
+         rule and it is load-bearing here: if this project could see the SSH adapter, "shape I contains no
+         install logic" would be a matter of discipline rather than a matter of what is reachable. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

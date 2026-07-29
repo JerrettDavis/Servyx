@@ -1,0 +1,19 @@
+@using Servyx.Web.Authentication
+
+@*
+    Renders nothing and navigates to the sign-in page.
+
+    Used as AuthorizeRouteView's NotAuthorized content, which is what handles a page that carries an explicit
+    [Authorize] whose policy the current user fails. In today's app that never fires — AuthenticationBoundary
+    has already refused an unauthenticated caller before AuthorizeRouteView is reached, and no page declares a
+    policy — but leaving the slot empty would mean a future policy failure rendered a blank page rather than
+    an answer.
+*@
+
+@code {
+    [Inject]
+    private NavigationManager Nav { get; set; } = default!;
+
+    protected override void OnInitialized()
+        => Nav.NavigateTo(OperatorAuthentication.LoginPath, forceLoad: true);
+}

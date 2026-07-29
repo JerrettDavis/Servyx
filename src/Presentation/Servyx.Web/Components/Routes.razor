@@ -1,6 +1,26 @@
-﻿<Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
-    <Found Context="routeData">
-        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
-        <FocusOnNavigate RouteData="routeData" Selector="h1" />
-    </Found>
-</Router>
+@*
+    CascadingAuthenticationState supplies the circuit's Task<AuthenticationState> — in Blazor Server that is
+    seeded from the authenticated user of the connection that opened the circuit — to everything below it,
+    which is what lets AuthenticationBoundary and AuthorizeRouteView ask who the caller is at all.
+
+    Two gates sit between a route and its page, and they answer different questions. AuthenticationBoundary
+    is the default-deny one: no page reaches AuthorizeRouteView unless the caller is authenticated (or the
+    route is explicitly [AllowAnonymous], or authentication is switched off wholesale). AuthorizeRouteView is
+    the per-page one: it honours any [Authorize] policy a page declares. Neither is the real gate — that is
+    the FallbackPolicy in Program.cs, which refuses the HTTP request before a component exists — but an
+    in-circuit navigation makes no HTTP request, so these are what stand in its place there.
+*@
+<CascadingAuthenticationState>
+    <Router AppAssembly="typeof(Program).Assembly" NotFoundPage="typeof(Pages.NotFound)">
+        <Found Context="routeData">
+            <AuthenticationBoundary RouteData="routeData">
+                <AuthorizeRouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)">
+                    <NotAuthorized>
+                        <RedirectToLogin />
+                    </NotAuthorized>
+                </AuthorizeRouteView>
+                <FocusOnNavigate RouteData="routeData" Selector="h1" />
+            </AuthenticationBoundary>
+        </Found>
+    </Router>
+</CascadingAuthenticationState>
