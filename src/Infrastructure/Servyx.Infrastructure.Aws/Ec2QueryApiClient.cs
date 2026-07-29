@@ -49,7 +49,7 @@ namespace Servyx.Infrastructure.Aws;
 /// below are built from the HTTP status and EC2's own error XML, never from the request.
 /// </para>
 /// </remarks>
-internal sealed class Ec2QueryApiClient
+internal sealed partial class Ec2QueryApiClient
 {
     /// <summary>The EC2 API version every request declares.</summary>
     internal const string ApiVersion = "2016-11-15";
