@@ -34,7 +34,7 @@ namespace Servyx.Infrastructure.DigitalOcean;
 /// request headers.
 /// </para>
 /// </remarks>
-internal sealed class DigitalOceanApiClient
+internal sealed partial class DigitalOceanApiClient
 {
     /// <summary>The public API root, used when the supplied <see cref="HttpClient"/> has no base address.</summary>
     internal const string DefaultBaseAddress = "https://api.digitalocean.com/";
