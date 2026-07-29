@@ -142,11 +142,27 @@ As shipped in M4 the decorator is `WriteGuardedExecutionTarget`
 every transport DI extension registers instead of the concrete transport. Two
 details are worth stating because they are easy to get wrong:
 
-- **`ExecuteAsync` is not gated by write mode.** `docker exec` can mutate, but
-  Servyx classifies control operations by the `readOnly` flag their definition
-  declares, not by verb. Gating the raw exec channel would block M2's
-  read-only control probes on exactly the servers they exist for. Files are
-  guarded here; commands are guarded by the command classifier.
+- **`ExecuteAsync` is gated by the command's declared intent, not by its verb.**
+  `docker exec` is the same API call whether it runs `Info` or `Shutdown`, and
+  `tar` archives or lists depending on one argument, so the guard never parses
+  argv. `CommandSpec` carries a `CommandIntent`; a spec declared
+  `CommandIntent.ReadOnly` passes in every mode, which is what keeps M2's
+  read-only control and readiness probes working on the servers they exist for.
+  Anything else — including anything that simply did not say — needs
+  `WriteMode.Enabled`. `CommandIntent.Mutating` is the enum's zero value and the
+  parameter's default *on purpose*: an adapter that never thought about intent
+  is refused on a read-only server rather than silently permitted, so forgetting
+  fails safe. This is the exec-channel twin of `WriteGuardedRconSession`, which
+  takes the same declaration from the definition's command catalogue instead of
+  from the caller.
+- **Adapters read the posture through one shared helper.**
+  `ExecutionTargetWriteMode` (`Servyx.Domain.Transport`) resolves the `WriteMode`
+  a target carries, looking through an `ICompositeExecutionTarget` to the
+  stricter half. `SshBackupProvider`, `LocalProcessBackupProvider` and
+  `LocalProcessProvisioner` all use it to refuse *early* — before a quiesce, an
+  archive name reservation, or a `Directory.CreateDirectory` that no transport
+  decorator can reach. It is a second look at the same policy, never a second
+  policy: an unguarded target answers `null` and is allowed through.
 - **At this seam `PreviewOnly` refuses precisely what `ReadOnly` refuses.**
   Previewing is reading; the distinction between the two modes lives in the
   plan engine (`PreviewAsync` vs `ApplyAsync`), one layer up.

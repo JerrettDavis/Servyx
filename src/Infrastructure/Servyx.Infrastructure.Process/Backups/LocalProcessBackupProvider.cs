@@ -43,11 +43,12 @@ namespace Servyx.Infrastructure.Process.Backups;
 /// </item>
 /// <item>
 /// <description>
-/// <em>The write guard reaches an in-process archive and cannot reach a subprocess.</em>
-/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c> and <c>DeleteAsync</c> but
-/// deliberately not <c>ExecuteAsync</c>. Building the archive here and writing it through
-/// <c>WriteFileAsync</c> puts every archive byte behind the guard structurally; <c>tar --create</c> as a
-/// subprocess would sail straight past it and put a real file on disk before anything checked.
+/// <em>The write guard reaches an in-process archive directly.</em> Building the archive here and writing
+/// it through <c>WriteFileAsync</c> puts every archive byte behind
+/// <see cref="WriteGuardedExecutionTarget"/> structurally, with no declaration to remember. A
+/// <c>tar --create</c> subprocess is now gated too — the guard refuses any command not declared
+/// <see cref="CommandIntent.ReadOnly"/> — but that gate depends on the caller declaring intent correctly,
+/// whereas a file write is mutating by its own nature and cannot be mis-declared.
 /// </description>
 /// </item>
 /// <item>
@@ -119,10 +120,10 @@ namespace Servyx.Infrastructure.Process.Backups;
 /// have a directory created for it and then fail on the write. So <see cref="CreateAsync"/>,
 /// <see cref="RestoreAsync"/> and a live <see cref="PruneAsync"/> ask the guard for its posture first and
 /// throw <see cref="WritesDisabledException"/> — the same exception the guard itself throws, naming the
-/// server and the operation — before a directory, a temp file, or a subprocess exists. See
-/// <see cref="ResolveWriteMode"/>. (This provider starts no subprocess at all, so the separate finding that
-/// the guard does not gate <c>ExecuteAsync</c> has nothing to bite on here; the in-process archiving choice
-/// is what makes that true.)
+/// server and the operation — before a directory, a temp file, or a subprocess exists. The posture comes
+/// from the shared <see cref="ExecutionTargetWriteMode"/>, so this provider, the SSH backup provider and the
+/// local process provisioner all read it the same way. (This provider starts no subprocess at all, so the
+/// exec gate has nothing to bite on here; the in-process archiving choice is what makes that true.)
 /// </para>
 /// <para>
 /// <strong>No quiesce is taken, deliberately and explicitly.</strong> The Docker and SSH providers issue a
@@ -478,51 +479,19 @@ public sealed class LocalProcessBackupProvider : IBackupProvider
     /// <see cref="WriteMode.Enabled"/>.
     /// </summary>
     /// <remarks>
-    /// A target with no guard anywhere in it answers <see langword="null"/> and is allowed through: this
-    /// method's job is to surface a refusal the guard would make anyway, earlier and with a better message,
-    /// not to invent a second policy. Anything that does slip past still meets the guard at the first real
-    /// write.
+    /// Delegated to <see cref="ExecutionTargetWriteMode"/> rather than re-derived here, so this provider, the
+    /// SSH backup provider and the local process provisioner cannot drift into three slightly different
+    /// answers to the same question. A target with no guard anywhere in it answers <see langword="null"/> and
+    /// is allowed through: this method's job is to surface a refusal the guard would make anyway, earlier and
+    /// with a better message, not to invent a second policy. Anything that does slip past still meets the
+    /// guard at the first real write.
     /// </remarks>
-    private static void RequireWritesEnabled(LocalBackupContext context, string operation)
-    {
-        var mode = ResolveWriteMode(context.Target);
-        if (mode is null or WriteMode.Enabled)
-        {
-            return;
-        }
-
-        throw new WritesDisabledException(
-            $"Refusing to {operation} for server '{context.ServerId}': the server's write mode is {mode}. " +
-            $"Writes require {nameof(WriteMode)}.{nameof(WriteMode.Enabled)}, set per server and never globally. " +
+    private static void RequireWritesEnabled(LocalBackupContext context, string operation) =>
+        ExecutionTargetWriteMode.RequireWritesEnabled(
+            context.Target,
+            operation,
+            context.ServerId,
             "Listing, inspecting, previewing a restore, and a dry-run prune all remain available.");
-    }
-
-    /// <summary>
-    /// The write posture a target carries, looking through a composite to whichever half would perform the
-    /// write, or <see langword="null"/> when no guard is present.
-    /// </summary>
-    private static WriteMode? ResolveWriteMode(IExecutionTarget target) => target switch
-    {
-        WriteGuardedExecutionTarget guarded => guarded.Mode,
-        ICompositeExecutionTarget composite => Composite(composite),
-        _ => null,
-    };
-
-    private static WriteMode? Composite(ICompositeExecutionTarget composite)
-    {
-        var file = composite.FileTarget is null ? null : ResolveWriteMode(composite.FileTarget);
-        var exec = composite.ExecTarget is null ? null : ResolveWriteMode(composite.ExecTarget);
-
-        // Either half being read-only is enough to refuse: this provider needs the file half to write an
-        // archive, and a caller that guarded only the exec half still meant "this server does not mutate".
-        return (file, exec) switch
-        {
-            (null, null) => null,
-            (not null, null) => file,
-            (null, not null) => exec,
-            _ => (WriteMode)Math.Min((int)file!.Value, (int)exec!.Value),
-        };
-    }
 
     private async Task<LocalBackupContext> GetContextAsync(string serverId, CancellationToken ct)
     {

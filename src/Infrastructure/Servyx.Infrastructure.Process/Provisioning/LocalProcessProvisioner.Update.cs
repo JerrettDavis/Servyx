@@ -33,17 +33,19 @@ namespace Servyx.Infrastructure.Process.Provisioning;
 /// program was started, so nothing can have half-run.
 /// </para>
 /// <para>
-/// <strong>The write guard needs the same treatment the SSH backup provider needed.</strong>
-/// <see cref="WriteGuardedExecutionTarget"/> gates <see cref="IExecutionTarget.WriteFileAsync"/> and
-/// <see cref="IExecutionTarget.DeleteAsync"/> and deliberately does <em>not</em> gate
-/// <see cref="IExecutionTarget.ExecuteAsync"/> — but this adapter's install verbs are commands, and its
-/// <c>ensure-dir</c> verb is a <see cref="Directory.CreateDirectory(string)"/> call that never reaches a
-/// transport at all. Left to the structural guard alone, a read-only server would run <c>steamcmd</c> against a
-/// live install and create directories on it, and only then be refused at the marker write. So this file
-/// consults the guard's own <see cref="WriteGuardedExecutionTarget.Mode"/> before the first mutation, exactly
-/// as <c>SshBackupProvider.RequireWritesEnabled</c> does, and refuses the whole update up front. A target
-/// carrying no guard answers <see langword="null"/> and is allowed through: the job here is to surface a
-/// refusal the guard would make anyway, earlier and with a better message, not to invent a second policy.
+/// <strong>The write guard now reaches the install verbs, and still cannot reach <c>ensure-dir</c>.</strong>
+/// <see cref="WriteGuardedExecutionTarget"/> gates <see cref="IExecutionTarget.WriteFileAsync"/>,
+/// <see cref="IExecutionTarget.DeleteAsync"/> and — since commands carry a declared
+/// <see cref="CommandSpec.Intent"/> — every command not declared <see cref="CommandIntent.ReadOnly"/>. The
+/// install verbs this adapter runs declare nothing, which means <see cref="CommandIntent.Mutating"/>, so
+/// <c>steamcmd</c> is refused at the transport on a read-only server whether or not this file remembers to
+/// check. What no transport decorator can reach is the <c>ensure-dir</c> verb: on the local adapter that is a
+/// <see cref="Directory.CreateDirectory(string)"/> call in this very process, with no seam for a decorator to
+/// sit at. So this file still consults the posture through the shared
+/// <see cref="ExecutionTargetWriteMode"/> before the first mutation, and refuses the whole update up front
+/// rather than letting it fail one step at a time. A target carrying no guard answers <see langword="null"/>
+/// and is allowed through: the job here is to surface a refusal the guard would make anyway, earlier and with
+/// a better message, not to invent a second policy.
 /// </para>
 /// <para>
 /// <strong>There is no force path.</strong> No argument here skips a guard, and no combination of arguments
@@ -162,9 +164,10 @@ public sealed partial class LocalProcessProvisioner : IUpdateApplier
                 + "more, so there is no install to update. Nothing on this machine was touched.");
         }
 
-        // Guard 6 - the write posture. The structural guard would refuse the marker write but not the install
-        // commands, so it is consulted here, before anything runs. See the type remarks.
-        if (ResolveWriteMode(markerSession) is { } mode && mode != WriteMode.Enabled)
+        // Guard 6 - the write posture. The structural guard now refuses the marker write and the install
+        // commands, but not the in-process ensure-dir verb, and it would refuse them one at a time rather
+        // than refusing the update. It is consulted here, before anything runs. See the type remarks.
+        if (ExecutionTargetWriteMode.Resolve(markerSession) is { } mode && mode != WriteMode.Enabled)
         {
             return new UpdateExecutionResult.Refused(
                 $"This update was not applied: the server's write mode is {mode}. "
@@ -354,23 +357,6 @@ public sealed partial class LocalProcessProvisioner : IUpdateApplier
         refusal = string.Empty;
         return true;
     }
-
-    /// <summary>
-    /// The write posture a target carries, or <see langword="null"/> when no guard is present.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately only the two shapes the local transport can actually hand back: a
-    /// <see cref="WriteGuardedExecutionTarget"/> when the composition root registered the transport behind a
-    /// guard, and an unguarded target otherwise. <c>SshBackupProvider</c>'s equivalent additionally looks
-    /// through an <c>ICompositeExecutionTarget</c> because a connector can pair a file half with a different
-    /// exec half; nothing composes a local target that way, and a branch no call site can reach would be a
-    /// claim about behaviour no test can pin.
-    /// </remarks>
-    private static WriteMode? ResolveWriteMode(IExecutionTarget target) => target switch
-    {
-        WriteGuardedExecutionTarget guarded => guarded.Mode,
-        _ => null,
-    };
 
     /// <summary>
     /// Remembers the desired spec a plan was computed from, keyed by that plan's hash, so

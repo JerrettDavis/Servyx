@@ -1,7 +1,6 @@
 using System.Collections.Concurrent;
 using System.Globalization;
 using Servyx.Domain.Backups;
-using Servyx.Domain.Connectors;
 using Servyx.Domain.Transport;
 
 namespace Servyx.Infrastructure.Ssh.Backups;
@@ -61,14 +60,18 @@ namespace Servyx.Infrastructure.Ssh.Backups;
 /// </list>
 /// <para>
 /// <strong>The write guard is checked before anything runs, not after.</strong>
-/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c> and <c>DeleteAsync</c> but
-/// deliberately not <c>ExecuteAsync</c> — exec is classified by declared intent, not by verb. That is the
-/// right rule for control commands and the wrong outcome here, because this provider's mutating step
-/// <em>is</em> an exec: a read-only server would happily run <c>tar --create</c> and only fail later on the
-/// manifest write, having already written an archive and mutated the host. So <see cref="CreateAsync"/> and
-/// <see cref="RestoreAsync"/> ask the guard for its posture up front and throw
-/// <see cref="WritesDisabledException"/> — the same exception the guard itself throws, naming the server and
-/// the operation — before a single command is issued. See <see cref="ResolveWriteMode"/>.
+/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c>, <c>DeleteAsync</c> and every
+/// command whose <see cref="CommandSpec.Intent"/> is not <see cref="CommandIntent.ReadOnly"/> — exec is
+/// classified by declared intent, not by verb, and this provider is the reason that declaration exists on
+/// the spec. Its mutating step <em>is</em> an exec: <c>tar --create</c> declares nothing, so it means
+/// <see cref="CommandIntent.Mutating"/>, and a read-only server refuses it at the transport before an
+/// archive can appear. Its read-only steps — <c>tar --list</c> when inspecting, the hash — declare
+/// <see cref="CommandIntent.ReadOnly"/> and keep working in every mode, which is what makes inspecting a
+/// backup on a read-only server possible at all. On top of that structural gate,
+/// <see cref="CreateAsync"/> and <see cref="RestoreAsync"/> ask for the posture up front through the shared
+/// <see cref="ExecutionTargetWriteMode"/> and throw <see cref="WritesDisabledException"/> — the same
+/// exception the guard itself throws, naming the server and the operation — before a single command is
+/// issued, so the refusal arrives before the quiesce rather than in the middle of the operation.
 /// </para>
 /// <para>
 /// <strong>A configured quiesce that fails produces no archive.</strong> When the context carries a
@@ -164,7 +167,8 @@ public sealed class SshBackupProvider : IBackupProvider
 
         var context = await GetContextAsync(serverId, ct).ConfigureAwait(false);
 
-        // Before anything: the guard does not gate exec, and this method's mutating step is an exec.
+        // Before anything: the guard would refuse the archive command on its declared Mutating intent, but only
+        // once the quiesce had already run. Refuse the operation here instead, ahead of every step.
         RequireWritesEnabled(context, "create a backup");
 
         var members = EffectiveIncludes(context);
@@ -178,7 +182,7 @@ public sealed class SshBackupProvider : IBackupProvider
         // that fails leaves not even the artifact directory behind.
         await QuiesceAsync(context, ct).ConfigureAwait(false);
 
-        await RunAsync(context, "mkdir", ["-p", storeDirectory], ct).ConfigureAwait(false);
+        await RunAsync(context, "mkdir", ["-p", storeDirectory], CommandIntent.Mutating, ct).ConfigureAwait(false);
 
         var createdAt = _timeProvider.GetUtcNow();
         var fileName = await ReserveArchiveNameAsync(context, createdAt, ct).ConfigureAwait(false);
@@ -453,50 +457,20 @@ public sealed class SshBackupProvider : IBackupProvider
     /// <see cref="WriteMode.Enabled"/>.
     /// </summary>
     /// <remarks>
-    /// A target with no guard anywhere in it answers <see langword="null"/> and is allowed through: this
-    /// method's job is to surface a refusal the guard would make anyway, earlier and with a better message,
-    /// not to invent a second policy. Anything that does slip past still meets the guard at the first real
-    /// write.
+    /// Delegated to <see cref="ExecutionTargetWriteMode"/> rather than re-derived here, so this provider, the
+    /// local backup provider and the local process provisioner cannot drift into three slightly different
+    /// answers to the same question. A target with no guard anywhere in it answers <see langword="null"/> and
+    /// is allowed through: this method's job is to surface a refusal the guard would make anyway, earlier and
+    /// with a better message, not to invent a second policy. Anything that does slip past still meets the
+    /// guard at the first real write <em>and</em>, since the archive step declares
+    /// <see cref="CommandIntent.Mutating"/>, at the first mutating command.
     /// </remarks>
-    private static void RequireWritesEnabled(SshBackupContext context, string operation)
-    {
-        var mode = ResolveWriteMode(context.Target);
-        if (mode is null or WriteMode.Enabled)
-        {
-            return;
-        }
-
-        throw new WritesDisabledException(
-            $"Refusing to {operation} for server '{context.ServerId}': the server's write mode is {mode}. " +
-            $"Writes require {nameof(WriteMode)}.{nameof(WriteMode.Enabled)}, set per server and never globally. " +
+    private static void RequireWritesEnabled(SshBackupContext context, string operation) =>
+        ExecutionTargetWriteMode.RequireWritesEnabled(
+            context.Target,
+            operation,
+            context.ServerId,
             "Listing, inspecting, previewing a restore, and a dry-run prune all remain available.");
-    }
-
-    /// <summary>
-    /// The write posture a target carries, looking through a composite to whichever half would perform the
-    /// write, or <see langword="null"/> when no guard is present.
-    /// </summary>
-    private static WriteMode? ResolveWriteMode(IExecutionTarget target) => target switch
-    {
-        WriteGuardedExecutionTarget guarded => guarded.Mode,
-        ICompositeExecutionTarget composite => Composite(composite),
-        _ => null,
-    };
-
-    private static WriteMode? Composite(ICompositeExecutionTarget composite)
-    {
-        var file = composite.FileTarget is null ? null : ResolveWriteMode(composite.FileTarget);
-        var exec = composite.ExecTarget is null ? null : ResolveWriteMode(composite.ExecTarget);
-
-        // Either half being read-only is enough to refuse: this provider needs both to mutate the host.
-        return (file, exec) switch
-        {
-            (null, null) => null,
-            (not null, null) => file,
-            (null, not null) => exec,
-            _ => (WriteMode)Math.Min((int)file!.Value, (int)exec!.Value),
-        };
-    }
 
     private async Task<SshBackupContext> GetContextAsync(string serverId, CancellationToken ct)
     {
@@ -855,7 +829,12 @@ public sealed class SshBackupProvider : IBackupProvider
         string archivePath,
         CancellationToken ct)
     {
-        var listed = await RunAsync(context, context.TarExecutable, ["--list", "--gzip", "--file", archivePath], ct)
+        var listed = await RunAsync(
+                context,
+                context.TarExecutable,
+                ["--list", "--gzip", "--file", archivePath],
+                CommandIntent.ReadOnly,
+                ct)
             .ConfigureAwait(false);
 
         var names = new List<string>();
@@ -875,7 +854,8 @@ public sealed class SshBackupProvider : IBackupProvider
 
     private static async Task<string> HashAsync(SshBackupContext context, string archivePath, CancellationToken ct)
     {
-        var hashed = await RunAsync(context, context.HashExecutable, [archivePath], ct).ConfigureAwait(false);
+        var hashed = await RunAsync(context, context.HashExecutable, [archivePath], CommandIntent.ReadOnly, ct)
+            .ConfigureAwait(false);
         var token = hashed.StandardOutput.Split([' ', '\t', '\n', '\r'], StringSplitOptions.RemoveEmptyEntries);
 
         return token.Length == 0
@@ -887,14 +867,22 @@ public sealed class SshBackupProvider : IBackupProvider
             : token[0].ToLowerInvariant();
     }
 
+    /// <param name="intent">
+    /// What the command does to the host. Required rather than defaulted, because this helper is the one
+    /// place both kinds go through and a default here would let a future caller pick up whichever answer
+    /// happened to be convenient. <see cref="CommandIntent.ReadOnly"/> is what keeps inspecting an archive
+    /// working on a read-only server; anything that changes the host passes
+    /// <see cref="CommandIntent.Mutating"/> and is refused there by the write guard.
+    /// </param>
     private static async Task<CommandResult> RunAsync(
         SshBackupContext context,
         string executable,
         IReadOnlyList<string> arguments,
+        CommandIntent intent,
         CancellationToken ct)
     {
         var result = await context.Target
-            .ExecuteAsync(new CommandSpec(executable, arguments, Timeout: context.CommandTimeout), ct)
+            .ExecuteAsync(new CommandSpec(executable, arguments, Timeout: context.CommandTimeout, Intent: intent), ct)
             .ConfigureAwait(false);
 
         return result.Succeeded

@@ -13,15 +13,23 @@ namespace Servyx.Domain.Transport;
 /// comes out of this decorator, and an architecture test asserts exactly that.
 /// </para>
 /// <para>
-/// <b>Which members are mutating.</b> <see cref="WriteFileAsync"/> and <see cref="DeleteAsync"/> are, and
-/// are the only ones gated here. <see cref="ExecuteAsync"/>/<see cref="ExecuteStreamingAsync"/> are
-/// deliberately <em>not</em>: <c>docker exec</c> is technically capable of mutating a container, but
-/// Servyx classifies control operations by <em>declared intent</em> — a definition's control commands each
-/// declare whether they are <c>readOnly</c> — rather than by verb. Gating the raw exec channel by write
-/// mode would either block read-only control probes (RCON <c>ShowPlayers</c>, a REST readiness probe) on a
-/// <see cref="WriteMode.ReadOnly"/> server, which is precisely what M2 requires to work, or would need this
-/// type to parse argv and guess intent, which is worse than the classification the definition already
-/// carries. The command classifier is the chokepoint for exec; this type is the chokepoint for files.
+/// <b>Which members are mutating.</b> <see cref="WriteFileAsync"/> and <see cref="DeleteAsync"/> always are.
+/// <see cref="ExecuteAsync"/>/<see cref="ExecuteStreamingAsync"/> are gated too, but by the spec's declared
+/// <see cref="CommandSpec.Intent"/> rather than by verb — this type never parses argv and never guesses.
+/// <c>docker exec</c> is the same API call whether it runs <c>Info</c> or <c>Shutdown</c>, so classification
+/// has to come from whoever built the argv, exactly as <c>WriteGuardedRconSession</c> takes it from the
+/// definition's <c>readOnly</c> flag. A command declared <see cref="CommandIntent.ReadOnly"/> passes in every
+/// mode, which is what keeps M2's read-only control and readiness probes working on a
+/// <see cref="WriteMode.ReadOnly"/> server; anything else — including anything that simply did not say — is
+/// refused unless the mode is <see cref="WriteMode.Enabled"/>.
+/// </para>
+/// <para>
+/// <b>Why intent lives on the spec rather than in a second method.</b> A <c>ExecuteMutatingAsync</c>
+/// alongside an ungated <see cref="ExecuteAsync"/> would leave the ungated one in the interface, so the gap
+/// would survive for anyone who called it — the guard has to be the only door. Putting the declaration on
+/// <see cref="CommandSpec"/> with <see cref="CommandIntent.Mutating"/> as the default means an adapter that
+/// forgets to think about intent is refused on a read-only server instead of silently permitted, so the
+/// failure mode of forgetting is a refusal rather than a mutation.
 /// </para>
 /// <para>
 /// <b><see cref="WriteMode.PreviewOnly"/> at this seam.</b> It refuses exactly what
@@ -68,12 +76,27 @@ public sealed class WriteGuardedExecutionTarget : IExecutionTarget
     public bool WritesPermitted => Mode == WriteMode.Enabled;
 
     /// <inheritdoc />
-    public Task<CommandResult> ExecuteAsync(CommandSpec spec, CancellationToken ct = default) =>
-        _inner.ExecuteAsync(spec, ct);
+    /// <exception cref="WritesDisabledException">
+    /// <paramref name="spec"/> is not declared <see cref="CommandIntent.ReadOnly"/> and <see cref="Mode"/> is
+    /// not <see cref="WriteMode.Enabled"/>. Thrown synchronously, before the inner target is touched at all.
+    /// </exception>
+    public Task<CommandResult> ExecuteAsync(CommandSpec spec, CancellationToken ct = default)
+    {
+        ThrowIfMutatingCommandIsDisabled(spec);
+        return _inner.ExecuteAsync(spec, ct);
+    }
 
     /// <inheritdoc />
-    public IAsyncEnumerable<OutputChunk> ExecuteStreamingAsync(CommandSpec spec, CancellationToken ct = default) =>
-        _inner.ExecuteStreamingAsync(spec, ct);
+    /// <exception cref="WritesDisabledException">
+    /// <paramref name="spec"/> is not declared <see cref="CommandIntent.ReadOnly"/> and <see cref="Mode"/> is
+    /// not <see cref="WriteMode.Enabled"/>. Thrown synchronously by the call itself rather than on first
+    /// enumeration, so a caller that builds the sequence and never iterates it still cannot start the process.
+    /// </exception>
+    public IAsyncEnumerable<OutputChunk> ExecuteStreamingAsync(CommandSpec spec, CancellationToken ct = default)
+    {
+        ThrowIfMutatingCommandIsDisabled(spec);
+        return _inner.ExecuteStreamingAsync(spec, ct);
+    }
 
     /// <inheritdoc />
     public Task<bool> ExistsAsync(TargetPath path, CancellationToken ct = default) =>
@@ -115,6 +138,24 @@ public sealed class WriteGuardedExecutionTarget : IExecutionTarget
 
     /// <inheritdoc />
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+    private void ThrowIfMutatingCommandIsDisabled(CommandSpec spec)
+    {
+        ArgumentNullException.ThrowIfNull(spec);
+
+        if (spec.Intent == CommandIntent.ReadOnly || WritesPermitted)
+        {
+            return;
+        }
+
+        var where = TargetDescription is null ? string.Empty : $" on '{TargetDescription}'";
+        throw new WritesDisabledException(
+            $"Refusing to run command '{spec.Executable}'{where}: it is declared {nameof(CommandIntent)}." +
+            $"{nameof(CommandIntent.Mutating)} — the default for a command that declares nothing — and the " +
+            $"server's write mode is {Mode}. Mutating commands require {nameof(WriteMode)}." +
+            $"{nameof(WriteMode.Enabled)}, set per server and never globally. A command the caller declares " +
+            $"{nameof(CommandIntent)}.{nameof(CommandIntent.ReadOnly)} runs in every mode.");
+    }
 
     private void ThrowIfWritesDisabled(string operation, TargetPath path)
     {

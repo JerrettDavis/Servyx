@@ -18,6 +18,16 @@ public class WriteGuardedExecutionTargetTests
         return (new WriteGuardedExecutionTarget(inner, mode, "palworld-server"), inner);
     }
 
+    private static async IAsyncEnumerable<OutputChunk> Chunks(params OutputChunk[] chunks)
+    {
+        foreach (var chunk in chunks)
+        {
+            yield return chunk;
+        }
+
+        await Task.CompletedTask;
+    }
+
     [Theory]
     [InlineData(WriteMode.ReadOnly)]
     [InlineData(WriteMode.PreviewOnly)]
@@ -120,20 +130,126 @@ public class WriteGuardedExecutionTargetTests
         await inner.Received(1).OpenReadAsync(path, Arg.Any<CancellationToken>());
     }
 
-    [Fact]
-    public async Task ExecuteAsync_is_not_gated_by_write_mode_because_intent_is_declared_not_inferred()
+    [Theory]
+    [InlineData(WriteMode.ReadOnly)]
+    [InlineData(WriteMode.PreviewOnly)]
+    [InlineData(WriteMode.Enabled)]
+    public async Task ExecuteAsync_runs_a_declared_read_only_command_in_every_mode(WriteMode mode)
     {
-        // docker exec can mutate, but Servyx classifies control operations by the readOnly flag their
-        // definition declares, not by verb. Gating the raw channel here would block M2's read-only control
-        // probes on every ReadOnly server, which is precisely the case they exist for.
-        var (guard, inner) = Guarded(WriteMode.ReadOnly);
+        // This is the positive counterpart of what used to be asserted as "exec is not gated at all". The
+        // guarantee that mattered was never that the channel is ungated — it was that a read-only control
+        // probe reaches live state on a ReadOnly server, which is precisely the case M2 exists for. That
+        // guarantee is now carried by the spec's declared intent rather than by the channel being open.
+        var (guard, inner) = Guarded(mode);
         var result = new CommandResult(0, "players: 3", string.Empty, TimeSpan.Zero);
         inner.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult(result));
 
-        var spec = new CommandSpec("rcon", ["ShowPlayers"]);
+        var spec = new CommandSpec("rcon", ["ShowPlayers"], Intent: CommandIntent.ReadOnly);
 
         (await guard.ExecuteAsync(spec)).Should().BeSameAs(result);
         await inner.Received(1).ExecuteAsync(spec, Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(WriteMode.ReadOnly)]
+    [InlineData(WriteMode.PreviewOnly)]
+    [InlineData(WriteMode.Enabled)]
+    public async Task ExecuteStreamingAsync_runs_a_declared_read_only_command_in_every_mode(WriteMode mode)
+    {
+        var (guard, inner) = Guarded(mode);
+        var chunk = new OutputChunk(OutputStream.StdOut, "attached", DateTimeOffset.UnixEpoch);
+        inner.ExecuteStreamingAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>()).Returns(Chunks(chunk));
+
+        var spec = new CommandSpec("tail", ["-f", "server.log"], Intent: CommandIntent.ReadOnly);
+
+        var chunks = new List<OutputChunk>();
+        await foreach (var item in guard.ExecuteStreamingAsync(spec))
+        {
+            chunks.Add(item);
+        }
+
+        chunks.Should().ContainSingle().Which.Text.Should().Be("attached");
+    }
+
+    [Theory]
+    [InlineData(WriteMode.ReadOnly)]
+    [InlineData(WriteMode.PreviewOnly)]
+    public async Task ExecuteAsync_refuses_a_mutating_command_before_the_inner_target_is_touched(WriteMode mode)
+    {
+        var (guard, inner) = Guarded(mode);
+
+        var act = async () => await guard.ExecuteAsync(
+            new CommandSpec("tar", ["--create", "--file", "/backups/world.tar.gz"], Intent: CommandIntent.Mutating));
+
+        await act.Should().ThrowAsync<WritesDisabledException>();
+        await inner.DidNotReceive().ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(WriteMode.ReadOnly)]
+    [InlineData(WriteMode.PreviewOnly)]
+    public void ExecuteStreamingAsync_refuses_a_mutating_command_at_the_call_not_on_first_enumeration(WriteMode mode)
+    {
+        var (guard, inner) = Guarded(mode);
+
+        // Deliberately not enumerated: an async-iterator refusal that only fires on MoveNextAsync would let a
+        // caller that builds the sequence and drops it start the process anyway.
+        Action act = () => _ = guard.ExecuteStreamingAsync(new CommandSpec("steamcmd", ["+app_update", "2394010"]));
+
+        act.Should().Throw<WritesDisabledException>();
+        inner.DidNotReceive().ExecuteStreamingAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>());
+    }
+
+    [Theory]
+    [InlineData(WriteMode.ReadOnly)]
+    [InlineData(WriteMode.PreviewOnly)]
+    public void A_command_that_declares_no_intent_is_refused_because_the_default_is_Mutating(WriteMode mode)
+    {
+        // The load-bearing property of this whole seam: an adapter that never thought about intent is
+        // refused on a read-only server rather than silently permitted. A future adapter that forgets is
+        // caught here, by a failing operation, not by review.
+        var (guard, inner) = Guarded(mode);
+
+        new CommandSpec("steamcmd", ["+app_update", "2394010"]).Intent.Should().Be(CommandIntent.Mutating);
+
+        Action act = () => _ = guard.ExecuteAsync(new CommandSpec("steamcmd", ["+app_update", "2394010"]));
+
+        act.Should().Throw<WritesDisabledException>();
+        inner.DidNotReceive().ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void Mutating_is_the_zero_value_so_every_uninitialised_intent_is_the_safe_one()
+    {
+        // Not a tautology worth skipping: if a later edit reorders CommandIntent, every default(CommandIntent)
+        // — including CommandSpec's own parameter default, a deserialised zero, and any struct field that was
+        // never assigned — silently flips to "permitted". This is the assertion that catches that.
+        default(CommandIntent).Should().Be(CommandIntent.Mutating);
+        ((int)CommandIntent.Mutating).Should().Be(0);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_runs_a_mutating_command_when_writes_are_enabled()
+    {
+        var (guard, inner) = Guarded(WriteMode.Enabled);
+        var result = new CommandResult(0, string.Empty, string.Empty, TimeSpan.Zero);
+        inner.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult(result));
+
+        var spec = new CommandSpec("tar", ["--create", "--file", "/backups/world.tar.gz"]);
+
+        (await guard.ExecuteAsync(spec)).Should().BeSameAs(result);
+        await inner.Received(1).ExecuteAsync(spec, Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void The_command_refusal_message_names_the_executable_the_target_and_the_mode()
+    {
+        var (guard, _) = Guarded(WriteMode.PreviewOnly);
+
+        Action act = () => _ = guard.ExecuteAsync(new CommandSpec("tar", ["--create"]));
+
+        act.Should().Throw<WritesDisabledException>()
+            .Which.Message.Should().Contain("tar").And.Contain("palworld-server").And.Contain("PreviewOnly");
     }
 
     [Fact]

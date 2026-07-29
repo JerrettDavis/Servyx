@@ -10,10 +10,11 @@ namespace Servyx.Infrastructure.Process.Tests.Backups;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c> and <c>DeleteAsync</c> but
-/// deliberately not <c>ExecuteAsync</c>. <see cref="LocalProcessBackupProvider"/> archives in-process and
-/// therefore runs no command at all, so the archive write itself is behind the guard — but creating the
-/// artifact directory is a bare <see cref="Directory.CreateDirectory(string)"/> that no target mediates.
+/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c>, <c>DeleteAsync</c> and every
+/// command not declared <see cref="CommandIntent.ReadOnly"/>. <see cref="LocalProcessBackupProvider"/>
+/// archives in-process and therefore runs no command at all, so the archive write itself is behind the guard
+/// — but creating the artifact directory is a bare <see cref="Directory.CreateDirectory(string)"/> that no
+/// target mediates and no decorator can reach.
 /// Left to the guard alone, a read-only server would have a directory created for it and only then be
 /// refused. These tests pin the refusal to <em>before</em> anything exists, with the reads still working.
 /// </para>

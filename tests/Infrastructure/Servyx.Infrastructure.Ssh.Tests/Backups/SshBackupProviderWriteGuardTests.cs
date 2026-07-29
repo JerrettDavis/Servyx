@@ -9,11 +9,15 @@ namespace Servyx.Infrastructure.Ssh.Tests.Backups;
 /// The write-guard interaction, which matters more here than it does for Docker.
 /// </summary>
 /// <remarks>
-/// <see cref="WriteGuardedExecutionTarget"/> gates <c>WriteFileAsync</c> and <c>DeleteAsync</c> but
-/// deliberately not <c>ExecuteAsync</c> — and <see cref="SshBackupProvider"/>'s mutating step <em>is</em> an
-/// exec. Left to the guard alone, a read-only server would run <c>tar --create</c>, write a real archive onto
-/// the host, and only then fail on the manifest. These tests pin the refusal to <em>before</em> the first
-/// command, with the reads still working.
+/// <para>
+/// <see cref="SshBackupProvider"/>'s mutating step <em>is</em> an exec, which is why
+/// <see cref="CommandSpec.Intent"/> exists: <c>tar --create</c> declares <see cref="CommandIntent.Mutating"/>
+/// and <see cref="WriteGuardedExecutionTarget"/> refuses it structurally, while <c>tar --list</c> declares
+/// <see cref="CommandIntent.ReadOnly"/> so inspecting a backup keeps working on a read-only server. On top of
+/// that the provider refuses the whole operation up front, so the refusal arrives before the quiesce rather
+/// than partway through. These tests pin the refusal to <em>before</em> the first command, with the reads
+/// still working.
+/// </para>
 /// </remarks>
 public class SshBackupProviderWriteGuardTests
 {
@@ -31,7 +35,7 @@ public class SshBackupProviderWriteGuardTests
         (await act.Should().ThrowAsync<WritesDisabledException>())
             .Which.Message.Should().Contain(SshBackupScenario.ServerId).And.Contain(mode.ToString());
 
-        scenario.Host.Commands.Should().BeEmpty("tar is an exec, and the guard does not gate exec — so the provider must");
+        scenario.Host.Commands.Should().BeEmpty("the provider refuses up front, ahead of the guard's own refusal at tar");
         scenario.Host.Paths.Should().NotContain(p => p.Contains(SshBackupScenario.StoreDirectory, StringComparison.Ordinal));
         await scenario.Host.Target.DidNotReceive().WriteFileAsync(
             Arg.Any<TargetPath>(), Arg.Any<Stream>(), Arg.Any<FileWriteOptions>(), Arg.Any<CancellationToken>());
@@ -160,11 +164,61 @@ public class SshBackupProviderWriteGuardTests
         host.Commands.Should().BeEmpty();
     }
 
-    private static void CopyStore(SshBackupScenario from, SshBackupScenario to)
+    [Fact]
+    public async Task Every_command_a_read_only_server_does_run_declares_itself_read_only()
+    {
+        // The other half of the guarantee. Refusing the mutating operations is worth nothing if the operations
+        // that remain available only work because the channel is open: they work because each command says what
+        // it does, and the guard would refuse any of them that did not.
+        // The archive is copied across without its manifest sidecar, so inspecting it cannot be answered from
+        // the manifest and has to ask the host's tar to list the entries — the read-only exec this whole
+        // design exists to keep working.
+        var enabled = new SshBackupScenario(WriteMode.Enabled).WithGameLayout();
+        await enabled.Provider().CreateAsync(SshBackupScenario.ServerId);
+
+        var scenario = new SshBackupScenario(WriteMode.ReadOnly).WithGameLayout();
+        CopyStore(enabled, scenario, includeManifests: false);
+
+        var provider = scenario.Provider();
+        var artifact = (await provider.ListAsync(SshBackupScenario.ServerId)).Should().ContainSingle().Which;
+        scenario.Host.Commands.Clear();
+
+        (await provider.InspectAsync(artifact.Id)).Should().NotBeEmpty();
+
+        scenario.Host.Commands.Should().NotBeEmpty("inspecting has to reach the host to be worth anything");
+        scenario.Host.Commands.Should().OnlyContain(c => c.Intent == CommandIntent.ReadOnly);
+    }
+
+    [Fact]
+    public async Task The_archive_command_declares_itself_mutating_so_the_guard_alone_would_refuse_it()
+    {
+        // Pins the structural half: were the provider's up-front check ever removed, tar --create would still
+        // meet a refusal at the transport rather than writing an archive onto a read-only host.
+        var scenario = new SshBackupScenario(WriteMode.Enabled).WithGameLayout();
+
+        await scenario.Provider().CreateAsync(SshBackupScenario.ServerId);
+
+        var archive = scenario.Host.Commands.Should()
+            .ContainSingle(c => c.Arguments.Contains("--create")).Which;
+        archive.Intent.Should().Be(CommandIntent.Mutating);
+
+        var readOnlyGuard = new WriteGuardedExecutionTarget(
+            scenario.Host.Target, WriteMode.ReadOnly, SshBackupScenario.ServerId);
+        var act = async () => await readOnlyGuard.ExecuteAsync(archive);
+
+        await act.Should().ThrowAsync<WritesDisabledException>();
+    }
+
+    private static void CopyStore(SshBackupScenario from, SshBackupScenario to, bool includeManifests = true)
     {
         var prefix = $"{SshBackupScenario.Root}/{SshBackupScenario.StoreDirectory}/";
         foreach (var path in from.Host.Paths.Where(p => p.StartsWith(prefix, StringComparison.Ordinal)).ToList())
         {
+            if (!includeManifests && path.EndsWith(SshBackupProvider.ManifestSuffix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
             to.Host.With(path, from.Host.Read(path), new DateTimeOffset(2026, 7, 29, 10, 15, 0, TimeSpan.Zero));
         }
     }
