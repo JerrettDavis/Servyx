@@ -335,9 +335,18 @@ public sealed partial class AzureVirtualMachineProvisioner : IProvisioner
     /// <see cref="PlannedChange.RequiresRecreate"/>, never by the bits.
     /// </para>
     /// <para>
-    /// None of the three implies execution. Nothing on this type resizes, replaces or retags a machine;
-    /// <see cref="ProvisioningCapabilities.Resize"/> stays absent for exactly that reason, because being able
-    /// to plan a resize is not being able to perform one.
+    /// None of the three implies execution, and what this type does execute is stated by the interfaces it
+    /// implements rather than by these bits: <see cref="IUpdateApplier"/> carries out a lone size change (see
+    /// <c>AzureVirtualMachineProvisioner.Resize.cs</c>) and <see cref="IDestructiveUpdateApplier"/> carries out
+    /// a lone image change, behind two independent approvals (see
+    /// <c>AzureVirtualMachineProvisioner.Replace.cs</c>). A tag write is still not implemented at all, and a
+    /// region or resource-group change still is not an operation this or any adapter can perform.
+    /// <see cref="ProvisioningCapabilities.Resize"/> nevertheless stays absent, because it means something
+    /// narrower than "can execute a resize": it is the bit a caller reads to learn that the adapter offers
+    /// resizing as a first-class operation with its own verb, and here a resize is reachable only as the
+    /// execution of an approved <see cref="UpdatePlan"/>. <see cref="ProvisioningCapabilities.Snapshot"/> is
+    /// absent and load-bearing in the other direction: no snapshot is taken before a replacement deletes the
+    /// machine's OS disk, because this adapter cannot take one.
     /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>

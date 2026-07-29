@@ -229,7 +229,20 @@ internal sealed class AzureScenario
         + "\"tags\":" + TagsJson(tags) + ","
         + "\"properties\":{\"provisioningState\":\"" + provisioningState + "\"}}";
 
-    /// <summary>The virtual machine as ARM reports it.</summary>
+    /// <summary>The OS disk tier the substituted ARM reports for the machine, and the one a replacement keeps.</summary>
+    internal const string OsDiskStorageAccountType = "Premium_LRS";
+
+    /// <summary>
+    /// The virtual machine as ARM reports it.
+    /// </summary>
+    /// <remarks>
+    /// The <c>osProfile</c> here carries the machine's admin username <em>and its authorised SSH public
+    /// key</em>, because ARM really does return both on a read — a public key is public, and it is the same
+    /// material the create request sent. That matters beyond realism: the replace path builds its replacement
+    /// out of the machine it is replacing, so a payload that omitted the key would be a machine Servyx
+    /// correctly refuses to replace. The parameters below exist so a test can produce exactly that machine on
+    /// purpose. <c>customData</c> is deliberately never present, because ARM never returns it.
+    /// </remarks>
     internal static string VirtualMachineJson(
         string id = VmId,
         string provisioningState = "Succeeded",
@@ -237,7 +250,11 @@ internal sealed class AzureScenario
         IReadOnlyDictionary<string, string>? tags = null,
         string? imageUrn = ImageUrn,
         string? osDiskDeleteOption = "Delete",
-        string location = Region)
+        string location = Region,
+        string? sshPublicKey = SshPublicKey,
+        string? adminUsername = "azureuser",
+        string? osDiskStorageAccountType = OsDiskStorageAccountType,
+        string? nicId = NicId)
     {
         var parts = imageUrn?.Split(':');
         var imageJson = parts is { Length: 4 }
@@ -247,7 +264,24 @@ internal sealed class AzureScenario
 
         var osDiskJson = "\"osDisk\":{\"name\":\"" + VmName + "_OsDisk\",\"createOption\":\"FromImage\""
             + (osDiskDeleteOption is null ? string.Empty : ",\"deleteOption\":\"" + osDiskDeleteOption + "\"")
-            + ",\"managedDisk\":{\"storageAccountType\":\"Premium_LRS\"}}";
+            + (osDiskStorageAccountType is null
+                ? string.Empty
+                : ",\"managedDisk\":{\"storageAccountType\":\"" + osDiskStorageAccountType + "\"}")
+            + "}";
+
+        var linuxJson = sshPublicKey is null
+            ? string.Empty
+            : ",\"linuxConfiguration\":{\"disablePasswordAuthentication\":true,\"ssh\":{\"publicKeys\":[{"
+              + "\"path\":\"/home/" + (adminUsername ?? "azureuser") + "/.ssh/authorized_keys\","
+              + "\"keyData\":\"" + sshPublicKey + "\"}]}}";
+
+        var osProfileJson = "\"osProfile\":{"
+            + (adminUsername is null ? string.Empty : "\"adminUsername\":\"" + adminUsername + "\",")
+            + "\"computerName\":\"" + VmName + "\"" + linuxJson + "},";
+
+        var networkJson = nicId is null
+            ? "\"networkProfile\":{\"networkInterfaces\":[]}"
+            : "\"networkProfile\":{\"networkInterfaces\":[{\"id\":\"" + nicId + "\"}]}";
 
         return "{\"id\":\"" + id + "\",\"name\":\"" + VmName + "\",\"type\":\"Microsoft.Compute/virtualMachines\","
             + "\"location\":\"" + location + "\","
@@ -257,8 +291,8 @@ internal sealed class AzureScenario
             + "\"timeCreated\":\"2026-07-27T10:00:00Z\","
             + "\"hardwareProfile\":{\"vmSize\":\"" + vmSize + "\"},"
             + "\"storageProfile\":{" + imageJson + osDiskJson + "},"
-            + "\"osProfile\":{\"adminUsername\":\"azureuser\",\"computerName\":\"" + VmName + "\"},"
-            + "\"networkProfile\":{\"networkInterfaces\":[{\"id\":\"" + NicId + "\"}]}"
+            + osProfileJson
+            + networkJson
             + "}}";
     }
 

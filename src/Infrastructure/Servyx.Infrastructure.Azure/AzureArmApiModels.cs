@@ -143,8 +143,83 @@ internal sealed class ArmVirtualMachineProperties
     [JsonPropertyName("storageProfile")]
     public ArmStorageProfile? StorageProfile { get; init; }
 
+    /// <summary>
+    /// The VM's OS-level configuration, as ARM currently reports it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read only by the replace path, where it is the difference between a replacement an operator can log in
+    /// to and a machine nobody can reach. A replacement VM's <c>osProfile</c> cannot be inferred from a
+    /// <see cref="Domain.Provisioning.UpdatePlan"/> — a plan describes a difference, not a whole machine — so
+    /// the only honest source for the admin username and the authorised public key is the machine being
+    /// replaced.
+    /// </para>
+    /// <para>
+    /// <strong>What ARM does and does not return here.</strong> <c>adminUsername</c>, <c>computerName</c> and
+    /// <c>linuxConfiguration.ssh.publicKeys[].keyData</c> are returned on every read: a public key is public,
+    /// and this is the same material the create request sent. <c>customData</c> is <em>not</em> returned, and
+    /// <c>adminPassword</c> never exists on a machine this adapter created. Neither is modelled, because a
+    /// member that could never be populated would invite code that believed it had been.
+    /// </para>
+    /// </remarks>
+    [JsonPropertyName("osProfile")]
+    public ArmOsProfile? OsProfile { get; init; }
+
     [JsonPropertyName("networkProfile")]
     public ArmNetworkProfile? NetworkProfile { get; init; }
+}
+
+/// <summary>A VM's OS-level configuration, as ARM reports it on a read.</summary>
+/// <remarks>
+/// A separate type from <c>ArmOsProfileRequest</c> for the same reason <see cref="ArmStorageProfile"/> is
+/// separate from <c>ArmStorageProfileRequest</c>: the request model's members are <c>required</c>, and a read
+/// must be able to report a machine that carries none of them rather than fail to deserialise.
+/// </remarks>
+internal sealed class ArmOsProfile
+{
+    /// <summary>The machine's hostname as ARM records it.</summary>
+    [JsonPropertyName("computerName")]
+    public string? ComputerName { get; init; }
+
+    /// <summary>The login name the machine's SSH keys are authorised for.</summary>
+    [JsonPropertyName("adminUsername")]
+    public string? AdminUsername { get; init; }
+
+    [JsonPropertyName("linuxConfiguration")]
+    public ArmLinuxConfiguration? LinuxConfiguration { get; init; }
+}
+
+/// <summary>A VM's Linux specifics, as ARM reports them.</summary>
+internal sealed class ArmLinuxConfiguration
+{
+    /// <summary>
+    /// Whether password login is disabled. Nullable rather than defaulted to <see langword="false"/>: a
+    /// replacement built from a machine ARM said nothing about must not silently enable password login.
+    /// </summary>
+    [JsonPropertyName("disablePasswordAuthentication")]
+    public bool? DisablePasswordAuthentication { get; init; }
+
+    [JsonPropertyName("ssh")]
+    public ArmSshConfiguration? Ssh { get; init; }
+}
+
+/// <summary>The authorised-keys block, as ARM reports it.</summary>
+internal sealed class ArmSshConfiguration
+{
+    [JsonPropertyName("publicKeys")]
+    public IReadOnlyList<ArmSshPublicKey>? PublicKeys { get; init; }
+}
+
+/// <summary>One authorised public key, as ARM reports it.</summary>
+internal sealed class ArmSshPublicKey
+{
+    /// <summary>The authorized_keys path the key is installed at.</summary>
+    [JsonPropertyName("path")]
+    public string? Path { get; init; }
+
+    /// <summary>The public key material itself. Public, and returned by ARM on every read.</summary>
+    [JsonPropertyName("keyData")]
+    public string? KeyData { get; init; }
 }
 
 /// <summary>A VM's size selection.</summary>
@@ -204,6 +279,26 @@ internal sealed class ArmOsDisk
     /// </remarks>
     [JsonPropertyName("deleteOption")]
     public string? DeleteOption { get; init; }
+
+    /// <summary>
+    /// The managed disk backing the OS disk, as ARM reports it.
+    /// </summary>
+    /// <remarks>
+    /// Read by the replace path so a replacement machine's disk is created at the tier the machine being
+    /// replaced actually had, rather than at whichever tier this adapter's spec happens to default to. A
+    /// replace that silently downgraded Premium to Standard would change the machine's performance under an
+    /// operator who approved an image change.
+    /// </remarks>
+    [JsonPropertyName("managedDisk")]
+    public ArmManagedDisk? ManagedDisk { get; init; }
+}
+
+/// <summary>The managed disk behind a VM's OS disk, as ARM reports it.</summary>
+internal sealed class ArmManagedDisk
+{
+    /// <summary>The disk's storage tier, e.g. <c>Premium_LRS</c>.</summary>
+    [JsonPropertyName("storageAccountType")]
+    public string? StorageAccountType { get; init; }
 }
 
 /// <summary>A VM's NIC attachments. The address a descriptor names is reached through these.</summary>

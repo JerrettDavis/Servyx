@@ -251,8 +251,15 @@ public sealed class ProvisioningDashboardService : IProvisioningDashboard
                 .ConfigureAwait(false);
 
             // Reported exactly as the in-place branch below reports its own outcomes, and for the same
-            // reasons: no write-ahead row is written on this path and no resource is created, so there is
-            // nothing for a sweep to resolve and nothing that could have been orphaned.
+            // reasons: no write-ahead row is written on this path, and no resource is created whose identifier
+            // Servyx did not already hold - so there is nothing for a sweep to resolve and nothing that could
+            // have been orphaned. That second clause is worth stating precisely, because the adapters differ:
+            // a DigitalOcean rebuild creates nothing at all, while an Azure replacement deletes a virtual
+            // machine and creates another *at the same provider id, carrying the same tags*, which is exactly
+            // the case a write-ahead row exists to cover and therefore the case that does not need a new one.
+            // An adapter whose destructive path created a resource at an identifier Servyx had never recorded
+            // would need a row written here before it ran, and the honest place to discover that is this
+            // comment rather than a billing statement.
             return destructiveExecution is UpdateExecutionResult.Completed destructiveCompleted
                 ? new UpdateApplyResult.Applied(
                     destructiveCompleted.Resource, current.PlanHash, current.Strategy, current.DataImpact)
