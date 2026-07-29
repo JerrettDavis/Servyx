@@ -289,14 +289,29 @@ else
                                 <dd><code data-testid="applied-resource-id">@applied.Resource.Handle.ProviderResourceId</code></dd>
                                 <dt>Connector</dt>
                                 <dd data-testid="applied-connector">@applied.Resource.ConnectorId</dd>
-                                <dt>Transport</dt>
-                                <dd data-testid="applied-transport">@applied.Resource.Target.TransportId</dd>
-                                <dt>Endpoint</dt>
-                                <dd>
-                                    <code data-testid="applied-endpoint">@(string.IsNullOrWhiteSpace(applied.Resource.Target.Endpoint)
-                                        ? "(resolved from the environment at connect time)"
-                                        : applied.Resource.Target.Endpoint)</code>
-                                </dd>
+                                @* The reachability question is asked here, not assumed. A provider whose
+                                   workload no transport can address (see ResourceReachability) reports the
+                                   reason instead of a transport id, because printing a blank or a guessed
+                                   transport would tell an operator the resource is broken when it is not. *@
+                                @if (applied.Resource.Reachability is ResourceReachability.NoTransport unreachable)
+                                {
+                                    <dt>Transport</dt>
+                                    <dd data-testid="applied-transport">(none — not reachable by any transport)</dd>
+                                    <dt>Why</dt>
+                                    <dd data-testid="applied-unreachable-reason">@unreachable.Reason</dd>
+                                }
+                                else
+                                {
+                                    var target = applied.Resource.RequireTarget();
+                                    <dt>Transport</dt>
+                                    <dd data-testid="applied-transport">@target.TransportId</dd>
+                                    <dt>Endpoint</dt>
+                                    <dd>
+                                        <code data-testid="applied-endpoint">@(string.IsNullOrWhiteSpace(target.Endpoint)
+                                            ? "(resolved from the environment at connect time)"
+                                            : target.Endpoint)</code>
+                                    </dd>
+                                }
                                 <dt>Applied plan hash</dt>
                                 <dd><code data-testid="applied-plan-hash">@applied.PlanHash</code></dd>
                             </dl>

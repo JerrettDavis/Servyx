@@ -80,8 +80,8 @@ public class ProvisionedTargetHandoffTests
         var resource = await ProvisionAsync();
         var (transport, _) = Transport();
 
-        resource.Target.TransportId.Should().Be("docker");
-        resource.Target.TransportId.Should().Be(transport.TransportId);
+        resource.RequireTarget().TransportId.Should().Be("docker");
+        resource.RequireTarget().TransportId.Should().Be(transport.TransportId);
     }
 
     [Fact]
@@ -90,7 +90,7 @@ public class ProvisionedTargetHandoffTests
         var resource = await ProvisionAsync();
         var environment = Environment();
 
-        var resolvedFromDescriptor = DockerEndpointResolver.Resolve(resource.Target, environment);
+        var resolvedFromDescriptor = DockerEndpointResolver.Resolve(resource.RequireTarget(), environment);
 
         resolvedFromDescriptor.Should().Be(DockerEndpointResolver.Resolve(Endpoint, environment));
         resolvedFromDescriptor.Should().Be(new Uri(Endpoint));
@@ -103,7 +103,7 @@ public class ProvisionedTargetHandoffTests
         var (transport, factory) = Transport();
 
         // The descriptor is passed straight through — no adapter, no copy, no field fix-up.
-        var health = await transport.ProbeAsync(resource.Target);
+        var health = await transport.ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeTrue();
         health.Detail.Should().Contain("27.0.0");
@@ -116,7 +116,7 @@ public class ProvisionedTargetHandoffTests
         var resource = await ProvisionAsync();
         var (transport, factory) = Transport();
 
-        await using var session = await transport.ConnectAsync(resource.Target);
+        await using var session = await transport.ConnectAsync(resource.RequireTarget());
 
         session.Should().NotBeNull();
         factory.Received(1).Create(new Uri(Endpoint));
@@ -127,8 +127,8 @@ public class ProvisionedTargetHandoffTests
     {
         var resource = await ProvisionAsync();
 
-        DockerTransport.ResolveContainerRef(resource.Target).Should().Be("container-1");
-        DockerTransport.ResolveContainerRootPath(resource.Target).Should().Be("/palworld");
+        DockerTransport.ResolveContainerRef(resource.RequireTarget()).Should().Be("container-1");
+        DockerTransport.ResolveContainerRootPath(resource.RequireTarget()).Should().Be("/palworld");
     }
 
     [Fact]
@@ -151,11 +151,11 @@ public class ProvisionedTargetHandoffTests
         // IReadOnlyDictionary, and the compiler-generated record Equals compares it by reference, so two
         // descriptors with identical values are NOT Equal. See this test class's remarks and the task
         // report — the type's own doc comment claims value equality, which it does not have.
-        refreshed!.Target.TransportId.Should().Be(resource.Target.TransportId);
-        refreshed.Target.Endpoint.Should().Be(resource.Target.Endpoint);
-        refreshed.Target.CredentialUrn.Should().Be(resource.Target.CredentialUrn);
-        refreshed.Target.DockerContext.Should().Be(resource.Target.DockerContext);
-        refreshed.Target.Options.Should().BeEquivalentTo(resource.Target.Options);
+        refreshed!.RequireTarget().TransportId.Should().Be(resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Endpoint.Should().Be(resource.RequireTarget().Endpoint);
+        refreshed.RequireTarget().CredentialUrn.Should().Be(resource.RequireTarget().CredentialUrn);
+        refreshed.RequireTarget().DockerContext.Should().Be(resource.RequireTarget().DockerContext);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 
     [Fact]
@@ -169,13 +169,13 @@ public class ProvisionedTargetHandoffTests
         var resource = await ProvisionAsync();
 
         var copy = new TargetDescriptor(
-            resource.Target.TransportId,
-            resource.Target.Endpoint,
-            resource.Target.CredentialUrn,
-            resource.Target.DockerContext,
-            new Dictionary<string, string>(resource.Target.Options, StringComparer.Ordinal));
+            resource.RequireTarget().TransportId,
+            resource.RequireTarget().Endpoint,
+            resource.RequireTarget().CredentialUrn,
+            resource.RequireTarget().DockerContext,
+            new Dictionary<string, string>(resource.RequireTarget().Options, StringComparer.Ordinal));
 
-        copy.Should().NotBe(resource.Target);
-        copy.Options.Should().BeEquivalentTo(resource.Target.Options);
+        copy.Should().NotBe(resource.RequireTarget());
+        copy.Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 }

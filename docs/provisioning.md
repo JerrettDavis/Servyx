@@ -279,9 +279,11 @@ Validated. `DockerContainerProvisioner` never inspects the endpoint — it store
 
 This supports the proposal's claim that Shape H's Docker variants are one adapter, not several.
 
-## 11. Shape M: investigated and not implemented
+## 11. Shape M: investigated, then implemented on a widened domain
 
-An implementation attempt for Azure Container Instances (§2's Shape M, "managed container service") was carried out against the domain contracts as they exist today. It concluded the shape **cannot be implemented honestly** as an `IProvisioner` / `IExecutionTarget` adapter. Nothing was built. This section records the finding so it is not re-derived.
+An implementation attempt for Azure Container Instances (§2's Shape M, "managed container service") was carried out against the domain contracts as they existed at the time. It concluded the shape **could not be implemented honestly** as an `IProvisioner` / `IExecutionTarget` adapter, and nothing was built. §11.1–§11.7 below are that finding, kept verbatim so it is not re-derived. §11.8 named what an honest path would require; both halves of that requirement have now been taken up in part, and §11.10 records what was actually built and what remains true.
+
+**Status: §11.8's item (1) is done and §11.8's item (2) is not.** `ProvisionedResource` now expresses unreachability, and `AzureContainerInstanceProvisioner` exists and is exercised by 67 tests. There is still no RCON control-plane path that consumes an unreachable resource, so an ACI deployment remains something Servyx can create, price, sweep and destroy but cannot yet operate. See §11.10.
 
 ### 11.1 The resolution that was tried, and why it looked plausible
 
@@ -325,3 +327,20 @@ Not an `IProvisioner` adapter under the contracts as they stand. It would requir
 ### 11.9 What carries over
 
 Two pieces of the earlier analysis remain valid if Shape M is revisited: `ServyxTagKeys` needs no new encoding for ACI — it uses the same native ARM tags dictionary as the VM adapter. And any future cost estimate must read "COMPUTE ONLY" rather than "ALL-IN": ACI bills per-second on vCPU and memory, while the storage account and any gateway needed for a stable IP bill separately, and ACI's own documentation warns a container group's IP may change on restart.
+
+### 11.10 What was built, and what is still true
+
+§11.8's item (1) was taken, in its second form. `ProvisionedResource.Target` was **not** widened to nullable; it was replaced by a non-nullable `Reachability` of the closed hierarchy `ResourceReachability`, whose two cases are `ViaTransport(TargetDescriptor)` and `NoTransport(string reason)`. The choice between the two options was not about strength alone — it was that they cost the same. Under `Nullable=enable` plus `TreatWarningsAsErrors`, every existing `resource.Target.Endpoint` stops compiling either way (as `CS8602` under the nullable option), so the weaker shape bought no compatibility. What it would have cost is that the check becomes optional at every site: a single `!` silences it and leaves no trace in a diff. A null also cannot carry a reason, and "there is no target" and "here is why there will never be one for this provider" are different facts — the second is the one an operator needs on screen.
+
+`ProvisionedResource` keeps a `TargetDescriptor`-taking constructor overload, so the six adapters that genuinely have a target are unchanged at their construction sites, and gains `RequireTarget()` (throws, for code that has already established reachability) and `TargetOrNull()` (for rendering). It deliberately exposes no property of type `TargetDescriptor` — that absence is pinned by a reflection test, because a property is exactly the shape that was removed.
+
+`AzureContainerInstanceProvisioner` was then built on it, in `Servyx.Infrastructure.Azure`, reusing `AzureArmApiClient` and its OAuth2 exchange. The one change that file needed is a third entry in `ApiVersionFor` for `Microsoft.ContainerInstance`; ARM versions each resource provider independently and there is no default that works.
+
+Four findings from §11.1–§11.9 survive unchanged and are now enforced rather than merely recorded:
+
+- **The mount is mandatory and unrepresentable otherwise.** `AzureContainerGroupSpec` takes an `AzureFileShareMount` as a required constructor argument.
+- **§11.3's credential conflict does not survive contact.** The rule is that a credential is *held* only as a `SecretUrn` and resolved at the point of use — not that it never appears on a wire; `AzureArmApiClient` already puts the resolved client secret into a token-request body on every exchange. The storage account key is resolved from `ISecretStore` inside `CreateAsync`, materialised once into the container group's ARM body, and reaches no tag, handle, plan, plan hash, ledger row or log.
+- **§11.4's orphan consequence is unchanged and is not fixable from inside the adapter.** Servyx never creates the storage account, so it never tags it, so the tag sweep cannot see it. The container group carries `servyx.azure-storage-account` and `servyx.azure-file-share` as pointers, which means a sweep that finds the group can name the account it depends on — and means nothing at all once the group is destroyed.
+- **§11.2's exec finding stands.** No `IExecutionTarget` was written and none can be. `Capabilities` is `Create | Destroy | TagQuery | EstimatesCost`; `StaticAddress` is absent specifically because ACI's IP may move on restart.
+
+**§11.8's item (2) was not taken.** There is still no RCON control-plane path that consumes an unreachable `ProvisionedResource`, and the adapter is deliberately not registered in the web composition (`ProvisionerWiringOptions` / `ProvisionerFormSchema`) until one exists. Offering ACI on `/deploy` today would let an operator create a container group that Servyx can price, sweep and destroy but cannot operate at all. The `Operate`-tier claim in §11.7 remains a design, not a code path.

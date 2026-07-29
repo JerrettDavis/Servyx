@@ -159,13 +159,91 @@ public sealed record ProvisioningPlan(
 /// deliberately closed, and its fields feed <c>ConnectorKey</c> pooling identity; adding provider metadata
 /// (region, tags, etc.) to it would change pool identity whenever that metadata changed, even though such
 /// edits are unrelated to the connection itself.
+/// <para>
+/// <strong>The hand-off is a question, not a value.</strong> <see cref="Reachability"/> is a closed
+/// hierarchy rather than a <see cref="Transport.TargetDescriptor"/>, because not every shape of resource
+/// terminates in something a transport can address — a managed container service exposes no daemon, no
+/// sshd, and is not the Servyx host. The full argument, including why this is not a nullable
+/// <c>TargetDescriptor?</c>, is on <see cref="ResourceReachability"/>. Every adapter that <em>does</em>
+/// have a target still passes one: the <see cref="Transport.TargetDescriptor"/> overload of the
+/// constructor is the unchanged path, and it wraps rather than validates.
+/// </para>
 /// </remarks>
 /// <param name="Handle">The provider-specific reference to the created resource.</param>
 /// <param name="ConnectorId">The connector through which the resource is now reachable.</param>
-/// <param name="Target">The transport target the rest of Servyx should use to reach the resource.</param>
+/// <param name="Reachability">
+/// Whether a transport can address the resource, and which one — see <see cref="ResourceReachability"/>.
+/// </param>
 /// <param name="Facts">Facts observed about the resource at creation time.</param>
 public sealed record ProvisionedResource(
     ResourceHandle Handle,
     string ConnectorId,
-    Transport.TargetDescriptor Target,
-    ResourceFacts Facts);
+    ResourceReachability Reachability,
+    ResourceFacts Facts)
+{
+    /// <summary>
+    /// Creates a resource that <em>is</em> reachable, through <paramref name="Target"/>.
+    /// </summary>
+    /// <remarks>
+    /// The convenience shape for the six adapters whose provider genuinely terminates in an addressable
+    /// thing. It is not a way to avoid the question: it answers it, with
+    /// <see cref="ResourceReachability.ViaTransport"/>. There is deliberately no counterpart overload
+    /// taking a bare reason string — declaring a resource unreachable should read as the deliberate act it
+    /// is, spelled <c>new ResourceReachability.NoTransport("…")</c> at the call site.
+    /// </remarks>
+    /// <param name="Handle">The provider-specific reference to the created resource.</param>
+    /// <param name="ConnectorId">The connector through which the resource is now reachable.</param>
+    /// <param name="Target">The transport target the rest of Servyx should use to reach the resource.</param>
+    /// <param name="Facts">Facts observed about the resource at creation time.</param>
+    /// <exception cref="ArgumentNullException"><paramref name="Target"/> is null.</exception>
+    public ProvisionedResource(
+        ResourceHandle Handle,
+        string ConnectorId,
+        Transport.TargetDescriptor Target,
+        ResourceFacts Facts)
+        : this(Handle, ConnectorId, new ResourceReachability.ViaTransport(Target), Facts)
+    {
+    }
+
+    /// <summary>
+    /// The transport target for a resource the caller has already established is reachable.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The accessor for code whose surrounding context guarantees a target exists — a test asserting an
+    /// adapter's hand-off, or a branch that has already matched
+    /// <see cref="ResourceReachability.ViaTransport"/>. It <em>throws</em> rather than returning null
+    /// precisely so it cannot become the quiet way to reintroduce the bug this shape removes: there is no
+    /// value it could return for an unreachable resource that would not be a fabrication.
+    /// </para>
+    /// <para>
+    /// Code that does not already know the answer must not call this. It should match on
+    /// <see cref="Reachability"/> and handle both cases, which is the whole point of the type.
+    /// </para>
+    /// </remarks>
+    /// <returns>The transport target.</returns>
+    /// <exception cref="InvalidOperationException">
+    /// The resource is not reachable by any transport. The message carries the adapter's own reason.
+    /// </exception>
+    public Transport.TargetDescriptor RequireTarget() => Reachability switch
+    {
+        ResourceReachability.ViaTransport reachable => reachable.Target,
+        ResourceReachability.NoTransport unreachable => throw new InvalidOperationException(
+            $"Resource '{Handle.ProviderResourceId}' (provisioner '{Handle.ProvisionerId}') is not reachable "
+            + $"by any transport, so it has no target descriptor: {unreachable.Reason}"),
+        _ => throw new InvalidOperationException(
+            $"Unhandled {nameof(ResourceReachability)} shape '{Reachability.GetType().Name}'."),
+    };
+
+    /// <summary>
+    /// The transport target if the resource is reachable, or <see langword="null"/> if it is not.
+    /// </summary>
+    /// <remarks>
+    /// For rendering and logging, where "unreachable" is a value to display rather than a branch to take.
+    /// Deliberately a method rather than a property: a property named <c>Target</c> is exactly the shape
+    /// this type replaced, and a caller reaching for one should feel the difference.
+    /// </remarks>
+    /// <returns>The transport target, or <see langword="null"/> when no transport can address the resource.</returns>
+    public Transport.TargetDescriptor? TargetOrNull() =>
+        Reachability is ResourceReachability.ViaTransport reachable ? reachable.Target : null;
+}

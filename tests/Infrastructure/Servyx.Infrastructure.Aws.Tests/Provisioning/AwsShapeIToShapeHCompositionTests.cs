@@ -65,8 +65,8 @@ public class AwsShapeIToShapeHCompositionTests
 
         // Not "aws", not "aws-ssh" - the transport that already existed before this adapter did, asserted
         // against the real transport's own property so the magic string cannot drift.
-        resource.Target.TransportId.Should().Be("ssh");
-        resource.Target.TransportId.Should().Be(RealSshTransport().TransportId);
+        resource.RequireTarget().TransportId.Should().Be("ssh");
+        resource.RequireTarget().TransportId.Should().Be(RealSshTransport().TransportId);
     }
 
     [Fact]
@@ -76,9 +76,9 @@ public class AwsShapeIToShapeHCompositionTests
 
         // SshEndpoint.Parse is literally the first thing SshConnector.OpenAsync does with a descriptor's
         // endpoint, so agreeing with it is agreeing with the transport.
-        var (endpoint, username) = SshEndpoint.Parse(resource.Target.Endpoint);
+        var (endpoint, username) = SshEndpoint.Parse(resource.RequireTarget().Endpoint);
 
-        resource.Target.Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
         endpoint.Host.Should().Be(AwsScenario.PublicIp);
         endpoint.Port.Should().Be(22);
 
@@ -96,14 +96,14 @@ public class AwsShapeIToShapeHCompositionTests
         // Everything on it is either a key the SSH transport already read before this adapter existed, or the
         // caller's own pass-through option. There is no instance id, no region, no AMI, no signature - those
         // live on the ResourceHandle, which is where provider-specific state belongs.
-        resource.Target.Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
-        resource.Target.DockerContext.Should().BeNull();
-        resource.Target.CredentialUrn.Should().Be(AwsScenario.SshCredentialUrn);
-        resource.Target.Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
+        resource.RequireTarget().Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
+        resource.RequireTarget().DockerContext.Should().BeNull();
+        resource.RequireTarget().CredentialUrn.Should().Be(AwsScenario.SshCredentialUrn);
+        resource.RequireTarget().Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
 
         var rendered = string.Join(
             "|",
-            resource.Target.Options.Select(o => $"{o.Key}={o.Value}").Append(resource.Target.Endpoint));
+            resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}").Append(resource.RequireTarget().Endpoint));
 
         foreach (var vocabulary in new[] { "ami-", "i-0", "vol-", "AWS4", "amazonaws", "aws-ec2", "subnet-", "sg-" })
         {
@@ -115,8 +115,8 @@ public class AwsShapeIToShapeHCompositionTests
         // the machine's local account rather than a provider identifier - nothing downstream can derive an
         // account, a region or a resource id from it - but it is the only place any of the three cloud adapters
         // puts the provider's name into a descriptor, and pretending otherwise would be a weaker test.
-        resource.Target.Endpoint.Should().Contain("ec2-user");
-        resource.Target.Options.Values.Should().NotContain(v => v.Contains("ec2", StringComparison.Ordinal));
+        resource.RequireTarget().Endpoint.Should().Contain("ec2-user");
+        resource.RequireTarget().Options.Values.Should().NotContain(v => v.Contains("ec2", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -127,7 +127,7 @@ public class AwsShapeIToShapeHCompositionTests
         // The descriptor instance is passed straight through - no adapter, no copy, no field fix-up. The probe
         // gets as far as credential resolution, which is past endpoint parsing and connector-descriptor
         // construction, and stops there only because a unit test supplies no credentials.
-        var health = await RealSshTransport().ProbeAsync(resource.Target);
+        var health = await RealSshTransport().ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeFalse();
         health.Detail.Should().Contain("neither a 'password' nor a 'private-key'");
@@ -143,7 +143,7 @@ public class AwsShapeIToShapeHCompositionTests
         docker.TransportId.Returns("docker");
         ITransport[] registered = [docker, RealSshTransport()];
 
-        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.Target.TransportId, StringComparison.Ordinal));
+        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.RequireTarget().TransportId, StringComparison.Ordinal));
 
         resolved.Should().BeOfType<SshTransport>();
         resolved.Capabilities.Should().HaveFlag(TransportCapabilities.ExecuteCommand);
@@ -161,25 +161,25 @@ public class AwsShapeIToShapeHCompositionTests
         // of doing this a third time, no branch on WHICH cloud either.
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         var installed = await installer
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 
-        installed.Target.TransportId.Should().Be(cloud.Target.TransportId);
-        installed.Target.Endpoint.Should().Be(cloud.Target.Endpoint);
-        installed.Target.CredentialUrn.Should().Be(cloud.Target.CredentialUrn);
-        installed.Target.DockerContext.Should().Be(cloud.Target.DockerContext);
-        installed.Target.Options["trustPolicy"].Should().Be(cloud.Target.Options["trustPolicy"]);
-        installed.Target.Options["declaredChannels"].Should().Be(cloud.Target.Options["declaredChannels"]);
+        installed.RequireTarget().TransportId.Should().Be(cloud.RequireTarget().TransportId);
+        installed.RequireTarget().Endpoint.Should().Be(cloud.RequireTarget().Endpoint);
+        installed.RequireTarget().CredentialUrn.Should().Be(cloud.RequireTarget().CredentialUrn);
+        installed.RequireTarget().DockerContext.Should().Be(cloud.RequireTarget().DockerContext);
+        installed.RequireTarget().Options["trustPolicy"].Should().Be(cloud.RequireTarget().Options["trustPolicy"]);
+        installed.RequireTarget().Options["declaredChannels"].Should().Be(cloud.RequireTarget().Options["declaredChannels"]);
 
         // The one option that legitimately changes, and the shape boundary made visible: the host's root path
         // ("/") is replaced by the server's data directory once a server exists on that host.
-        installed.Target.Options["rootPath"].Should().Be("/opt/palworld");
-        cloud.Target.Options["rootPath"].Should().Be("/");
+        installed.RequireTarget().Options["rootPath"].Should().Be("/opt/palworld");
+        cloud.RequireTarget().Options["rootPath"].Should().Be("/");
     }
 
     [Fact]
@@ -190,14 +190,14 @@ public class AwsShapeIToShapeHCompositionTests
 
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         await installer.CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest())).CreateAsync();
 
         host.Connected.Should().NotBeEmpty();
-        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.Target.Endpoint);
+        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.RequireTarget().Endpoint);
         SshEndpoint.Parse(host.Connected[0].Endpoint).Endpoint.Host.Should().Be(AwsScenario.PublicIp);
     }
 
@@ -209,9 +209,9 @@ public class AwsShapeIToShapeHCompositionTests
 
         var installed = await new SshProcessProvisioner(
                 host.Transport,
-                endpoint: cloud.Target.Endpoint,
-                credentialUrn: cloud.Target.CredentialUrn,
-                transportOptions: cloud.Target.Options)
+                endpoint: cloud.RequireTarget().Endpoint,
+                credentialUrn: cloud.RequireTarget().CredentialUrn,
+                transportOptions: cloud.RequireTarget().Options)
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 

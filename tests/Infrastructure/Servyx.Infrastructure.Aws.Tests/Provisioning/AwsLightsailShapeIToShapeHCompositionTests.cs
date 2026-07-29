@@ -46,8 +46,8 @@ public class AwsLightsailShapeIToShapeHCompositionTests
     {
         var resource = await new LightsailScenario().CreateAsync();
 
-        resource.Target.TransportId.Should().Be("ssh");
-        resource.Target.TransportId.Should().Be(RealSshTransport().TransportId);
+        resource.RequireTarget().TransportId.Should().Be("ssh");
+        resource.RequireTarget().TransportId.Should().Be(RealSshTransport().TransportId);
     }
 
     [Fact]
@@ -55,9 +55,9 @@ public class AwsLightsailShapeIToShapeHCompositionTests
     {
         var resource = await new LightsailScenario().CreateAsync();
 
-        var (endpoint, username) = SshEndpoint.Parse(resource.Target.Endpoint);
+        var (endpoint, username) = SshEndpoint.Parse(resource.RequireTarget().Endpoint);
 
-        resource.Target.Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
         endpoint.Host.Should().Be(LightsailScenario.PublicIp);
         endpoint.Port.Should().Be(22);
 
@@ -71,14 +71,14 @@ public class AwsLightsailShapeIToShapeHCompositionTests
     {
         var resource = await new LightsailScenario().CreateAsync();
 
-        resource.Target.Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
-        resource.Target.DockerContext.Should().BeNull();
-        resource.Target.CredentialUrn.Should().Be(LightsailScenario.SshCredentialUrn);
-        resource.Target.Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
+        resource.RequireTarget().Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
+        resource.RequireTarget().DockerContext.Should().BeNull();
+        resource.RequireTarget().CredentialUrn.Should().Be(LightsailScenario.SshCredentialUrn);
+        resource.RequireTarget().Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
 
         var rendered = string.Join(
             "|",
-            resource.Target.Options.Select(o => $"{o.Key}={o.Value}").Append(resource.Target.Endpoint));
+            resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}").Append(resource.RequireTarget().Endpoint));
 
         foreach (var vocabulary in new[] { "bundleId", "blueprintId", "AWS4", "amazonaws", "aws-lightsail", "availabilityZone" })
         {
@@ -91,7 +91,7 @@ public class AwsLightsailShapeIToShapeHCompositionTests
     {
         var resource = await new LightsailScenario().CreateAsync();
 
-        var health = await RealSshTransport().ProbeAsync(resource.Target);
+        var health = await RealSshTransport().ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeFalse();
         health.Detail.Should().Contain("neither a 'password' nor a 'private-key'");
@@ -107,7 +107,7 @@ public class AwsLightsailShapeIToShapeHCompositionTests
         docker.TransportId.Returns("docker");
         ITransport[] registered = [docker, RealSshTransport()];
 
-        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.Target.TransportId, StringComparison.Ordinal));
+        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.RequireTarget().TransportId, StringComparison.Ordinal));
 
         resolved.Should().BeOfType<SshTransport>();
         resolved.Capabilities.Should().HaveFlag(TransportCapabilities.ExecuteCommand);
@@ -122,23 +122,23 @@ public class AwsLightsailShapeIToShapeHCompositionTests
 
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         var installed = await installer
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 
-        installed.Target.TransportId.Should().Be(cloud.Target.TransportId);
-        installed.Target.Endpoint.Should().Be(cloud.Target.Endpoint);
-        installed.Target.CredentialUrn.Should().Be(cloud.Target.CredentialUrn);
-        installed.Target.DockerContext.Should().Be(cloud.Target.DockerContext);
-        installed.Target.Options["trustPolicy"].Should().Be(cloud.Target.Options["trustPolicy"]);
-        installed.Target.Options["declaredChannels"].Should().Be(cloud.Target.Options["declaredChannels"]);
+        installed.RequireTarget().TransportId.Should().Be(cloud.RequireTarget().TransportId);
+        installed.RequireTarget().Endpoint.Should().Be(cloud.RequireTarget().Endpoint);
+        installed.RequireTarget().CredentialUrn.Should().Be(cloud.RequireTarget().CredentialUrn);
+        installed.RequireTarget().DockerContext.Should().Be(cloud.RequireTarget().DockerContext);
+        installed.RequireTarget().Options["trustPolicy"].Should().Be(cloud.RequireTarget().Options["trustPolicy"]);
+        installed.RequireTarget().Options["declaredChannels"].Should().Be(cloud.RequireTarget().Options["declaredChannels"]);
 
-        installed.Target.Options["rootPath"].Should().Be("/opt/palworld");
-        cloud.Target.Options["rootPath"].Should().Be("/");
+        installed.RequireTarget().Options["rootPath"].Should().Be("/opt/palworld");
+        cloud.RequireTarget().Options["rootPath"].Should().Be("/");
     }
 
     [Fact]
@@ -149,14 +149,14 @@ public class AwsLightsailShapeIToShapeHCompositionTests
 
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         await installer.CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest())).CreateAsync();
 
         host.Connected.Should().NotBeEmpty();
-        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.Target.Endpoint);
+        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.RequireTarget().Endpoint);
         SshEndpoint.Parse(host.Connected[0].Endpoint).Endpoint.Host.Should().Be(LightsailScenario.PublicIp);
     }
 
@@ -168,9 +168,9 @@ public class AwsLightsailShapeIToShapeHCompositionTests
 
         var installed = await new SshProcessProvisioner(
                 host.Transport,
-                endpoint: cloud.Target.Endpoint,
-                credentialUrn: cloud.Target.CredentialUrn,
-                transportOptions: cloud.Target.Options)
+                endpoint: cloud.RequireTarget().Endpoint,
+                credentialUrn: cloud.RequireTarget().CredentialUrn,
+                transportOptions: cloud.RequireTarget().Options)
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 

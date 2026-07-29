@@ -84,8 +84,8 @@ public class ProvisionedLocalTargetHandoffTests
     {
         using var provisioned = await Provisioned.CreateAsync();
 
-        provisioned.Resource.Target.TransportId.Should().Be("local");
-        provisioned.Resource.Target.TransportId.Should().Be(new LocalProcessTransport().TransportId);
+        provisioned.Resource.RequireTarget().TransportId.Should().Be("local");
+        provisioned.Resource.RequireTarget().TransportId.Should().Be(new LocalProcessTransport().TransportId);
     }
 
     [Fact]
@@ -100,7 +100,7 @@ public class ProvisionedLocalTargetHandoffTests
         ITransport[] registered = [docker, ssh, new LocalProcessTransport()];
 
         var resolved = registered.Single(t =>
-            string.Equals(t.TransportId, provisioned.Resource.Target.TransportId, StringComparison.Ordinal));
+            string.Equals(t.TransportId, provisioned.Resource.RequireTarget().TransportId, StringComparison.Ordinal));
 
         resolved.Should().BeOfType<LocalProcessTransport>();
         resolved.Capabilities.Should().HaveFlag(TransportCapabilities.ExecuteCommand);
@@ -113,7 +113,7 @@ public class ProvisionedLocalTargetHandoffTests
         using var provisioned = await Provisioned.CreateAsync();
 
         // The descriptor is passed straight through — no adapter, no copy, no field fix-up.
-        var health = await new LocalProcessTransport().ProbeAsync(provisioned.Resource.Target);
+        var health = await new LocalProcessTransport().ProbeAsync(provisioned.Resource.RequireTarget());
 
         health.Reachable.Should().BeTrue();
         health.Detail.Should().Contain(provisioned.DataDirectory);
@@ -127,7 +127,7 @@ public class ProvisionedLocalTargetHandoffTests
         // directory the provisioner reported.
         using var provisioned = await Provisioned.CreateAsync();
 
-        await using var session = await new LocalProcessTransport().ConnectAsync(provisioned.Resource.Target);
+        await using var session = await new LocalProcessTransport().ConnectAsync(provisioned.Resource.RequireTarget());
 
         var path = ((LocalExecutionTarget)session).Resolve("server.cfg");
         await using (var content = new MemoryStream(Encoding.UTF8.GetBytes("port=8211"), writable: false))
@@ -149,7 +149,7 @@ public class ProvisionedLocalTargetHandoffTests
         // reach outside the data directory, without the caller having to configure anything.
         using var provisioned = await Provisioned.CreateAsync();
 
-        await using var session = await new LocalProcessTransport().ConnectAsync(provisioned.Resource.Target);
+        await using var session = await new LocalProcessTransport().ConnectAsync(provisioned.Resource.RequireTarget());
 
         var act = () => ((LocalExecutionTarget)session).Resolve("../instances/srv-0001.servyx.json");
 
@@ -166,13 +166,13 @@ public class ProvisionedLocalTargetHandoffTests
 
         // rootPath is exactly the key LocalProcessTransport.ResolveRootPath already reads; the provisioner
         // invents no option of its own beyond it, and caller options survive untouched.
-        provisioned.Resource.Target.Options["rootPath"].Should().Be(provisioned.DataDirectory);
-        provisioned.Resource.Target.Options["operatorNote"].Should().Be("provisioned by the local adapter");
-        provisioned.Resource.Target.CredentialUrn.Should().Be("secret://connector/local-palworld/none");
-        provisioned.Resource.Target.DockerContext.Should().BeNull();
-        provisioned.Resource.Target.Endpoint.Should().Be("local://test-machine");
+        provisioned.Resource.RequireTarget().Options["rootPath"].Should().Be(provisioned.DataDirectory);
+        provisioned.Resource.RequireTarget().Options["operatorNote"].Should().Be("provisioned by the local adapter");
+        provisioned.Resource.RequireTarget().CredentialUrn.Should().Be("secret://connector/local-palworld/none");
+        provisioned.Resource.RequireTarget().DockerContext.Should().BeNull();
+        provisioned.Resource.RequireTarget().Endpoint.Should().Be("local://test-machine");
 
-        LocalProcessTransport.ResolveRootPath(provisioned.Resource.Target).Should().Be(provisioned.DataDirectory);
+        LocalProcessTransport.ResolveRootPath(provisioned.Resource.RequireTarget()).Should().Be(provisioned.DataDirectory);
     }
 
     [Fact]
@@ -183,7 +183,7 @@ public class ProvisionedLocalTargetHandoffTests
         // directory installed into and the directory recorded cannot be different directories.
         using var provisioned = await Provisioned.CreateAsync();
 
-        provisioned.Host.Connected.Should().Contain(d => ReferenceEquals(d, provisioned.Resource.Target));
+        provisioned.Host.Connected.Should().Contain(d => ReferenceEquals(d, provisioned.Resource.RequireTarget()));
     }
 
     [Fact]
@@ -198,10 +198,10 @@ public class ProvisionedLocalTargetHandoffTests
         // Compared field by field rather than with record equality: TargetDescriptor's Options is an
         // IReadOnlyDictionary, which the compiler-generated record Equals compares by reference — the same
         // pre-existing defect the Docker and SSH handoff tests pin.
-        refreshed!.Target.TransportId.Should().Be(provisioned.Resource.Target.TransportId);
-        refreshed.Target.Endpoint.Should().Be(provisioned.Resource.Target.Endpoint);
-        refreshed.Target.CredentialUrn.Should().Be(provisioned.Resource.Target.CredentialUrn);
-        refreshed.Target.DockerContext.Should().Be(provisioned.Resource.Target.DockerContext);
-        refreshed.Target.Options.Should().BeEquivalentTo(provisioned.Resource.Target.Options);
+        refreshed!.RequireTarget().TransportId.Should().Be(provisioned.Resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Endpoint.Should().Be(provisioned.Resource.RequireTarget().Endpoint);
+        refreshed.RequireTarget().CredentialUrn.Should().Be(provisioned.Resource.RequireTarget().CredentialUrn);
+        refreshed.RequireTarget().DockerContext.Should().Be(provisioned.Resource.RequireTarget().DockerContext);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(provisioned.Resource.RequireTarget().Options);
     }
 }

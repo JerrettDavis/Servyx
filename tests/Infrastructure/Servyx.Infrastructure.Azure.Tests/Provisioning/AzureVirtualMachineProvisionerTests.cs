@@ -347,11 +347,11 @@ public class AzureVirtualMachineProvisionerTests
 
         var rendered = string.Join(
             "\n",
-            resource.Target.TransportId,
-            resource.Target.Endpoint,
-            resource.Target.CredentialUrn ?? string.Empty,
-            resource.Target.DockerContext ?? string.Empty,
-            string.Join(",", resource.Target.Options.Select(o => $"{o.Key}={o.Value}")),
+            resource.RequireTarget().TransportId,
+            resource.RequireTarget().Endpoint,
+            resource.RequireTarget().CredentialUrn ?? string.Empty,
+            resource.RequireTarget().DockerContext ?? string.Empty,
+            string.Join(",", resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}")),
             resource.Handle.ProviderResourceId,
             resource.Handle.Region ?? string.Empty,
             string.Join(",", resource.Handle.Tags.Select(t => $"{t.Key}={t.Value}")),
@@ -368,8 +368,8 @@ public class AzureVirtualMachineProvisionerTests
         rendered.Should().NotContain(AzureScenario.AccessToken);
 
         // The credential URN on the descriptor is the SSH key's URN, never the Azure client secret's.
-        resource.Target.CredentialUrn.Should().Be(AzureScenario.SshCredentialUrn);
-        resource.Target.CredentialUrn.Should().NotBe(AzureScenario.ClientSecretUrn.Value);
+        resource.RequireTarget().CredentialUrn.Should().Be(AzureScenario.SshCredentialUrn);
+        resource.RequireTarget().CredentialUrn.Should().NotBe(AzureScenario.ClientSecretUrn.Value);
     }
 
     [Fact]
@@ -629,7 +629,7 @@ public class AzureVirtualMachineProvisionerTests
         var resource = await provisioner.CreateOperation(spec).CreateAsync();
 
         addressReads.Should().Be(2);
-        resource.Target.Endpoint.Should().Be($"ssh://azureuser@{AzureScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://azureuser@{AzureScenario.PublicIp}:22");
     }
 
     // ---------------------------------------------------------------------------------------------------
@@ -870,11 +870,11 @@ public class AzureVirtualMachineProvisionerTests
 
         // Compared field by field rather than with record equality: TargetDescriptor's Options is an
         // IReadOnlyDictionary, which the compiler-generated record Equals compares by reference.
-        refreshed!.Target.TransportId.Should().Be(resource.Target.TransportId);
-        refreshed.Target.Endpoint.Should().Be(resource.Target.Endpoint);
-        refreshed.Target.CredentialUrn.Should().Be(resource.Target.CredentialUrn);
-        refreshed.Target.DockerContext.Should().Be(resource.Target.DockerContext);
-        refreshed.Target.Options.Should().BeEquivalentTo(resource.Target.Options);
+        refreshed!.RequireTarget().TransportId.Should().Be(resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Endpoint.Should().Be(resource.RequireTarget().Endpoint);
+        refreshed.RequireTarget().CredentialUrn.Should().Be(resource.RequireTarget().CredentialUrn);
+        refreshed.RequireTarget().DockerContext.Should().Be(resource.RequireTarget().DockerContext);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 
     // ---------------------------------------------------------------------------------------------------

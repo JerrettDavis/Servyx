@@ -176,8 +176,8 @@ public class RemoteDockerEndpointTests
     {
         var (resource, _) = await ProvisionAsync(RemoteEndpoint);
 
-        resource.Target.TransportId.Should().Be("docker");
-        resource.Target.Endpoint.Should().Be(RemoteEndpoint);
+        resource.RequireTarget().TransportId.Should().Be("docker");
+        resource.RequireTarget().Endpoint.Should().Be(RemoteEndpoint);
     }
 
     [Fact]
@@ -188,17 +188,17 @@ public class RemoteDockerEndpointTests
         var (local, _) = await ProvisionAsync(LocalEndpoint);
         var (remote, _) = await ProvisionAsync(RemoteEndpoint);
 
-        remote.Target.Endpoint.Should().Be(RemoteEndpoint).And.NotBe(local.Target.Endpoint);
+        remote.RequireTarget().Endpoint.Should().Be(RemoteEndpoint).And.NotBe(local.RequireTarget().Endpoint);
 
         remote.ConnectorId.Should().Be(local.ConnectorId);
         remote.Handle.ProvisionerId.Should().Be(local.Handle.ProvisionerId);
         remote.Handle.ProviderResourceId.Should().Be(local.Handle.ProviderResourceId);
         remote.Handle.Region.Should().Be(local.Handle.Region);
         remote.Handle.Tags.Should().BeEquivalentTo(local.Handle.Tags);
-        remote.Target.TransportId.Should().Be(local.Target.TransportId);
-        remote.Target.CredentialUrn.Should().Be(local.Target.CredentialUrn);
-        remote.Target.DockerContext.Should().Be(local.Target.DockerContext);
-        remote.Target.Options.Should().BeEquivalentTo(local.Target.Options);
+        remote.RequireTarget().TransportId.Should().Be(local.RequireTarget().TransportId);
+        remote.RequireTarget().CredentialUrn.Should().Be(local.RequireTarget().CredentialUrn);
+        remote.RequireTarget().DockerContext.Should().Be(local.RequireTarget().DockerContext);
+        remote.RequireTarget().Options.Should().BeEquivalentTo(local.RequireTarget().Options);
         remote.Facts.PrivateAddress.Should().Be(local.Facts.PrivateAddress);
         remote.Facts.PublicAddress.Should().Be(local.Facts.PublicAddress);
         remote.Facts.Cost.Should().Be(local.Facts.Cost);
@@ -210,7 +210,7 @@ public class RemoteDockerEndpointTests
         var (resource, _) = await ProvisionAsync(RemoteEndpoint);
         var environment = Environment();
 
-        var resolved = DockerEndpointResolver.Resolve(resource.Target, environment);
+        var resolved = DockerEndpointResolver.Resolve(resource.RequireTarget(), environment);
 
         resolved.Should().Be(new Uri(RemoteEndpoint));
         resolved.Should().Be(DockerEndpointResolver.Resolve(RemoteEndpoint, environment));
@@ -224,7 +224,7 @@ public class RemoteDockerEndpointTests
         var (transport, factory) = Transport();
 
         // The descriptor is passed straight through — no adapter, no copy, no field fix-up.
-        var health = await transport.ProbeAsync(resource.Target);
+        var health = await transport.ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeTrue();
         health.Detail.Should().Contain("27.0.0");
@@ -237,7 +237,7 @@ public class RemoteDockerEndpointTests
         var (resource, _) = await ProvisionAsync(RemoteEndpoint);
         var (transport, factory) = Transport();
 
-        await using var session = await transport.ConnectAsync(resource.Target);
+        await using var session = await transport.ConnectAsync(resource.RequireTarget());
 
         session.Should().NotBeNull();
         factory.Received(1).Create(new Uri(RemoteEndpoint));
@@ -248,8 +248,8 @@ public class RemoteDockerEndpointTests
     {
         var (resource, _) = await ProvisionAsync(RemoteEndpoint);
 
-        DockerTransport.ResolveContainerRef(resource.Target).Should().Be("container-1");
-        DockerTransport.ResolveContainerRootPath(resource.Target).Should().Be("/palworld");
+        DockerTransport.ResolveContainerRef(resource.RequireTarget()).Should().Be("container-1");
+        DockerTransport.ResolveContainerRootPath(resource.RequireTarget()).Should().Be("/palworld");
     }
 
     [Fact]
@@ -265,9 +265,9 @@ public class RemoteDockerEndpointTests
         var refreshed = await new DockerContainerProvisioner(client, RemoteEndpoint).RefreshAsync(resource.Handle);
 
         refreshed.Should().NotBeNull();
-        refreshed!.Target.Endpoint.Should().Be(RemoteEndpoint);
-        refreshed.Target.TransportId.Should().Be(resource.Target.TransportId);
-        refreshed.Target.Options.Should().BeEquivalentTo(resource.Target.Options);
+        refreshed!.RequireTarget().Endpoint.Should().Be(RemoteEndpoint);
+        refreshed.RequireTarget().TransportId.Should().Be(resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 
     [Fact]
@@ -296,9 +296,9 @@ public class RemoteDockerEndpointTests
         var (resource, _) = await ProvisionAsync(endpoint);
         var (transport, factory) = Transport();
 
-        var health = await transport.ProbeAsync(resource.Target);
+        var health = await transport.ProbeAsync(resource.RequireTarget());
 
-        resource.Target.Endpoint.Should().Be(endpoint);
+        resource.RequireTarget().Endpoint.Should().Be(endpoint);
         health.Reachable.Should().BeTrue();
         factory.Received(1).Create(new Uri(endpoint));
     }

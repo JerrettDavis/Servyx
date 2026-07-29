@@ -250,9 +250,9 @@ public class DockerContainerProvisionerTests
 
         refreshed.Should().NotBeNull();
         refreshed!.ConnectorId.Should().Be("docker-local");
-        refreshed.Target.Options["containerId"].Should().Be("container-1");
-        refreshed.Target.Options["containerName"].Should().Be("palworld-server");
-        refreshed.Target.Options["rootPath"].Should().Be("/palworld");
+        refreshed.RequireTarget().Options["containerId"].Should().Be("container-1");
+        refreshed.RequireTarget().Options["containerName"].Should().Be("palworld-server");
+        refreshed.RequireTarget().Options["rootPath"].Should().Be("/palworld");
         refreshed.Facts.Cost.Confidence.Should().Be(CostConfidence.Unknown);
         refreshed.Facts.PrivateAddress.Should().Be("172.18.0.2");
     }

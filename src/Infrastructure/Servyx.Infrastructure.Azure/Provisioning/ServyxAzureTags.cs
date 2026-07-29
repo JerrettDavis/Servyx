@@ -134,6 +134,32 @@ public sealed class ServyxAzureTags
     /// <summary>Records the ARM name of the network interface created for the host.</summary>
     public const string NetworkInterfaceTag = ServyxTagKeys.Prefix + "azure-network-interface";
 
+    /// <summary>The role value stamped on an Azure Container Instances container group.</summary>
+    public const string RoleContainerGroup = "container-group";
+
+    /// <summary>
+    /// Records the name of the storage account whose Azure Files share a container group has mounted.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is a pointer, not an attribution, and the difference is the whole of §11.4.</strong>
+    /// Servyx neither creates nor destroys the storage account: it holds the customer's save data and must
+    /// outlive the workload by design. So this tag does not make the account sweepable — an orphan sweep
+    /// enumerates resources <em>by</em> tag, and the account carries none of Servyx's. What it does buy is
+    /// that while the container group exists, a sweep that finds the group can also name the account and
+    /// share it depends on, which is strictly more than nothing.
+    /// </para>
+    /// <para>
+    /// The limit is exact and worth stating: once the container group is destroyed, this pointer is
+    /// destroyed with it, and the storage account carries on billing with nothing left in Azure or in Servyx
+    /// that attributes the charge to a resource Servyx ever created.
+    /// </para>
+    /// </remarks>
+    public const string StorageAccountTag = ServyxTagKeys.Prefix + "azure-storage-account";
+
+    /// <summary>Records the name of the Azure Files share a container group has mounted.</summary>
+    public const string FileShareTag = ServyxTagKeys.Prefix + "azure-file-share";
+
     private ServyxAzureTags(string instanceId, string jobId, string connectorId)
     {
         InstanceId = instanceId;

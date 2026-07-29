@@ -40,8 +40,8 @@ public class ProvisionedSshTargetHandoffTests
     {
         var (resource, _) = await SshProcessProvisionerTests.ProvisionAsync();
 
-        resource.Target.TransportId.Should().Be("ssh");
-        resource.Target.TransportId.Should().Be(RealTransport().TransportId);
+        resource.RequireTarget().TransportId.Should().Be("ssh");
+        resource.RequireTarget().TransportId.Should().Be(RealTransport().TransportId);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public class ProvisionedSshTargetHandoffTests
         other.TransportId.Returns("docker");
         ITransport[] registered = [other, RealTransport()];
 
-        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.Target.TransportId, StringComparison.Ordinal));
+        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.RequireTarget().TransportId, StringComparison.Ordinal));
 
         resolved.Should().BeOfType<SshTransport>();
         resolved.Capabilities.Should().HaveFlag(TransportCapabilities.ExecuteCommand);
@@ -67,7 +67,7 @@ public class ProvisionedSshTargetHandoffTests
 
         // SshEndpoint.Parse is literally the first thing SshConnector.OpenAsync does with the descriptor's
         // endpoint, so agreeing with it is agreeing with the transport.
-        var (endpoint, username) = SshEndpoint.Parse(resource.Target.Endpoint);
+        var (endpoint, username) = SshEndpoint.Parse(resource.RequireTarget().Endpoint);
 
         endpoint.Host.Should().Be("palworld-host.internal");
         endpoint.Port.Should().Be(22);
@@ -83,7 +83,7 @@ public class ProvisionedSshTargetHandoffTests
         // far as credential resolution, which is past endpoint parsing and connector-descriptor construction,
         // and stops there because a unit test supplies no credentials — not because anything about the
         // descriptor was unusable.
-        var health = await RealTransport().ProbeAsync(resource.Target);
+        var health = await RealTransport().ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeFalse();
         health.Detail.Should().Contain("neither a 'password' nor a 'private-key'");
@@ -98,8 +98,8 @@ public class ProvisionedSshTargetHandoffTests
         var (withUser, _) = await SshProcessProvisionerTests.ProvisionAsync(endpoint: "steam@palworld-host.internal:22");
         var (withoutUser, _) = await SshProcessProvisionerTests.ProvisionAsync(endpoint: "palworld-host.internal:22");
 
-        var withUserHealth = await RealTransport().ProbeAsync(withUser.Target);
-        var withoutUserHealth = await RealTransport().ProbeAsync(withoutUser.Target);
+        var withUserHealth = await RealTransport().ProbeAsync(withUser.RequireTarget());
+        var withoutUserHealth = await RealTransport().ProbeAsync(withoutUser.RequireTarget());
 
         withUserHealth.Detail.Should().Contain("neither a 'password' nor a 'private-key'");
         withoutUserHealth.Detail.Should().Contain("has no username");
@@ -125,11 +125,11 @@ public class ProvisionedSshTargetHandoffTests
 
         // These are exactly the keys SshTransport.BuildConnectorDescriptor already reads; the provisioner
         // invents no option of its own beyond the rootPath the layers above it consume.
-        resource.Target.CredentialUrn.Should().Be("secret://connector/ssh-palworld/ssh/password");
-        resource.Target.Options["trustPolicy"].Should().Be("trustOnFirstUse");
-        resource.Target.Options["declaredChannels"].Should().Be("Exec,FileRead,FileWrite");
-        resource.Target.Options["rootPath"].Should().Be("/opt/palworld");
-        resource.Target.DockerContext.Should().BeNull();
+        resource.RequireTarget().CredentialUrn.Should().Be("secret://connector/ssh-palworld/ssh/password");
+        resource.RequireTarget().Options["trustPolicy"].Should().Be("trustOnFirstUse");
+        resource.RequireTarget().Options["declaredChannels"].Should().Be("Exec,FileRead,FileWrite");
+        resource.RequireTarget().Options["rootPath"].Should().Be("/opt/palworld");
+        resource.RequireTarget().DockerContext.Should().BeNull();
     }
 
     [Fact]
@@ -140,7 +140,7 @@ public class ProvisionedSshTargetHandoffTests
         // ledger cannot be different hosts.
         var (resource, host) = await SshProcessProvisionerTests.ProvisionAsync();
 
-        host.Connected.Should().ContainSingle().Which.Should().BeSameAs(resource.Target);
+        host.Connected.Should().ContainSingle().Which.Should().BeSameAs(resource.RequireTarget());
     }
 
     [Fact]
@@ -155,10 +155,10 @@ public class ProvisionedSshTargetHandoffTests
         // Compared field by field rather than with record equality: TargetDescriptor's Options is an
         // IReadOnlyDictionary, which the compiler-generated record Equals compares by reference — the same
         // pre-existing defect the Docker handoff tests pin.
-        refreshed!.Target.TransportId.Should().Be(resource.Target.TransportId);
-        refreshed.Target.Endpoint.Should().Be(resource.Target.Endpoint);
-        refreshed.Target.CredentialUrn.Should().Be(resource.Target.CredentialUrn);
-        refreshed.Target.DockerContext.Should().Be(resource.Target.DockerContext);
-        refreshed.Target.Options.Should().BeEquivalentTo(resource.Target.Options);
+        refreshed!.RequireTarget().TransportId.Should().Be(resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Endpoint.Should().Be(resource.RequireTarget().Endpoint);
+        refreshed.RequireTarget().CredentialUrn.Should().Be(resource.RequireTarget().CredentialUrn);
+        refreshed.RequireTarget().DockerContext.Should().Be(resource.RequireTarget().DockerContext);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 }

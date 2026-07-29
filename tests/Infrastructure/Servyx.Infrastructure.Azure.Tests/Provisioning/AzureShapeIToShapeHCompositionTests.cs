@@ -62,8 +62,8 @@ public class AzureShapeIToShapeHCompositionTests
 
         // Not "azure", not "azure-ssh" - the transport that already existed before this adapter did, asserted
         // against the real transport's own property so the magic string cannot drift.
-        resource.Target.TransportId.Should().Be("ssh");
-        resource.Target.TransportId.Should().Be(RealSshTransport().TransportId);
+        resource.RequireTarget().TransportId.Should().Be("ssh");
+        resource.RequireTarget().TransportId.Should().Be(RealSshTransport().TransportId);
     }
 
     [Fact]
@@ -73,9 +73,9 @@ public class AzureShapeIToShapeHCompositionTests
 
         // SshEndpoint.Parse is literally the first thing SshConnector.OpenAsync does with a descriptor's
         // endpoint, so agreeing with it is agreeing with the transport.
-        var (endpoint, username) = SshEndpoint.Parse(resource.Target.Endpoint);
+        var (endpoint, username) = SshEndpoint.Parse(resource.RequireTarget().Endpoint);
 
-        resource.Target.Endpoint.Should().Be($"ssh://azureuser@{AzureScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://azureuser@{AzureScenario.PublicIp}:22");
         endpoint.Host.Should().Be(AzureScenario.PublicIp);
         endpoint.Port.Should().Be(22);
 
@@ -92,14 +92,14 @@ public class AzureShapeIToShapeHCompositionTests
         // Everything on it is either a key the SSH transport already read before this adapter existed, or the
         // caller's own pass-through option. There is no subscription, no resource group, no ARM id, no NIC -
         // those live on the ResourceHandle, which is where provider-specific state belongs.
-        resource.Target.Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
-        resource.Target.DockerContext.Should().BeNull();
-        resource.Target.CredentialUrn.Should().Be(AzureScenario.SshCredentialUrn);
-        resource.Target.Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
+        resource.RequireTarget().Options.Keys.Should().BeEquivalentTo(["trustPolicy", "declaredChannels", "rootPath"]);
+        resource.RequireTarget().DockerContext.Should().BeNull();
+        resource.RequireTarget().CredentialUrn.Should().Be(AzureScenario.SshCredentialUrn);
+        resource.RequireTarget().Options["rootPath"].Should().Be("/", "shape I hands back a host, which has no per-server data directory");
 
         var rendered = string.Join(
             "|",
-            resource.Target.Options.Select(o => $"{o.Key}={o.Value}").Append(resource.Target.Endpoint));
+            resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}").Append(resource.RequireTarget().Endpoint));
 
         foreach (var vocabulary in new[] { "subscription", "resourceGroup", "Microsoft.Compute", "networkInterface" })
         {
@@ -115,7 +115,7 @@ public class AzureShapeIToShapeHCompositionTests
         // The descriptor instance is passed straight through - no adapter, no copy, no field fix-up. The probe
         // gets as far as credential resolution, which is past endpoint parsing and connector-descriptor
         // construction, and stops there only because a unit test supplies no credentials.
-        var health = await RealSshTransport().ProbeAsync(resource.Target);
+        var health = await RealSshTransport().ProbeAsync(resource.RequireTarget());
 
         health.Reachable.Should().BeFalse();
         health.Detail.Should().Contain("neither a 'password' nor a 'private-key'");
@@ -131,7 +131,7 @@ public class AzureShapeIToShapeHCompositionTests
         docker.TransportId.Returns("docker");
         ITransport[] registered = [docker, RealSshTransport()];
 
-        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.Target.TransportId, StringComparison.Ordinal));
+        var resolved = registered.Single(t => string.Equals(t.TransportId, resource.RequireTarget().TransportId, StringComparison.Ordinal));
 
         resolved.Should().BeOfType<SshTransport>();
         resolved.Capabilities.Should().HaveFlag(TransportCapabilities.ExecuteCommand);
@@ -149,25 +149,25 @@ public class AzureShapeIToShapeHCompositionTests
         // point of doing this twice, no branch on WHICH cloud either.
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         var installed = await installer
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 
-        installed.Target.TransportId.Should().Be(cloud.Target.TransportId);
-        installed.Target.Endpoint.Should().Be(cloud.Target.Endpoint);
-        installed.Target.CredentialUrn.Should().Be(cloud.Target.CredentialUrn);
-        installed.Target.DockerContext.Should().Be(cloud.Target.DockerContext);
-        installed.Target.Options["trustPolicy"].Should().Be(cloud.Target.Options["trustPolicy"]);
-        installed.Target.Options["declaredChannels"].Should().Be(cloud.Target.Options["declaredChannels"]);
+        installed.RequireTarget().TransportId.Should().Be(cloud.RequireTarget().TransportId);
+        installed.RequireTarget().Endpoint.Should().Be(cloud.RequireTarget().Endpoint);
+        installed.RequireTarget().CredentialUrn.Should().Be(cloud.RequireTarget().CredentialUrn);
+        installed.RequireTarget().DockerContext.Should().Be(cloud.RequireTarget().DockerContext);
+        installed.RequireTarget().Options["trustPolicy"].Should().Be(cloud.RequireTarget().Options["trustPolicy"]);
+        installed.RequireTarget().Options["declaredChannels"].Should().Be(cloud.RequireTarget().Options["declaredChannels"]);
 
         // The one option that legitimately changes, and the shape boundary made visible: the host's root path
         // ("/") is replaced by the server's data directory once a server exists on that host.
-        installed.Target.Options["rootPath"].Should().Be("/opt/palworld");
-        cloud.Target.Options["rootPath"].Should().Be("/");
+        installed.RequireTarget().Options["rootPath"].Should().Be("/opt/palworld");
+        cloud.RequireTarget().Options["rootPath"].Should().Be("/");
     }
 
     [Fact]
@@ -178,14 +178,14 @@ public class AzureShapeIToShapeHCompositionTests
 
         var installer = new SshProcessProvisioner(
             host.Transport,
-            endpoint: cloud.Target.Endpoint,
-            credentialUrn: cloud.Target.CredentialUrn,
-            transportOptions: cloud.Target.Options);
+            endpoint: cloud.RequireTarget().Endpoint,
+            credentialUrn: cloud.RequireTarget().CredentialUrn,
+            transportOptions: cloud.RequireTarget().Options);
 
         await installer.CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest())).CreateAsync();
 
         host.Connected.Should().NotBeEmpty();
-        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.Target.Endpoint);
+        host.Connected.Should().OnlyContain(d => d.Endpoint == cloud.RequireTarget().Endpoint);
         SshEndpoint.Parse(host.Connected[0].Endpoint).Endpoint.Host.Should().Be(AzureScenario.PublicIp);
     }
 
@@ -197,9 +197,9 @@ public class AzureShapeIToShapeHCompositionTests
 
         var installed = await new SshProcessProvisioner(
                 host.Transport,
-                endpoint: cloud.Target.Endpoint,
-                credentialUrn: cloud.Target.CredentialUrn,
-                transportOptions: cloud.Target.Options)
+                endpoint: cloud.RequireTarget().Endpoint,
+                credentialUrn: cloud.RequireTarget().CredentialUrn,
+                transportOptions: cloud.RequireTarget().Options)
             .CreateOperation(SshProcessProvisioner.BuildSpec(PalworldInstallRequest()))
             .CreateAsync();
 

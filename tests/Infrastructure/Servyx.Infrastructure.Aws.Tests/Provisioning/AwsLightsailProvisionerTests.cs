@@ -303,9 +303,9 @@ public class AwsLightsailProvisionerTests
             request.Uri.ToString().Should().NotContain(LightsailScenario.SecretAccessKey);
         }
 
-        resource.Target.Endpoint.Should().NotContain(LightsailScenario.SecretAccessKey);
+        resource.RequireTarget().Endpoint.Should().NotContain(LightsailScenario.SecretAccessKey);
         resource.Handle.ProviderResourceId.Should().NotContain(LightsailScenario.SecretAccessKey);
-        resource.Target.Options.Values.Should().NotContain(v => v.Contains(LightsailScenario.SecretAccessKey, StringComparison.Ordinal));
+        resource.RequireTarget().Options.Values.Should().NotContain(v => v.Contains(LightsailScenario.SecretAccessKey, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -350,8 +350,8 @@ public class AwsLightsailProvisionerTests
     {
         var resource = await new LightsailScenario().CreateAsync();
 
-        resource.Target.TransportId.Should().Be("ssh");
-        resource.Target.Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
+        resource.RequireTarget().TransportId.Should().Be("ssh");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public class AwsLightsailProvisionerTests
 
         var resource = await scenario.Provisioner().CreateOperation(LightsailScenario.PalworldInstanceRequest()).CreateAsync();
 
-        resource.Target.Endpoint.Should().StartWith("ssh://bitnami@");
+        resource.RequireTarget().Endpoint.Should().StartWith("ssh://bitnami@");
     }
 
     [Fact]
@@ -375,7 +375,7 @@ public class AwsLightsailProvisionerTests
 
         var resource = await scenario.Provisioner().CreateOperation(LightsailScenario.PalworldInstanceRequest()).CreateAsync();
 
-        resource.Target.Endpoint.Should().StartWith($"ssh://{AwsLightsailProvisioner.FallbackSshUsername}@");
+        resource.RequireTarget().Endpoint.Should().StartWith($"ssh://{AwsLightsailProvisioner.FallbackSshUsername}@");
     }
 
     [Fact]
@@ -481,7 +481,7 @@ public class AwsLightsailProvisionerTests
         var resource = await scenario.Provisioner().RefreshAsync(LightsailScenario.RecordedHandle());
 
         resource.Should().NotBeNull();
-        resource!.Target.Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
+        resource!.RequireTarget().Endpoint.Should().Be($"ssh://{LightsailScenario.Username}@{LightsailScenario.PublicIp}:22");
     }
 
     [Fact]

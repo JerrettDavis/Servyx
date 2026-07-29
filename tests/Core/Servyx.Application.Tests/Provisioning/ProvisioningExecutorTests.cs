@@ -113,7 +113,7 @@ public class ProvisioningExecutorTests
         var actual = await new ProvisioningExecutor(ledger).ExecuteAsync(Operation(expected));
 
         actual.Should().BeSameAs(expected);
-        actual.Target.Should().BeSameAs(expected.Target, "the executor must not translate the descriptor on its way to the caller");
+        actual.RequireTarget().Should().BeSameAs(expected.RequireTarget(), "the executor must not translate the descriptor on its way to the caller");
     }
 
     [Fact]

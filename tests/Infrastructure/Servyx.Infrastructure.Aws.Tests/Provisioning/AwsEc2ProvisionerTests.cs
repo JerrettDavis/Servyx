@@ -144,7 +144,7 @@ public class AwsEc2ProvisionerTests
 
         var resource = await scenario.CreateAsync();
 
-        resource.Target.Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
         resource.Handle.ProvisionerId.Should().Be("aws-ec2");
         resource.Handle.ProviderResourceId.Should().Be(AwsScenario.Ec2InstanceId);
         resource.Handle.Region.Should().Be(AwsScenario.Region);
@@ -300,7 +300,7 @@ public class AwsEc2ProvisionerTests
 
         // With no public address the descriptor names the private one rather than failing: a VPN or bastion
         // deployment is a legitimate shape, and shape I's job is to describe the host it made.
-        resource.Target.Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PrivateIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PrivateIp}:22");
     }
 
     [Fact]
@@ -360,7 +360,7 @@ public class AwsEc2ProvisionerTests
         var resource = await scenario.Provisioner().RefreshAsync(AwsScenario.RecordedHandle());
 
         resource.Should().NotBeNull();
-        resource!.Target.Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
+        resource!.RequireTarget().Endpoint.Should().Be($"ssh://ec2-user@{AwsScenario.PublicIp}:22");
         resource.ConnectorId.Should().Be(AwsScenario.ConnectorId);
     }
 
@@ -761,11 +761,11 @@ public class AwsEc2ProvisionerTests
 
         var rendered = string.Join(
             "\n",
-            resource.Target.TransportId,
-            resource.Target.Endpoint,
-            resource.Target.CredentialUrn ?? string.Empty,
-            resource.Target.DockerContext ?? string.Empty,
-            string.Join(",", resource.Target.Options.Select(o => $"{o.Key}={o.Value}")),
+            resource.RequireTarget().TransportId,
+            resource.RequireTarget().Endpoint,
+            resource.RequireTarget().CredentialUrn ?? string.Empty,
+            resource.RequireTarget().DockerContext ?? string.Empty,
+            string.Join(",", resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}")),
             resource.Handle.ProviderResourceId,
             resource.Handle.Region ?? string.Empty,
             string.Join(",", resource.Handle.Tags.Select(t => $"{t.Key}={t.Value}")),
@@ -782,8 +782,8 @@ public class AwsEc2ProvisionerTests
         rendered.Should().NotContain("AKIA");
 
         // The credential URN on the descriptor is the SSH key's URN, never an AWS credential's.
-        resource.Target.CredentialUrn.Should().Be(AwsScenario.SshCredentialUrn);
-        resource.Target.CredentialUrn.Should().NotBe(AwsScenario.SecretAccessKeyUrn.Value);
+        resource.RequireTarget().CredentialUrn.Should().Be(AwsScenario.SshCredentialUrn);
+        resource.RequireTarget().CredentialUrn.Should().NotBe(AwsScenario.SecretAccessKeyUrn.Value);
     }
 
     [Fact]

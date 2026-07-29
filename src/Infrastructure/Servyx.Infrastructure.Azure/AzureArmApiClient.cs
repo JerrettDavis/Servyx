@@ -67,6 +67,18 @@ internal sealed partial class AzureArmApiClient
     /// <summary>The api-version used for every <c>Microsoft.Compute</c> call.</summary>
     internal const string ComputeApiVersion = "2024-07-01";
 
+    /// <summary>The api-version used for every <c>Microsoft.ContainerInstance</c> call.</summary>
+    /// <remarks>
+    /// A third entry in the mapping below rather than a second API client. ARM versions each resource
+    /// provider independently, so a client that talks to a new provider must know that provider's version —
+    /// there is no default that works, and sending <see cref="ResourcesApiVersion"/> to
+    /// <c>Microsoft.ContainerInstance</c> is rejected rather than silently tolerated. This constant and the
+    /// one line in <see cref="ApiVersionFor"/> that reads it are the <em>only</em> change the container
+    /// adapter required in this file: the token exchange, the token cache, the provisioning-state wait, the
+    /// delete-until-404 poll, the tag sweep and the error handling are all reused exactly as written.
+    /// </remarks>
+    internal const string ContainerInstanceApiVersion = "2023-05-01";
+
     /// <summary>
     /// How long before its stated expiry an access token is treated as already expired.
     /// </summary>
@@ -159,6 +171,7 @@ internal sealed partial class AzureArmApiClient
     internal static string ApiVersionFor(string resourceId) =>
         resourceId.Contains("/Microsoft.Compute/", StringComparison.OrdinalIgnoreCase) ? ComputeApiVersion
         : resourceId.Contains("/Microsoft.Network/", StringComparison.OrdinalIgnoreCase) ? NetworkApiVersion
+        : resourceId.Contains("/Microsoft.ContainerInstance/", StringComparison.OrdinalIgnoreCase) ? ContainerInstanceApiVersion
         : ResourcesApiVersion;
 
     /// <summary>

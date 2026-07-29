@@ -269,7 +269,7 @@ public class DigitalOceanDropletProvisionerTests
         var resource = await provisioner.CreateOperation(spec).CreateAsync();
 
         gets.Should().Be(2);
-        resource.Target.Endpoint.Should().Be($"ssh://root@{DigitalOceanScenario.PublicIp}:22");
+        resource.RequireTarget().Endpoint.Should().Be($"ssh://root@{DigitalOceanScenario.PublicIp}:22");
     }
 
     [Fact]
@@ -333,11 +333,11 @@ public class DigitalOceanDropletProvisionerTests
         // Compared field by field rather than with record equality: TargetDescriptor's Options is an
         // IReadOnlyDictionary, which the compiler-generated record Equals compares by reference - the same
         // pre-existing defect the Docker and SSH handoff tests already pin.
-        refreshed!.Target.TransportId.Should().Be(resource.Target.TransportId);
-        refreshed.Target.Endpoint.Should().Be(resource.Target.Endpoint);
-        refreshed.Target.CredentialUrn.Should().Be(resource.Target.CredentialUrn);
-        refreshed.Target.DockerContext.Should().Be(resource.Target.DockerContext);
-        refreshed.Target.Options.Should().BeEquivalentTo(resource.Target.Options);
+        refreshed!.RequireTarget().TransportId.Should().Be(resource.RequireTarget().TransportId);
+        refreshed.RequireTarget().Endpoint.Should().Be(resource.RequireTarget().Endpoint);
+        refreshed.RequireTarget().CredentialUrn.Should().Be(resource.RequireTarget().CredentialUrn);
+        refreshed.RequireTarget().DockerContext.Should().Be(resource.RequireTarget().DockerContext);
+        refreshed.RequireTarget().Options.Should().BeEquivalentTo(resource.RequireTarget().Options);
     }
 
     [Fact]
@@ -568,11 +568,11 @@ public class DigitalOceanDropletProvisionerTests
 
         var rendered = string.Join(
             "\n",
-            resource.Target.TransportId,
-            resource.Target.Endpoint,
-            resource.Target.CredentialUrn ?? string.Empty,
-            resource.Target.DockerContext ?? string.Empty,
-            string.Join(",", resource.Target.Options.Select(o => $"{o.Key}={o.Value}")),
+            resource.RequireTarget().TransportId,
+            resource.RequireTarget().Endpoint,
+            resource.RequireTarget().CredentialUrn ?? string.Empty,
+            resource.RequireTarget().DockerContext ?? string.Empty,
+            string.Join(",", resource.RequireTarget().Options.Select(o => $"{o.Key}={o.Value}")),
             resource.Handle.ProviderResourceId,
             resource.Handle.Region ?? string.Empty,
             string.Join(",", resource.Handle.Tags.Select(t => $"{t.Key}={t.Value}")),
@@ -588,8 +588,8 @@ public class DigitalOceanDropletProvisionerTests
         rendered.Should().NotContain("dop_v1");
 
         // The credential URN on the descriptor is the SSH key's URN, never the DigitalOcean token's.
-        resource.Target.CredentialUrn.Should().Be(DigitalOceanScenario.SshCredentialUrn);
-        resource.Target.CredentialUrn.Should().NotBe(DigitalOceanScenario.TokenUrn.Value);
+        resource.RequireTarget().CredentialUrn.Should().Be(DigitalOceanScenario.SshCredentialUrn);
+        resource.RequireTarget().CredentialUrn.Should().NotBe(DigitalOceanScenario.TokenUrn.Value);
     }
 
     [Fact]
