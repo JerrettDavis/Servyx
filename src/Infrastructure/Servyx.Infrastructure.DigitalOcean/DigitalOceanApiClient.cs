@@ -16,7 +16,8 @@ namespace Servyx.Infrastructure.DigitalOcean;
 /// <strong>Hand-rolled on purpose.</strong> DigitalOcean publishes no first-party .NET SDK, and the community
 /// clients are unmaintained. Rather than take an abandoned dependency, this type uses
 /// <c>System.Net.Http</c> + <c>System.Net.Http.Json</c> + <c>System.Text.Json</c>, all of which ship in the
-/// shared framework. The surface it needs is four calls wide, which is well under the cost of a dependency.
+/// shared framework. The surface it needs is a handful of calls wide, which is well under the cost of a
+/// dependency.
 /// </para>
 /// <para>
 /// <strong>The token is never a field.</strong> <see cref="SendAsync"/> resolves the API token from
@@ -46,6 +47,12 @@ internal sealed class DigitalOceanApiClient
     /// unbounded loop. 200 pages × 200 droplets is far beyond any realistic Servyx account.
     /// </summary>
     private const int MaxSweepPages = 200;
+
+    /// <summary>The action status DigitalOcean reports once an action has finished successfully.</summary>
+    private const string ActionCompleted = "completed";
+
+    /// <summary>The action status DigitalOcean reports for an action that finished unsuccessfully.</summary>
+    private const string ActionErrored = "errored";
 
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
     {
@@ -164,6 +171,132 @@ internal sealed class DigitalOceanApiClient
     }
 
     /// <summary>
+    /// Submits a <em>CPU-and-memory-only</em> resize of one droplet and returns the action DigitalOcean
+    /// created to track it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The returned action is a receipt, not an outcome.</strong> DigitalOcean answers this POST
+    /// while the resize is still queued, so the action almost always comes back <c>in-progress</c>. Nothing
+    /// may treat a successful return from this method as a completed resize; that is what
+    /// <see cref="PollActionAsync"/> is for.
+    /// </para>
+    /// <para>
+    /// <strong>The disk is never grown.</strong> The body is a <see cref="ResizeDropletActionRequest"/>,
+    /// whose <c>disk</c> member is a get-only <see langword="false"/> — see that type's remarks. This method
+    /// takes no flag that could change it, so the irreversible disk-inclusive resize is not reachable from
+    /// here by any argument.
+    /// </para>
+    /// </remarks>
+    internal async Task<DropletActionResource> ResizeDropletAsync(long dropletId, string sizeSlug, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(sizeSlug);
+
+        using var request = new HttpRequestMessage(
+            HttpMethod.Post,
+            string.Create(CultureInfo.InvariantCulture, $"v2/droplets/{dropletId}/actions"))
+        {
+            Content = JsonContent.Create(
+                new ResizeDropletActionRequest { Size = sizeSlug },
+                options: SerializerOptions),
+        };
+
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
+        await EnsureSuccessAsync(response, "resize a droplet", ct).ConfigureAwait(false);
+
+        var envelope = await ReadAsync<DropletActionEnvelope>(response, ct).ConfigureAwait(false);
+        return envelope?.Action
+            ?? throw new DigitalOceanApiException(
+                response.StatusCode,
+                "DigitalOcean accepted the droplet resize request but returned no action object, so Servyx has no "
+                + "action id to poll and cannot tell whether the resize ran. Re-read the droplet before retrying: a "
+                + "second resize submitted against a droplet already being resized is a second mutation, not a retry.");
+    }
+
+    /// <summary>Reads one action by id, or <see langword="null"/> if the provider does not report it.</summary>
+    internal async Task<DropletActionResource?> GetActionAsync(long actionId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            string.Create(CultureInfo.InvariantCulture, $"v2/actions/{actionId}"));
+
+        using var response = await SendAsync(request, ct).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            return null;
+        }
+
+        await EnsureSuccessAsync(response, "read a droplet action", ct).ConfigureAwait(false);
+
+        var envelope = await ReadAsync<DropletActionEnvelope>(response, ct).ConfigureAwait(false);
+        return envelope?.Action;
+    }
+
+    /// <summary>
+    /// Re-reads action <paramref name="actionId"/> until DigitalOcean reports it <c>completed</c> or
+    /// <c>errored</c>, or until <paramref name="attempts"/> reads have been made without either.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Three outcomes, and the third is not a failure.</strong> An action that is still
+    /// <c>in-progress</c> when the last attempt is spent yields
+    /// <see cref="DropletActionOutcome.StillInProgress"/> — distinct from
+    /// <see cref="DropletActionOutcome.Errored"/> because the two demand opposite responses: an errored
+    /// action is over and may be retried, whereas a running one is not over, and "retrying" it submits the
+    /// same mutation a second time. Collapsing them into one failure answer is precisely the mistake this
+    /// signature is shaped to prevent.
+    /// </para>
+    /// <para>
+    /// An action the API does not return at all (404) is treated as "not yet observable" rather than as
+    /// success or failure, so it keeps the poll running and, if it never resolves, ends as
+    /// <see cref="DropletActionOutcome.StillInProgress"/>. That is the safe direction: the one thing this
+    /// method must never do is report an unconfirmed mutation as finished.
+    /// </para>
+    /// </remarks>
+    /// <param name="actionId">The action to watch.</param>
+    /// <param name="interval">How long to wait between reads. <see cref="TimeSpan.Zero"/> polls back-to-back.</param>
+    /// <param name="attempts">How many reads to make before giving up. At least one.</param>
+    /// <param name="timeProvider">The clock the waits are taken against, so tests need not really wait.</param>
+    /// <param name="ct">Cancellation token.</param>
+    internal async Task<DropletActionPoll> PollActionAsync(
+        long actionId,
+        TimeSpan interval,
+        int attempts,
+        TimeProvider timeProvider,
+        CancellationToken ct)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(attempts, 1);
+        ArgumentNullException.ThrowIfNull(timeProvider);
+
+        string? status = null;
+        string? message = null;
+
+        for (var poll = 1; poll <= attempts; poll++)
+        {
+            var action = await GetActionAsync(actionId, ct).ConfigureAwait(false);
+            status = action?.Status;
+            message = action?.Message;
+
+            if (string.Equals(status, ActionCompleted, StringComparison.Ordinal))
+            {
+                return new DropletActionPoll(DropletActionOutcome.Completed, actionId, status, message, poll);
+            }
+
+            if (string.Equals(status, ActionErrored, StringComparison.Ordinal))
+            {
+                return new DropletActionPoll(DropletActionOutcome.Errored, actionId, status, message, poll);
+            }
+
+            if (poll < attempts && interval > TimeSpan.Zero)
+            {
+                await Task.Delay(interval, timeProvider, ct).ConfigureAwait(false);
+            }
+        }
+
+        return new DropletActionPoll(DropletActionOutcome.StillInProgress, actionId, status, message, attempts);
+    }
+
+    /// <summary>
     /// Stamps a freshly-resolved bearer token onto <paramref name="request"/> and sends it.
     /// </summary>
     /// <remarks>
@@ -221,6 +354,41 @@ internal sealed class DigitalOceanApiClient
                 $"DigitalOcean refused the attempt to {attempted}: HTTP {(int)response.StatusCode} {response.ReasonPhrase}. {detail}").Trim());
     }
 }
+
+/// <summary>
+/// How a polled DigitalOcean action ended, from this adapter's point of view.
+/// </summary>
+/// <remarks>
+/// Three values, not two: <see cref="StillInProgress"/> is neither a success nor a failure, and giving it
+/// its own name is what stops an unfinished mutation being reported as either.
+/// </remarks>
+internal enum DropletActionOutcome
+{
+    /// <summary>DigitalOcean reported the action <c>completed</c>. The only success.</summary>
+    Completed = 1,
+
+    /// <summary>DigitalOcean reported the action <c>errored</c>. The operation is over and it did not work.</summary>
+    Errored = 2,
+
+    /// <summary>
+    /// The attempts were spent and DigitalOcean had still not reported the action finished. The operation
+    /// may yet complete at the provider; nothing here knows either way.
+    /// </summary>
+    StillInProgress = 3,
+}
+
+/// <summary>The result of watching one DigitalOcean action to a conclusion — or to a timeout.</summary>
+/// <param name="Outcome">Which of the three ends was reached.</param>
+/// <param name="ActionId">The action that was watched, so an operator can look it up at the provider.</param>
+/// <param name="Status">The last status DigitalOcean reported, or <see langword="null"/> if it reported none.</param>
+/// <param name="Message">The provider's own explanatory message, when it supplied one.</param>
+/// <param name="Polls">How many reads were made. Evidence that the answer came from an observation.</param>
+internal sealed record DropletActionPoll(
+    DropletActionOutcome Outcome,
+    long ActionId,
+    string? Status,
+    string? Message,
+    int Polls);
 
 /// <summary>
 /// A DigitalOcean API call that did not succeed.

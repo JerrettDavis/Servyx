@@ -71,23 +71,26 @@ namespace Servyx.Infrastructure.DigitalOcean.Provisioning;
 /// </para>
 /// <para>
 /// <strong>Capabilities are what is implemented, not what DigitalOcean offers.</strong> DigitalOcean's API
-/// can resize droplets, snapshot them, attach reserved IPs and manage cloud firewalls; this adapter calls none
-/// of those, so <see cref="ProvisioningCapabilities.Resize"/>, <see cref="ProvisioningCapabilities.Snapshot"/>,
-/// <see cref="ProvisioningCapabilities.StaticAddress"/> and <see cref="ProvisioningCapabilities.FirewallRules"/>
-/// are all absent. In particular a <see cref="MachineSpec.Ingress"/> rule is <em>described in the plan as not
-/// applied</em> rather than quietly ignored, because a caller who believed a port had been opened when nothing
-/// had would expose a server it thought was firewalled.
+/// can resize droplets, snapshot them, attach reserved IPs and manage cloud firewalls; this adapter
+/// snapshots nothing, attaches no reserved IP and manages no firewall, so
+/// <see cref="ProvisioningCapabilities.Snapshot"/>, <see cref="ProvisioningCapabilities.StaticAddress"/> and
+/// <see cref="ProvisioningCapabilities.FirewallRules"/> are all absent. In particular a
+/// <see cref="MachineSpec.Ingress"/> rule is <em>described in the plan as not applied</em> rather than
+/// quietly ignored, because a caller who believed a port had been opened when nothing had would expose a
+/// server it thought was firewalled.
 /// </para>
 /// <para>
-/// <strong>Maintenance is preview-only, and on a cloud machine that distinction is the whole safety
-/// story.</strong> This type also implements <see cref="IMaintainer"/> — in
-/// <c>DigitalOceanDropletProvisioner.Maintenance.cs</c>, whose remarks carry the full reasoning. Both members
-/// there read the live droplet and produce a description: an <see cref="UpdatePlan"/> or a
-/// <see cref="DriftResult"/>. Neither issues a mutating request, there is no resize, rebuild or destroy call
-/// anywhere on that path, and this solution has no executor that applies an <see cref="UpdatePlan"/>. That
-/// matters more here than it does for the container adapter: recreating a container discards a writable
-/// layer, whereas rebuilding a droplet erases the machine's disk outright, so the plan is a description of
-/// that outcome rather than a step towards it.
+/// <strong>Maintenance is preview-only with exactly one exception, and that exception is the reversible
+/// half.</strong> This type implements <see cref="IMaintainer"/> in
+/// <c>DigitalOceanDropletProvisioner.Maintenance.cs</c>, whose remarks carry the full reasoning: both
+/// members there read the live droplet and produce a description — an <see cref="UpdatePlan"/> or a
+/// <see cref="DriftResult"/> — and neither issues a mutating request. The one execution path that exists is
+/// <see cref="IUpdateApplier"/> in <c>DigitalOceanDropletProvisioner.Resize.cs</c>, and it will carry out a
+/// <em>CPU-and-memory-only resize</em> and nothing else: a plan describing a rebuild, an image change or a
+/// region change is refused there without a provider call, exactly as it was before that file existed. That
+/// asymmetry is deliberate. Recreating a container discards a writable layer; rebuilding a droplet erases
+/// the machine's disk outright, so for that operation the plan remains a description of the outcome rather
+/// than a step towards it.
 /// </para>
 /// </remarks>
 public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
@@ -135,6 +138,8 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
     private readonly TimeProvider _timeProvider;
     private readonly TimeSpan _addressPollInterval;
     private readonly int _addressPollAttempts;
+    private readonly TimeSpan _actionPollInterval;
+    private readonly int _actionPollAttempts;
 
     /// <summary>
     /// Creates a provisioner acting on the DigitalOcean account whose token is stored at
@@ -171,6 +176,15 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
     /// <param name="timeProvider">Clock used for plan expiry and for waiting on a new droplet's address.</param>
     /// <param name="addressPollInterval">How long to wait between address polls. Defaults to five seconds.</param>
     /// <param name="addressPollAttempts">How many address polls to make before giving up. Defaults to 60.</param>
+    /// <param name="actionPollInterval">
+    /// How long to wait between reads of a droplet action while an approved resize runs. Defaults to five
+    /// seconds.
+    /// </param>
+    /// <param name="actionPollAttempts">
+    /// How many action reads to make before reporting the resize as still in progress. Defaults to 60, which
+    /// at the default interval is five minutes — long enough for a normal droplet resize and deliberately
+    /// finite, because waiting forever would turn "still running" into "hung".
+    /// </param>
     public DigitalOceanDropletProvisioner(
         HttpClient httpClient,
         ISecretStore secretStore,
@@ -180,10 +194,13 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
         string sshUsername = DefaultSshUsername,
         TimeProvider? timeProvider = null,
         TimeSpan? addressPollInterval = null,
-        int addressPollAttempts = 60)
+        int addressPollAttempts = 60,
+        TimeSpan? actionPollInterval = null,
+        int actionPollAttempts = 60)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sshUsername);
         ArgumentOutOfRangeException.ThrowIfLessThan(addressPollAttempts, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(actionPollAttempts, 1);
 
         _api = new DigitalOceanApiClient(httpClient, secretStore, apiTokenUrn);
         _sshCredentialUrn = sshCredentialUrn;
@@ -194,6 +211,8 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
         _timeProvider = timeProvider ?? TimeProvider.System;
         _addressPollInterval = addressPollInterval ?? TimeSpan.FromSeconds(5);
         _addressPollAttempts = addressPollAttempts;
+        _actionPollInterval = actionPollInterval ?? TimeSpan.FromSeconds(5);
+        _actionPollAttempts = actionPollAttempts;
     }
 
     /// <inheritdoc />
@@ -208,9 +227,9 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
     /// <see cref="ProvisioningCapabilities.EstimatesCost"/> is present because
     /// <see cref="DigitalOceanDropletPricing"/> carries real published list prices; it answers
     /// <see cref="CostEstimate.Unknown"/> for any size it does not know rather than approximating.
-    /// <see cref="ProvisioningCapabilities.Resize"/>, <see cref="ProvisioningCapabilities.Snapshot"/>,
-    /// <see cref="ProvisioningCapabilities.StaticAddress"/> and
-    /// <see cref="ProvisioningCapabilities.FirewallRules"/> are all deliberately absent — see the type remarks.
+    /// <see cref="ProvisioningCapabilities.Snapshot"/>, <see cref="ProvisioningCapabilities.StaticAddress"/>
+    /// and <see cref="ProvisioningCapabilities.FirewallRules"/> are all deliberately absent — see the type
+    /// remarks.
     /// <para>
     /// <strong>The three maintenance bits, and exactly what each one means here.</strong>
     /// <see cref="ProvisioningCapabilities.DetectDrift"/> is the registry-backed form: the comparison reads
@@ -229,10 +248,18 @@ public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
     /// happens.
     /// </para>
     /// <para>
-    /// Note what none of the three implies: nothing on this type performs a resize, a rebuild or a retag.
-    /// <see cref="ProvisioningCapabilities.Resize"/> stays absent for precisely that reason — being able to
-    /// <em>plan</em> a resize is not being able to do one, and no code path in this assembly issues
-    /// <c>POST /v2/droplets/{id}/actions</c> at all.
+    /// Note what none of the three implies: nothing on this type performs a rebuild or a retag, and no code
+    /// path in this assembly issues a rebuild action.
+    /// </para>
+    /// <para>
+    /// <strong><see cref="ProvisioningCapabilities.Resize"/> stays absent even though a resize can now be
+    /// executed.</strong> That is an understatement, and it is the safe direction of one:
+    /// <see cref="IUpdateApplier"/> — implemented in <c>DigitalOceanDropletProvisioner.Resize.cs</c> — will
+    /// carry out an approved CPU-and-memory-only resize, so a caller establishes that ability by the type
+    /// test the interface exists for, which is checkable, rather than by reading a flag. The flag describes
+    /// a broader promise (resizing on request, including the disk-inclusive form this adapter refuses to
+    /// issue at all) that this adapter still does not make. Claiming it would overstate what a caller can
+    /// ask for; leaving it absent understates only what a caller can already discover.
     /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>

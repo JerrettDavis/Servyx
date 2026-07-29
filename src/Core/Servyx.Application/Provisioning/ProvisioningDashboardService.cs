@@ -234,7 +234,30 @@ public sealed class ProvisioningDashboardService : IProvisioningDashboard
             return new UpdateApplyResult.NoChangeRequired(current.PlanHash);
         }
 
-        // Step 3 — build the provider-specific mutation. Still inert: CreateOperation commits nothing.
+        // Step 3 — if the adapter can genuinely apply an update to the resource that already exists, that is
+        // what an update means and that is what runs. The type test is the capability check, exactly as it is
+        // for IMaintainer above, and it sits *after* every refusal: there is no path to an IUpdateApplier that
+        // skips the plan-hash revalidation or the acknowledgement, because both are above this line.
+        if (provisioner is IUpdateApplier applier)
+        {
+            // The approved hash is handed on rather than the recomputed one, so the adapter re-checks the same
+            // approval this method checked rather than a value derived from its own work.
+            var execution = await applier
+                .ApplyUpdateAsync(handle, current, approvedPlanHash, ct)
+                .ConfigureAwait(false);
+
+            // Every non-completed outcome — refused, failed, or accepted-but-not-confirmed — is reported as a
+            // failure carrying the adapter's own message, which states which of the three it was and what to do
+            // about it. The ledger row id is Guid.Empty and compensation is reported complete because both are
+            // literally true here: this path writes no write-ahead row and creates no resource, so there is no
+            // row for a sweep to resolve and nothing that could have been orphaned. That is the opposite of the
+            // create path, where a failure means something may exist and may be billing.
+            return execution is UpdateExecutionResult.Completed completed
+                ? new UpdateApplyResult.Applied(completed.Resource, current.PlanHash, current.Strategy, current.DataImpact)
+                : new UpdateApplyResult.Failed(execution.Message, ledgerRowId: Guid.Empty, compensated: true);
+        }
+
+        // Step 3 (fallback) — build the provider-specific mutation. Still inert: CreateOperation commits nothing.
         var operation = provisioner.CreateOperation(desired);
 
         try

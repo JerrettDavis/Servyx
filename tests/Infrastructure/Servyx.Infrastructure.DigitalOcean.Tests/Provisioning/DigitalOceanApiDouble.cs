@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 
 using Servyx.Domain.Secrets;
 
@@ -70,7 +71,100 @@ internal sealed class DigitalOceanApiDouble : HttpMessageHandler
             body);
 
         Requests.Add(recorded);
+        RejectDiskInclusiveRequest(recorded);
         return Responder(recorded);
+    }
+
+    /// <summary>
+    /// The suite-wide guarantee that <strong>no</strong> request this assembly's adapter ever builds asks
+    /// DigitalOcean to grow a droplet's boot disk.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Enforced here, in the one place every request in the suite passes through, rather than as an
+    /// assertion each individual test remembers to make — a per-test assertion only covers the requests that
+    /// test happens to trigger, and the claim being made is about all of them. Any request body that sets a
+    /// <c>disk</c> member to <see langword="true"/>, at any depth, fails the test where it was issued.
+    /// </para>
+    /// <para>
+    /// <c>disk: true</c> is DigitalOcean's irreversible resize: it grows the boot disk permanently and
+    /// permanently prevents the droplet from ever being resized down again. The production code makes it
+    /// unrepresentable (see <c>ResizeDropletActionRequest.Disk</c>, a property with no setter); this is the
+    /// independent check that the wire agrees, since a serializer setting is not a compiler guarantee.
+    /// </para>
+    /// <para>
+    /// Only <em>request</em> bodies are inspected. A droplet <em>response</em> reports its disk size as a
+    /// number, which is not a boolean and never trips this.
+    /// </para>
+    /// </remarks>
+    private static void RejectDiskInclusiveRequest(RecordedRequest recorded)
+    {
+        if (recorded.Body is not { Length: > 0 } body || !body.TrimStart().StartsWith('{'))
+        {
+            return;
+        }
+
+        JsonDocument document;
+        try
+        {
+            document = JsonDocument.Parse(body);
+        }
+        catch (JsonException)
+        {
+            // Not JSON at all, so it cannot be a JSON member set to true.
+            return;
+        }
+
+        using (document)
+        {
+            if (!SetsDiskTrue(document.RootElement))
+            {
+                return;
+            }
+        }
+
+        throw new InvalidOperationException(
+            $"The adapter sent a request to '{recorded.Uri}' whose body sets \"disk\": true. That is "
+            + "DigitalOcean's irreversible disk-growing resize, which Servyx never issues: it cannot be undone "
+            + $"and permanently prevents the droplet from being resized down again. Body: {body}");
+    }
+
+    /// <summary>Whether <paramref name="element"/> contains a <c>disk</c> member set to <c>true</c>, at any depth.</summary>
+    private static bool SetsDiskTrue(JsonElement element)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (string.Equals(property.Name, "disk", StringComparison.OrdinalIgnoreCase)
+                        && property.Value.ValueKind == JsonValueKind.True)
+                    {
+                        return true;
+                    }
+
+                    if (SetsDiskTrue(property.Value))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                {
+                    if (SetsDiskTrue(item))
+                    {
+                        return true;
+                    }
+                }
+
+                return false;
+
+            default:
+                return false;
+        }
     }
 }
 

@@ -126,6 +126,94 @@ internal sealed class DropletNetworkV4
     public string? Type { get; init; }
 }
 
+/// <summary>The <c>{ "action": { ... } }</c> envelope returned by droplet actions and by action reads.</summary>
+internal sealed class DropletActionEnvelope
+{
+    [JsonPropertyName("action")]
+    public DropletActionResource? Action { get; init; }
+}
+
+/// <summary>
+/// A DigitalOcean action — the asynchronous receipt for a mutation, returned by
+/// <c>POST /v2/droplets/{id}/actions</c> and re-read from <c>GET /v2/actions/{id}</c>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong><see cref="Status"/> is the whole point of this type.</strong> DigitalOcean answers the mutating
+/// POST immediately, with an action whose status is almost always <c>in-progress</c>: the resize has not
+/// happened yet, and treating that response as success would report a droplet as resized while it was still
+/// powered off mid-operation. The three statuses are <c>in-progress</c>, <c>completed</c> and <c>errored</c>,
+/// and only the second is success.
+/// </para>
+/// <para>
+/// <see cref="Message"/> is not part of DigitalOcean's documented action schema, but the API does attach a
+/// human-readable message to some error payloads. It is read so that when the provider explains why an
+/// action errored, that explanation reaches the operator verbatim instead of being replaced by this
+/// adapter's guess.
+/// </para>
+/// </remarks>
+internal sealed class DropletActionResource
+{
+    [JsonPropertyName("id")]
+    public long Id { get; init; }
+
+    [JsonPropertyName("status")]
+    public string? Status { get; init; }
+
+    [JsonPropertyName("type")]
+    public string? Type { get; init; }
+
+    [JsonPropertyName("resource_id")]
+    public long? ResourceId { get; init; }
+
+    [JsonPropertyName("completed_at")]
+    public DateTimeOffset? CompletedAt { get; init; }
+
+    [JsonPropertyName("message")]
+    public string? Message { get; init; }
+}
+
+/// <summary>
+/// The body sent to <c>POST /v2/droplets/{id}/actions</c> to resize a droplet's CPU and memory allocation.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong><c>disk</c> is a property with no setter that returns <see langword="false"/>, and that is the
+/// whole design of this type.</strong> DigitalOcean's resize action takes a <c>disk</c> boolean.
+/// <c>disk: false</c> changes the CPU and RAM allocation only: the boot disk is untouched and the operation
+/// can be reversed later. <c>disk: true</c> additionally grows the boot disk, is irreversible, and
+/// permanently prevents the droplet from ever being resized down again. A constructor parameter that
+/// happened to default to <see langword="false"/> would leave "Servyx never grows a droplet's disk" as a
+/// property of every call site; a get-only <see langword="false"/> leaves it as a property of the program.
+/// There is no expression in this assembly that produces a resize body with <c>disk</c> set to
+/// <see langword="true"/>, because there is no member that could be assigned.
+/// </para>
+/// <para>
+/// <c>type</c> is fixed for the same reason and it is not cosmetic: the <em>only</em> difference between the
+/// request that changes a droplet's CPU allocation and the request that erases its boot disk is that string.
+/// A <c>rebuild</c> is not reachable by supplying a different value to this type, because this type has no
+/// value to supply.
+/// </para>
+/// </remarks>
+internal sealed class ResizeDropletActionRequest
+{
+    /// <summary>Always <c>resize</c>. Not settable, so no other action type can be issued through this body.</summary>
+    [JsonPropertyName("type")]
+    public string Type => "resize";
+
+    /// <summary>The size slug to move the droplet to.</summary>
+    [JsonPropertyName("size")]
+    public required string Size { get; init; }
+
+    /// <summary>
+    /// Always <see langword="false"/>: the CPU-and-memory-only form. Not settable, and deliberately never
+    /// omitted — DigitalOcean's default for an absent <c>disk</c> member is not something this adapter is
+    /// willing to depend on when the irreversible operation is on the other side of it.
+    /// </summary>
+    [JsonPropertyName("disk")]
+    public bool Disk => false;
+}
+
 /// <summary>The body sent to <c>POST /v2/droplets</c>.</summary>
 /// <remarks>
 /// <c>user_data</c> is null unless the caller supplied cloud-init of their own — nothing in this assembly

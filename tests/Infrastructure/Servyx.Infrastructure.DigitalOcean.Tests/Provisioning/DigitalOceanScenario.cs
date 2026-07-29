@@ -57,7 +57,17 @@ internal sealed class DigitalOceanScenario
     };
 
     /// <summary>Builds a provisioner over this scenario's API double and secret store.</summary>
-    internal DigitalOceanDropletProvisioner Provisioner(bool withToken = true, string sshUsername = "root")
+    /// <param name="withToken">Whether the API token is present in the secret store.</param>
+    /// <param name="sshUsername">The username produced descriptors authenticate as.</param>
+    /// <param name="actionPollAttempts">
+    /// How many times an approved resize re-reads its DigitalOcean action before reporting it as still in
+    /// progress. Three by default so the "still running when the polls are spent" case is reachable in a
+    /// test; the interval is always zero here, so the suite never actually waits.
+    /// </param>
+    internal DigitalOceanDropletProvisioner Provisioner(
+        bool withToken = true,
+        string sshUsername = "root",
+        int actionPollAttempts = 3)
     {
         if (withToken)
         {
@@ -73,7 +83,9 @@ internal sealed class DigitalOceanScenario
             sshUsername: sshUsername,
             timeProvider: TimeProvider.System,
             addressPollInterval: TimeSpan.Zero,
-            addressPollAttempts: 3);
+            addressPollAttempts: 3,
+            actionPollInterval: TimeSpan.Zero,
+            actionPollAttempts: actionPollAttempts);
     }
 
     /// <summary>A provisioning request for a Palworld-sized droplet, mirroring a cloud deployment profile.</summary>

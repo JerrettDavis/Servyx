@@ -44,12 +44,19 @@ namespace Servyx.Infrastructure.DigitalOcean.Provisioning;
 /// </description></item>
 /// </list>
 /// <para>
-/// <strong>Nothing here executes, and there is no path from here to something that does.</strong> This file
-/// issues exactly one HTTP request per call — <c>GET /v2/droplets/{id}</c> — and it is a read. There is no
-/// call to <c>POST /v2/droplets/{id}/actions</c> anywhere in this assembly, so no resize and no rebuild is
-/// reachable from any code Servyx ships, whatever an <see cref="UpdatePlan"/> says. Applying a plan that
-/// destroys a cloud machine's disk deserves its own reviewed change; this is the half that can be shipped
-/// without one.
+/// <strong>Nothing in this file executes.</strong> It issues exactly one HTTP request per call —
+/// <c>GET /v2/droplets/{id}</c> — and it is a read. Producing an <see cref="UpdatePlan"/> here changes
+/// nothing, whatever the plan says.
+/// </para>
+/// <para>
+/// <strong>Exactly one of the three differences above can now be applied, and it is the reversible
+/// one.</strong> <c>DigitalOceanDropletProvisioner.Resize.cs</c> implements <see cref="IUpdateApplier"/> and
+/// issues <c>POST /v2/droplets/{id}/actions</c> for the <c>disk: false</c> resize — reachable only through
+/// an already-revalidated, already-approved plan. <strong>Rebuild is still not implemented anywhere in this
+/// assembly</strong>, and neither is anything for the region case, which has no operation to implement. A
+/// plan whose <see cref="DataImpact"/> is <see cref="DataImpact.Destroyed"/> is refused by that file without
+/// a provider call. Applying a plan that erases a cloud machine's disk deserves its own reviewed change; it
+/// has not had one, so it does not exist.
 /// </para>
 /// </remarks>
 public sealed partial class DigitalOceanDropletProvisioner : IMaintainer
