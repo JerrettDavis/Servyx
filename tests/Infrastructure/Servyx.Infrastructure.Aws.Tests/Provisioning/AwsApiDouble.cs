@@ -35,8 +35,23 @@ internal sealed record RecordedRequest(
     internal bool IsLightsail => Uri.Host.StartsWith("lightsail.", StringComparison.Ordinal)
         && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
 
+    /// <summary>Whether this request went to a regional ECS endpoint.</summary>
+    internal bool IsEcs => Uri.Host.StartsWith("ecs.", StringComparison.Ordinal)
+        && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
+
     /// <summary>The Lightsail action this request names, read off the <see cref="Target"/> header.</summary>
     internal string? LightsailAction => Target is null ? null : Target[(Target.IndexOf('.') + 1)..];
+
+    /// <summary>
+    /// The ECS action this request names, read off the <see cref="Target"/> header.
+    /// </summary>
+    /// <remarks>
+    /// Textually identical to <see cref="LightsailAction"/>, and deliberately a separate member rather than a
+    /// rename: both services speak AWS JSON 1.1, so the extraction is protocol-level, but a test asserting about
+    /// an ECS call reading a property named after Lightsail would be a small lie in the place a reader is most
+    /// likely to trust it.
+    /// </remarks>
+    internal string? EcsAction => Target is null ? null : Target[(Target.IndexOf('.') + 1)..];
 
     /// <summary>The EC2 Query <c>Action</c> this request names, wherever the parameters happen to live.</summary>
     /// <remarks>
