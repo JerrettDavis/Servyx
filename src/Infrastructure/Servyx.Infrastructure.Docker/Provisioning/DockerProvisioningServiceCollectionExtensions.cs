@@ -78,6 +78,13 @@ public static class DockerProvisioningServiceCollectionExtensions
         // calls this method, so it has no IMaintainer at all, exactly as it has no IProvisioner.
         services.AddSingleton<IMaintainer>(sp => sp.GetRequiredService<DockerContainerProvisioner>());
 
+        // Patch detection rides on the same instance for the same reasons, and is read-only for a stronger
+        // one: it never pulls, so it grants no ability to write to the host's image store. It is published
+        // here rather than in AddServyxDocker() so that a host with Servyx:Provisioning:Enabled off has no
+        // IPatchDetector at all — and because a detector built from a different endpoint than the
+        // descriptors name would answer "is a patch available?" about the wrong daemon's image store.
+        services.AddSingleton<IPatchDetector>(sp => sp.GetRequiredService<DockerContainerProvisioner>());
+
         return services;
     }
 }
