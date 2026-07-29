@@ -41,6 +41,19 @@ internal sealed class RecordingLocalHost : ITransport
     /// <summary>Every descriptor the provisioner connected with.</summary>
     internal List<TargetDescriptor> Connected { get; } = [];
 
+    /// <summary>
+    /// When set, every session this host hands back is wrapped in the production
+    /// <see cref="WriteGuardedExecutionTarget"/> in that mode, exactly as a composition root registering the
+    /// transport behind <c>WriteGuardedTransport</c> would produce.
+    /// </summary>
+    /// <remarks>
+    /// Null by default, so every test written before this property existed still gets an unguarded session and
+    /// behaves identically. It exists because the guard gates file writes and deliberately does <em>not</em>
+    /// gate command execution, so "a read-only server refuses the whole update before running anything" is a
+    /// claim only a real guard can pin.
+    /// </remarks>
+    internal WriteMode? GuardMode { get; set; }
+
     /// <inheritdoc />
     public Task<TargetHealth> ProbeAsync(TargetDescriptor target, CancellationToken ct = default) =>
         new LocalProcessTransport().ProbeAsync(target, ct);
@@ -50,7 +63,14 @@ internal sealed class RecordingLocalHost : ITransport
     {
         Connected.Add(target);
         var inner = new LocalExecutionTarget(LocalProcessTransport.ResolveRootPath(target));
-        return Task.FromResult<IExecutionTarget>(new RecordingExecutionTarget(this, inner));
+        IExecutionTarget session = new RecordingExecutionTarget(this, inner);
+
+        if (GuardMode is { } mode)
+        {
+            session = new WriteGuardedExecutionTarget(session, mode, target.Endpoint);
+        }
+
+        return Task.FromResult(session);
     }
 
     /// <summary>Forgets everything recorded so far, so a test can assert on a single phase in isolation.</summary>

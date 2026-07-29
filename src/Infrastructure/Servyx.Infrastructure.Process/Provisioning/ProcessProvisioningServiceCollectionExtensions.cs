@@ -69,6 +69,17 @@ public static class ProcessProvisioningServiceCollectionExtensions
 
         services.AddSingleton<IProvisioner>(sp => sp.GetRequiredService<LocalProcessProvisioner>());
 
+        // The maintenance half — update planning and drift detection — rides on the same instance and is
+        // published here rather than from AddServyxLocalProcess(), mirroring AddServyxSshProvisioning() and
+        // AddServyxDockerProvisioning(). Every member of IMaintainer is read-only, so this line grants no new
+        // mutating capability; it stays behind this opt-in method so a host with
+        // Servyx:Provisioning:Enabled off — which never calls this method — has no IMaintainer at all, exactly
+        // as it has no IProvisioner. Update *execution* (IUpdateApplier) is deliberately not published as its
+        // own service: a caller reaches it by type-testing the IProvisioner it already holds, which is how
+        // ProvisioningDashboardService finds it, so there is no separate handle to an applier for a
+        // composition root to acquire by accident.
+        services.AddSingleton<IMaintainer>(sp => sp.GetRequiredService<LocalProcessProvisioner>());
+
         return services;
     }
 }

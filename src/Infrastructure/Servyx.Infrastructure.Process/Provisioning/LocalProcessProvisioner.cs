@@ -43,8 +43,16 @@ namespace Servyx.Infrastructure.Process.Provisioning;
 /// <see cref="ProvisioningCapabilities.FirewallRules"/>, because this provisioner does not touch the machine's
 /// firewall and advertising the capability would let a caller believe a port had been opened when nothing had.
 /// </para>
+/// <para>
+/// <strong>Maintenance and update execution live in their own files.</strong> This type also implements
+/// <see cref="IMaintainer"/> (see <c>LocalProcessProvisioner.Maintenance.cs</c>) and
+/// <see cref="IUpdateApplier"/> (see <c>LocalProcessProvisioner.Update.cs</c>). The split is the same one the
+/// EC2, Azure and DigitalOcean adapters draw, and for the same reason: the read-only half — drift detection and
+/// update planning — is separated on disk from the one file in this assembly that can change an install which
+/// already exists, so a reviewer can read the mutating surface on its own.
+/// </para>
 /// </remarks>
-public sealed class LocalProcessProvisioner : IProvisioner
+public sealed partial class LocalProcessProvisioner : IProvisioner
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "local-process";
@@ -148,11 +156,22 @@ public sealed class LocalProcessProvisioner : IProvisioner
     /// <see cref="ReconcileAsync"/> depends on to find installs Servyx created but lost track of. See the type
     /// remarks for why neither <see cref="ProvisioningCapabilities.FirewallRules"/> nor
     /// <see cref="ProvisioningCapabilities.EstimatesCost"/> is claimed.
+    /// <para>
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is present and
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is deliberately absent — the same pairing the SSH
+    /// process adapter claims, and the opposite of the Docker adapter's. Re-running the install verbs against an
+    /// existing install directory mutates the install without discarding its provider identity (the marker path
+    /// never changes), so every update this adapter can plan is in place; there is no recreate story to
+    /// advertise. <see cref="ProvisioningCapabilities.DetectDrift"/> is claimed because
+    /// <see cref="DetectDriftAsync"/> reads the live filesystem, not merely the record.
+    /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
-        | ProvisioningCapabilities.TagQuery;
+        | ProvisioningCapabilities.TagQuery
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <summary>
     /// A single machine is not region-scoped, so every handle and plan this provisioner produces carries a
@@ -751,7 +770,7 @@ public sealed class LocalProcessProvisioner : IProvisioner
             {
                 for (var i = 0; i < _spec.InstallSteps.Count; i++)
                 {
-                    await RunStepAsync(session, _spec.InstallSteps[i], i, ct).ConfigureAwait(false);
+                    await RunInstallStepAsync(session, _spec, _spec.InstallSteps[i], i, ct).ConfigureAwait(false);
                 }
             }
 
@@ -779,39 +798,5 @@ public sealed class LocalProcessProvisioner : IProvisioner
             await RemoveMarkerAsync(session, _markerPath, ct).ConfigureAwait(false);
         }
 
-        private async Task RunStepAsync(IExecutionTarget session, LocalInstallStep step, int index, CancellationToken ct)
-        {
-            switch (step)
-            {
-                case SteamCmdInstallStep steamCmd:
-                    await RunAsync(session, steamCmd.ToCommand(_spec), step.StageId(index), ct).ConfigureAwait(false);
-                    return;
-
-                case EnsureDirectoryInstallStep ensureDirectory:
-                    // Realised without spawning anything — see the remarks on LocalInstallStep. The path was
-                    // validated as fully qualified when the spec was built, i.e. at plan time.
-                    Directory.CreateDirectory(ensureDirectory.Path);
-                    return;
-
-                default:
-                    // Unreachable: LocalInstallStep's constructor is private protected, so the hierarchy is
-                    // closed to this file. Present so that adding a verb without teaching this switch about it
-                    // fails loudly rather than silently skipping the step.
-                    throw new InvalidOperationException(
-                        $"Install verb '{step.Verb}' has no execution behaviour in the '{Id}' provisioner.");
-            }
-        }
-
-        private static async Task RunAsync(IExecutionTarget session, CommandSpec command, string stageId, CancellationToken ct)
-        {
-            var result = await session.ExecuteAsync(command, ct).ConfigureAwait(false);
-            if (!result.Succeeded)
-            {
-                throw new InvalidOperationException(
-                    string.Create(
-                        CultureInfo.InvariantCulture,
-                        $"Install stage '{stageId}' ('{command.Executable}') exited with code {result.ExitCode}: {result.StandardError}"));
-            }
-        }
     }
 }
