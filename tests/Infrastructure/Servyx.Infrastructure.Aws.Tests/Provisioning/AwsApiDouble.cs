@@ -13,16 +13,30 @@ namespace Servyx.Infrastructure.Aws.Tests.Provisioning;
 /// <param name="Authorization">The raw <c>Authorization</c> header, or <see langword="null"/> if none was set.</param>
 /// <param name="AmzDate">The raw <c>x-amz-date</c> header, or <see langword="null"/> if none was set.</param>
 /// <param name="Body">The request body as text, or <see langword="null"/> for a bodiless request.</param>
+/// <param name="Target">
+/// The raw <c>X-Amz-Target</c> header, or <see langword="null"/> if none was set. EC2 requests never carry
+/// one - it is the routing mechanism the JSON-protocol Lightsail client uses in place of EC2's <c>Action</c>
+/// form/query parameter, so this is <see langword="null"/> for every request the EC2 suite makes and non-null
+/// for every request the Lightsail suite makes.
+/// </param>
 internal sealed record RecordedRequest(
     HttpMethod Method,
     Uri Uri,
     string? Authorization,
     string? AmzDate,
-    string? Body)
+    string? Body,
+    string? Target = null)
 {
     /// <summary>Whether this request went to a regional EC2 endpoint.</summary>
     internal bool IsEc2 => Uri.Host.StartsWith("ec2.", StringComparison.Ordinal)
         && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
+
+    /// <summary>Whether this request went to a regional Lightsail endpoint.</summary>
+    internal bool IsLightsail => Uri.Host.StartsWith("lightsail.", StringComparison.Ordinal)
+        && Uri.Host.EndsWith(".amazonaws.com", StringComparison.Ordinal);
+
+    /// <summary>The Lightsail action this request names, read off the <see cref="Target"/> header.</summary>
+    internal string? LightsailAction => Target is null ? null : Target[(Target.IndexOf('.') + 1)..];
 
     /// <summary>The EC2 Query <c>Action</c> this request names, wherever the parameters happen to live.</summary>
     /// <remarks>
@@ -110,7 +124,8 @@ internal sealed class AwsApiDouble : HttpMessageHandler
     /// </summary>
     internal Func<RecordedRequest, HttpResponseMessage> Responder { get; set; } =
         request => throw new InvalidOperationException(
-            $"The adapter made an unexpected {request.Method} request to '{request.Uri}' (Action='{request.Action}').");
+            $"The adapter made an unexpected {request.Method} request to '{request.Uri}' "
+            + $"(Action='{request.Action}', Target='{request.Target}').");
 
     /// <summary>An <see cref="HttpClient"/> wired to this double.</summary>
     internal HttpClient Client() => new(this, disposeHandler: false);
@@ -125,6 +140,13 @@ internal sealed class AwsApiDouble : HttpMessageHandler
     /// <summary>Builds an empty response.</summary>
     internal static HttpResponseMessage Empty(HttpStatusCode status) => new(status);
 
+    /// <summary>Builds a JSON response, which is the shape every Lightsail action answers with.</summary>
+    internal static HttpResponseMessage Json(HttpStatusCode status, string json) =>
+        new(status)
+        {
+            Content = new StringContent(json, Encoding.UTF8, new MediaTypeHeaderValue("application/x-amz-json-1.1")),
+        };
+
     /// <inheritdoc />
     protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
@@ -137,7 +159,8 @@ internal sealed class AwsApiDouble : HttpMessageHandler
             request.RequestUri ?? new Uri("about:blank"),
             Header(request, "Authorization"),
             Header(request, AwsSigV4.AmzDateHeader),
-            body);
+            body,
+            Header(request, "X-Amz-Target"));
 
         Requests.Add(recorded);
         return Responder(recorded);
