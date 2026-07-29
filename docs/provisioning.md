@@ -278,3 +278,50 @@ Both are worth hardening.
 Validated. `DockerContainerProvisioner` never inspects the endpoint — it stores it and stamps it onto the descriptor. Proven by asserting identical `PlanHash` and identical `CreateContainerParameters` between a `npipe://` and a `tcp://` provisioner, with a whole-object comparison pinning `Target.Endpoint` as the only differing field.
 
 This supports the proposal's claim that Shape H's Docker variants are one adapter, not several.
+
+## 11. Shape M: investigated and not implemented
+
+An implementation attempt for Azure Container Instances (§2's Shape M, "managed container service") was carried out against the domain contracts as they exist today. It concluded the shape **cannot be implemented honestly** as an `IProvisioner` / `IExecutionTarget` adapter. Nothing was built. This section records the finding so it is not re-derived.
+
+### 11.1 The resolution that was tried, and why it looked plausible
+
+§7's phased plan and §8's risk list both attribute Shape M's degradation to "no persistent local disk." That symptom is fixable: mounting an Azure Files share onto the container group gives it durable storage, and the fix genuinely works as far as storage goes. Six of the eight `IExecutionTarget` members — `ExistsAsync`, `ListDirectoryAsync`, `OpenReadAsync`, `DeleteAsync`, and largely `WriteFileAsync` — become implementable through the Azure Files REST data plane. This is what made the resolution look promising enough to pursue past the storage question.
+
+### 11.2 Why it fails anyway: the exec members no storage configuration reaches
+
+ACI's exec API (`POST .../containers/{c}/exec`) accepts a `command` string plus a `terminalSize`, and returns only a `webSocketUri` and a `password`. No mount, share, or storage account changes this surface. Consequently:
+
+- `CommandResult.ExitCode` is non-nullable, and **no exit code exists anywhere in the ACI exec surface** — the socket simply closes when the process ends. Any value returned would be fabricated.
+- `terminalSize` implies a TTY, and a TTY has one output stream, so `CommandResult.StandardError` and `OutputChunk.Stream` have no truthful value to report.
+- ACI's `command` is a **single string** handed to the container's shell, whereas `CommandSpec` carries verbatim argv specifically as the primary defence against injection from definition authors. Honouring `CommandSpec` against this API would mean joining and re-quoting arguments into a shell string — a security regression, not merely a loss of fidelity.
+
+Storage reachability and exec reachability are independent axes. Fixing the first does not move the second.
+
+### 11.3 Two secondary blockers
+
+- **Credential shape.** Mounting Azure Files on ACI requires a storage account key in the container group's ARM request body; managed identity is not supported for SMB mounts on ACI. This conflicts with the project rule that credentials are referenced by secret-store URN and never travel as literals.
+- **CIFS semantics.** The mount is CIFS, which has no per-file POSIX ownership, so `FileStat`'s mode/uid/gid fields are structurally null and `PermitsWriteBy` would answer "not writable" for every non-Windows target regardless of the truth. Separately, `WriteFileAsync`'s temp-sibling-then-rename pattern is expressible via the Files REST rename operation in principle, but SMB refuses rename over a file that is open — precisely the case Servyx hits most often, rewriting a config while the game server holds it open.
+
+### 11.4 The orphan consequence
+
+A tag sweep against a Shape M deployment finds the container group but not the storage account or file share backing it. This differs in kind from the VM adapter's known blind spots (resource group, subnet, managed disk), which are either free or die with their tagged parent. The storage account is a **separate billable resource with an independent lifetime holding the customer's save data** — it must outlive the container group by design, so destroying the group leaves the storage account billing with nothing left able to attribute the charge to a resource.
+
+### 11.5 The transport finding
+
+No transport in the codebase can reach an ACI container group. `docker` needs an Engine endpoint, and ACI exposes no daemon. `ssh` needs sshd plus key injection, and ACI has no cloud-init equivalent. `local` is the Servyx host itself. §2's "reached by: cloud API shim" names a transport that does not exist in `src/` and, per §11.2, could not be written truthfully against ACI's exec API.
+
+### 11.6 The deepest point
+
+Shape M does not fail `IProvisioner`'s verbs; it fails its **return type**. `ProvisionedResource.Target` is a non-nullable `TargetDescriptor`, documented as the transport target the rest of Servyx should use from that point on. With no truthful `TargetDescriptor` value available for a container group, the only options are fabricating a transport id — which fails at runtime as "no transport for id" — or throwing for a capability reason from `CreateOperation`, which `IProvisioner`'s own remarks (§1) forbid. Shape H terminates in a server reachable by docker or ssh; Shape I terminates in a host reachable by ssh; Shape M terminates in a workload reachable by nothing Servyx currently has a transport for, and the domain has no way to express that gap.
+
+### 11.7 `Operate`-tier reachability
+
+§7 item 8 and §8's risk list state that Shape M may never reach `Provision` tier; neither states that it can never reach `Operate` tier, so no correction to that existing text is needed. For the record, since it was an open question §8 flagged for a spike: `Operate` requires `AnyOf(ExecInWorkload, ControlChannelWrite)`, and RCON over the container group's public IP satisfies `ControlChannelWrite` — Servyx now has `Servyx.Infrastructure.Rcon`. Shape M is therefore reachable at `Operate` through a game-specific control channel, though never through the generic `IExecutionTarget` exec path described in §11.2. `Provision` remains unreachable regardless, since it requires `WriteComposeFile` and ACI has no compose file — consistent with §7 item 8 as written.
+
+### 11.8 What an honest path would require
+
+Not an `IProvisioner` adapter under the contracts as they stand. It would require, at minimum: (1) widening `ProvisionedResource.Target` to nullable, or introducing an explicit "provisioned but unreachable by transport" state, so a provisioner can decline to name a transport without fabricating one; and (2) reaching the workload through RCON as a control channel rather than through `IExecutionTarget`, accepting a permanent ceiling below `Provision`. That is a domain change plus a control-plane design, not an adapter, and is out of scope for the phased plan in §7 as written.
+
+### 11.9 What carries over
+
+Two pieces of the earlier analysis remain valid if Shape M is revisited: `ServyxTagKeys` needs no new encoding for ACI — it uses the same native ARM tags dictionary as the VM adapter. And any future cost estimate must read "COMPUTE ONLY" rather than "ALL-IN": ACI bills per-second on vCPU and memory, while the storage account and any gateway needed for a stable IP bill separately, and ACI's own documentation warns a container group's IP may change on restart.
