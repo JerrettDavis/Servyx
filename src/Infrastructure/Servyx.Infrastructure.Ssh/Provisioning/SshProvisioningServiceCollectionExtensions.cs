@@ -72,6 +72,13 @@ public static class SshProvisioningServiceCollectionExtensions
 
         services.AddSingleton<IProvisioner>(sp => sp.GetRequiredService<SshProcessProvisioner>());
 
+        // The maintenance half — update planning and drift detection — rides on the same instance and is
+        // published here rather than from AddServyxSsh(), mirroring AddServyxDockerProvisioning(). Every
+        // member of IMaintainer is read-only, so this line grants no new mutating capability; it stays behind
+        // this opt-in method so a host with the flag off — which never calls this method — has no IMaintainer
+        // at all, exactly as it has no IProvisioner.
+        services.AddSingleton<IMaintainer>(sp => sp.GetRequiredService<SshProcessProvisioner>());
+
         return services;
     }
 }

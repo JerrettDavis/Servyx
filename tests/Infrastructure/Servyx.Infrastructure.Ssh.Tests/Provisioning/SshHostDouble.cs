@@ -47,7 +47,7 @@ internal sealed class SshHostDouble
 
         Session
             .ExistsAsync(Arg.Any<TargetPath>(), Arg.Any<CancellationToken>())
-            .Returns(call => Task.FromResult(Files.ContainsKey(Absolute(call))));
+            .Returns(call => Task.FromResult(Files.ContainsKey(Absolute(call)) || Directories.Contains(Absolute(call))));
 
         Session
             .OpenReadAsync(Arg.Any<TargetPath>(), Arg.Any<CancellationToken>())

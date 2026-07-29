@@ -80,6 +80,31 @@ public class SshProvisioningRegistrationTests
     }
 
     [Fact]
+    public void The_registration_also_publishes_the_maintainer_alongside_the_provisioner()
+    {
+        // Every member of IMaintainer is read-only, so publishing it grants no new mutating capability — but
+        // it must ride on the same opt-in method as IProvisioner, mirroring AddServyxDockerProvisioning(), so
+        // maintenance stays behind Servyx:Provisioning:Enabled exactly as creation does.
+        var services = new ServiceCollection();
+        services.AddServyxSshProvisioning(Endpoint);
+
+        services.Select(d => d.ServiceType).Should().Contain([typeof(SshProcessProvisioner), typeof(IProvisioner), typeof(IMaintainer)]);
+    }
+
+    [Fact]
+    public void A_composition_root_that_never_opts_in_has_no_maintainer_at_all()
+    {
+        // Servyx:Provisioning:Enabled=false means a host never calls AddServyxSshProvisioning(), so
+        // maintenance is behind exactly the same flag as creation — there is no object in the process that
+        // can even be asked to plan an update, let alone apply one.
+        var services = new ServiceCollection();
+
+        services.Select(d => d.ServiceType).Should().NotContain(typeof(IMaintainer));
+        services.Select(d => d.ServiceType).Should().NotContain(typeof(IProvisioner));
+        services.Select(d => d.ServiceType).Should().NotContain(typeof(SshProcessProvisioner));
+    }
+
+    [Fact]
     public void The_configured_marker_root_is_what_the_provisioner_sweeps()
     {
         var root = new TransportRegistry(Transport("ssh"));

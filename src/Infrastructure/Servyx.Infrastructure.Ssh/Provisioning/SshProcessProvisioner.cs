@@ -52,8 +52,20 @@ namespace Servyx.Infrastructure.Ssh.Provisioning;
 /// the host's firewall, and advertising a capability it does not implement would let a caller believe a port
 /// had been opened when nothing had.
 /// </para>
+/// <para>
+/// <strong>Maintenance is preview-only, and it is the in-place half of the story Docker cannot tell.</strong>
+/// This type also implements <see cref="IMaintainer"/>. Where <c>DockerContainerProvisioner</c> must recreate
+/// on every update — a container's image, ports, and labels are fixed at <c>docker create</c> time — a
+/// process install has no such daemon-fixed properties: re-running <c>steamcmd</c> against an existing
+/// install directory updates the binaries in place, and rewriting the marker file is an ordinary write, not a
+/// stop/remove/create. <see cref="Capabilities"/> therefore holds <see cref="ProvisioningCapabilities.UpdateInPlace"/>
+/// and not <see cref="ProvisioningCapabilities.RecreateToUpdate"/> — the exact opposite pairing from Docker's,
+/// and a genuine fact about this shape rather than an oversight. As with the Docker adapter, neither
+/// <see cref="IMaintainer"/> member issues a mutating call: <see cref="PlanUpdateAsync"/> reads the marker and
+/// computes, and <see cref="DetectDriftAsync"/> reads the marker and the live filesystem and computes.
+/// </para>
 /// </remarks>
-public sealed class SshProcessProvisioner : IProvisioner
+public sealed class SshProcessProvisioner : IProvisioner, IMaintainer
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "ssh-process";
@@ -170,11 +182,21 @@ public sealed class SshProcessProvisioner : IProvisioner
     /// <see cref="ReconcileAsync"/> depends on to find installs Servyx created but lost track of. Neither
     /// <see cref="ProvisioningCapabilities.FirewallRules"/> nor
     /// <see cref="ProvisioningCapabilities.EstimatesCost"/> is claimed — see the type remarks.
+    /// <para>
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is present and
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is deliberately absent — the opposite of the
+    /// Docker adapter's pairing. Re-running <c>steamcmd</c> against an existing install directory mutates the
+    /// install without discarding its provider identity (the marker path never changes), so every update this
+    /// adapter can plan is in place; there is no recreate story to advertise. See the type remarks for the
+    /// full reasoning.
+    /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
-        | ProvisioningCapabilities.TagQuery;
+        | ProvisioningCapabilities.TagQuery
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <summary>
     /// A single SSH host is not region-scoped, so every handle and plan this provisioner produces carries a
@@ -393,6 +415,330 @@ public sealed class SshProcessProvisioner : IProvisioner
         await using var session = await _transport.ConnectAsync(HostDescriptor(), ct).ConfigureAwait(false);
         return await RemoveMarkerAsync(session, handle.ProviderResourceId, ct).ConfigureAwait(false);
     }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <strong>Reads the marker, then computes. No mutating call is ever issued.</strong> The only SSH calls
+    /// on this path are the marker's existence check and its read — the same pair <see cref="RefreshAsync"/>
+    /// makes. Nothing here writes a file, deletes a file, or runs a command.
+    /// </para>
+    /// <para>
+    /// <strong>An update is re-running the install verbs, never a recreate.</strong> A process install has no
+    /// provider identity to discard and no daemon-fixed properties the way a container's image and ports are:
+    /// re-issuing the same <c>steamcmd +app_update ... validate</c> invocation against an existing install
+    /// directory updates the binaries in place, and rewriting the marker is an ordinary write. Every change
+    /// this method plans is therefore <see cref="UpdateStrategy.InPlace"/>; no <see cref="PlannedChange"/> it
+    /// produces ever sets <see cref="PlannedChange.RequiresRecreate"/>, and this adapter has no
+    /// <see cref="UpdateStrategy.Recreate"/> story to plan at all.
+    /// </para>
+    /// <para>
+    /// <strong>What "changed" means here, and the honest limit of that.</strong> The marker records only
+    /// identity and location — instance, job, connector, data directory, executable, and any extra tags —
+    /// never which Steam app id, version, or install verbs produced the install. This method compares the
+    /// desired request's data directory, executable, and tags against what the marker recorded, and reports
+    /// <see cref="UpdateStrategy.NoChangeRequired"/> whenever that recorded identity already matches the
+    /// request — even though re-running <c>steamcmd</c> might still pull a newer build of the same app. That
+    /// is a genuine limitation of a marker-backed shape, not an oversight: see the remarks on
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> making the same point about a marker versus a
+    /// registry. A caller that wants "is a newer build available" answered has to ask the provider directly;
+    /// this adapter cannot answer it from the marker alone without connecting and running an update check —
+    /// which would not be planning any more.
+    /// </para>
+    /// <para>
+    /// <strong>How the <see cref="DataImpact"/> is decided. Never defaulted.</strong>
+    /// <see cref="DataImpact.Preserved"/> is asserted when nothing needs to change at all, or when the desired
+    /// data directory is the exact directory the existing install already occupies: re-running
+    /// <c>steamcmd ... validate</c> against an existing install directory updates or adds files without
+    /// deleting whatever save data sits alongside them, and an <c>ensure-dir</c> step only ever creates a
+    /// directory, never removes one. The moment the desired data directory differs from the recorded one, the
+    /// existing install's saves are left exactly where they are — still on disk, untouched — but the updated
+    /// install will read and write a different directory, so nothing running afterwards is attached to them
+    /// any more. That is <see cref="DataImpact.AtRisk"/> by definition, not <see cref="DataImpact.Preserved"/>:
+    /// "the adapter deletes nothing" is not the same claim as "the workload stays attached to its data". This
+    /// method never asserts <see cref="DataImpact.Destroyed"/>: nothing on this path removes a directory.
+    /// </para>
+    /// </remarks>
+    public async Task<UpdatePlan?> PlanUpdateAsync(ResourceHandle handle, ProvisioningRequest desired, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        ArgumentNullException.ThrowIfNull(desired);
+
+        await using var session = await _transport.ConnectAsync(HostDescriptor(), ct).ConfigureAwait(false);
+
+        var liveTags = await ReadMarkerAsync(session, handle.ProviderResourceId, ct).ConfigureAwait(false);
+        if (ServyxProcessMarker.FromTags(liveTags) is null)
+        {
+            // Mirrors RefreshAsync: the provider no longer knows about this resource. Not the same answer as
+            // "nothing needs to change" — there is nothing to update.
+            return null;
+        }
+
+        return BuildUpdatePlan(handle.ProviderResourceId, liveTags!, BuildSpec(desired));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <strong>Two different kinds of check, both genuine reads of the live host.</strong> First, the
+    /// marker's own tags are compared against what <paramref name="handle"/> recorded, catching a marker that
+    /// was hand-edited, restored from a stale copy, or otherwise no longer says what Servyx wrote — this is
+    /// the same comparison <see cref="ProvisioningCapabilities.DetectDrift"/>'s remarks call "a record against
+    /// a record". Second, and separately, this method asks the host whether the recorded data directory and
+    /// executable actually still exist on the live filesystem. That second check is what keeps this
+    /// adapter's <see cref="ProvisioningCapabilities.DetectDrift"/> claim honest: it is a read of the live
+    /// resource, not a second look at the same marker.
+    /// </para>
+    /// <para>
+    /// A marker the host no longer has, or one that cannot be parsed, is reported as drift under the
+    /// <c>"marker"</c> aspect — never as an exception, and never silently treated as a match.
+    /// </para>
+    /// </remarks>
+    public async Task<DriftResult> DetectDriftAsync(ResourceHandle handle, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+
+        if (!string.Equals(handle.ProvisionerId, Id, StringComparison.Ordinal))
+        {
+            return new DriftResult(handle, [new DriftDivergence("provisioner", Id, handle.ProvisionerId)]);
+        }
+
+        await using var session = await _transport.ConnectAsync(HostDescriptor(), ct).ConfigureAwait(false);
+
+        var liveTags = await ReadMarkerAsync(session, handle.ProviderResourceId, ct).ConfigureAwait(false);
+        if (liveTags is null)
+        {
+            return new DriftResult(handle, [new DriftDivergence("marker", "present", null)]);
+        }
+
+        var recorded = handle.Tags ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        var divergences = new List<DriftDivergence>();
+
+        foreach (var expected in recorded.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            var found = liveTags.TryGetValue(expected.Key, out var value) ? value : null;
+            if (!string.Equals(expected.Value, found, StringComparison.Ordinal))
+            {
+                divergences.Add(new DriftDivergence($"tag {expected.Key}", expected.Value, found));
+            }
+        }
+
+        // Live filesystem reads: does the recorded data directory, and the recorded executable inside it,
+        // still exist on the host. A missing marker is handled above; these two are about the payload the
+        // marker describes rather than the marker itself.
+        var dataDirectory = GetTag(liveTags, ServyxProcessMarker.RootPathTag);
+        if (!string.IsNullOrWhiteSpace(dataDirectory))
+        {
+            if (!await ExistsQuietAsync(session, dataDirectory, ct).ConfigureAwait(false))
+            {
+                divergences.Add(new DriftDivergence("dataDir", dataDirectory, null));
+            }
+
+            var executable = GetTag(liveTags, ServyxProcessMarker.ExecutableTag);
+            if (!string.IsNullOrWhiteSpace(executable))
+            {
+                var executablePath = ResolveExecutablePath(dataDirectory, executable);
+                if (!await ExistsQuietAsync(session, executablePath, ct).ConfigureAwait(false))
+                {
+                    divergences.Add(new DriftDivergence("executable", executable, null));
+                }
+            }
+        }
+
+        return new DriftResult(handle, divergences);
+    }
+
+    /// <summary>
+    /// The whole of update planning: pure comparison between the marker's recorded tags and the desired spec.
+    /// Touches only <see cref="_timeProvider"/> (for the plan's expiry) and issues no SSH call of its own —
+    /// every call on the update path is the marker read its caller already made.
+    /// </summary>
+    private UpdatePlan BuildUpdatePlan(string markerPath, IReadOnlyDictionary<string, string> liveTags, SshProcessSpec desiredSpec)
+    {
+        var changes = new List<PlannedChange>();
+
+        var liveDataDirectory = GetTag(liveTags, ServyxProcessMarker.RootPathTag);
+        if (!string.Equals(liveDataDirectory, desiredSpec.DataDirectory, StringComparison.Ordinal))
+        {
+            changes.Add(new PlannedChange("dataDir", liveDataDirectory, desiredSpec.DataDirectory, RequiresRecreate: false));
+        }
+
+        var liveExecutable = GetTag(liveTags, ServyxProcessMarker.ExecutableTag);
+        if (!string.Equals(liveExecutable, desiredSpec.Executable, StringComparison.Ordinal))
+        {
+            changes.Add(new PlannedChange("executable", liveExecutable, desiredSpec.Executable, RequiresRecreate: false));
+        }
+
+        // Identity and extra tags, compared the same way the Docker adapter compares labels: every tag the
+        // desired spec would write is checked against what the marker actually holds. dataDir and executable
+        // already have their own aspect names above, but they are also ordinary marker tags, so re-reporting
+        // them here would describe one difference twice.
+        var desiredIdentityTags = desiredSpec.Marker.ToTags(desiredSpec.AdditionalTags);
+        foreach (var desiredTag in desiredIdentityTags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            if (string.Equals(desiredTag.Key, ServyxProcessMarker.RootPathTag, StringComparison.Ordinal)
+                || string.Equals(desiredTag.Key, ServyxProcessMarker.ExecutableTag, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            var found = liveTags.TryGetValue(desiredTag.Key, out var value) ? value : null;
+            if (!string.Equals(desiredTag.Value, found, StringComparison.Ordinal))
+            {
+                changes.Add(new PlannedChange($"tag {desiredTag.Key}", found, desiredTag.Value, RequiresRecreate: false));
+            }
+        }
+
+        var strategy = changes.Count == 0 ? UpdateStrategy.NoChangeRequired : UpdateStrategy.InPlace;
+        var dataImpact = AssertDataImpact(strategy, liveDataDirectory, desiredSpec.DataDirectory);
+        var stages = strategy == UpdateStrategy.NoChangeRequired
+            ? (IReadOnlyList<ProvisioningStage>)[]
+            : BuildUpdateStages(markerPath, desiredSpec, dataImpact, liveDataDirectory);
+
+        var planHash = ComputeUpdatePlanHash(markerPath, liveTags, desiredSpec, strategy, dataImpact);
+
+        return new UpdatePlan(
+            planId: $"{Id}:update:{desiredSpec.Marker.InstanceId}:{planHash[..12]}",
+            planHash: planHash,
+            provisionerId: Id,
+            strategy: strategy,
+            dataImpact: dataImpact,
+            changes: changes,
+            stages: stages,
+            expiresAt: _timeProvider.GetUtcNow().AddMinutes(15));
+    }
+
+    /// <summary>
+    /// The deliberate data-impact assertion for an update, made from the recorded and desired data
+    /// directories rather than from a default. Every branch is reachable and every branch is a claim this
+    /// adapter can defend — see the remarks on <see cref="PlanUpdateAsync"/>.
+    /// </summary>
+    private static DataImpact AssertDataImpact(UpdateStrategy strategy, string? liveDataDirectory, string desiredDataDirectory)
+    {
+        if (strategy == UpdateStrategy.NoChangeRequired)
+        {
+            // Nothing would run, so nothing can happen to the data.
+            return DataImpact.Preserved;
+        }
+
+        if (!string.Equals(liveDataDirectory, desiredDataDirectory, StringComparison.Ordinal))
+        {
+            // The update would point the install at a different directory. The old directory's contents are
+            // not deleted, but nothing the updated install runs will reference them any more — orphaned, not
+            // destroyed, which is exactly what AtRisk means.
+            return DataImpact.AtRisk;
+        }
+
+        // The data directory is unchanged: re-running the install verbs against it updates or adds files
+        // without removing the save data sitting alongside them.
+        return DataImpact.Preserved;
+    }
+
+    private static IReadOnlyList<ProvisioningStage> BuildUpdateStages(
+        string markerPath,
+        SshProcessSpec desiredSpec,
+        DataImpact dataImpact,
+        string? liveDataDirectory)
+    {
+        var dataClause = string.Equals(liveDataDirectory, desiredSpec.DataDirectory, StringComparison.Ordinal)
+            ? "the data directory is unchanged, so re-running the install verbs below updates the install in place without touching its saved data"
+            : $"the data directory is changing from '{liveDataDirectory ?? "(unknown)"}' to '{desiredSpec.DataDirectory}', so whatever is at the old path is left behind, orphaned rather than deleted";
+
+        var stages = new List<ProvisioningStage>
+        {
+            new(
+                "update-marker",
+                Id,
+                $"Rewrite the Servyx marker file '{markerPath}' to record instance '{desiredSpec.Marker.InstanceId}', " +
+                $"data directory '{desiredSpec.DataDirectory}', and executable '{desiredSpec.Executable}'. " +
+                $"Data impact of this plan is {dataImpact}: {dataClause}."),
+        };
+
+        for (var i = 0; i < desiredSpec.InstallSteps.Count; i++)
+        {
+            stages.Add(new ProvisioningStage(desiredSpec.InstallSteps[i].StageId(i), Id, desiredSpec.InstallSteps[i].Describe(desiredSpec)));
+        }
+
+        return stages;
+    }
+
+    private string ComputeUpdatePlanHash(
+        string markerPath,
+        IReadOnlyDictionary<string, string> liveTags,
+        SshProcessSpec desiredSpec,
+        UpdateStrategy strategy,
+        DataImpact dataImpact)
+    {
+        var builder = new StringBuilder();
+        builder.Append(Id).Append(":update\n");
+        builder.Append(markerPath).Append('\n');
+        builder.Append(CultureInfo.InvariantCulture, $"{strategy}/{dataImpact}\n");
+
+        foreach (var tag in liveTags.OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            builder.Append(CultureInfo.InvariantCulture, $"live-tag {tag.Key}={tag.Value}\n");
+        }
+
+        builder.Append(desiredSpec.DataDirectory).Append('\n');
+        builder.Append(desiredSpec.Executable).Append('\n');
+        builder.Append(desiredSpec.SteamCmdPath).Append('\n');
+
+        for (var i = 0; i < desiredSpec.InstallSteps.Count; i++)
+        {
+            var command = desiredSpec.InstallSteps[i].ToCommand(desiredSpec);
+            builder.Append(CultureInfo.InvariantCulture, $"step {i} {desiredSpec.InstallSteps[i].Verb} {command.Executable}");
+            foreach (var argument in command.Arguments)
+            {
+                builder.Append(CultureInfo.InvariantCulture, $" {argument}");
+            }
+
+            builder.Append('\n');
+        }
+
+        foreach (var entry in desiredSpec.Environment.OrderBy(e => e.Key, StringComparer.Ordinal))
+        {
+            builder.Append(CultureInfo.InvariantCulture, $"env {entry.Key}={entry.Value}\n");
+        }
+
+        foreach (var tag in desiredSpec.Marker.ToTags(desiredSpec.AdditionalTags).OrderBy(t => t.Key, StringComparer.Ordinal))
+        {
+            builder.Append(CultureInfo.InvariantCulture, $"desired-tag {tag.Key}={tag.Value}\n");
+        }
+
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
+        return Convert.ToHexStringLower(hash);
+    }
+
+    /// <summary>Resolves <paramref name="executable"/> against <paramref name="dataDirectory"/> the same way a shell would: absolute stays absolute, everything else is relative to the data directory.</summary>
+    private static string ResolveExecutablePath(string dataDirectory, string executable)
+    {
+        if (executable.StartsWith('/'))
+        {
+            return executable;
+        }
+
+        var relative = executable.StartsWith("./", StringComparison.Ordinal) ? executable[2..] : executable;
+        return $"{dataDirectory.TrimEnd('/')}/{relative}";
+    }
+
+    /// <summary>Whether <paramref name="absolutePath"/> exists on the host, treating an unresolvable path as absent rather than throwing.</summary>
+    private static async Task<bool> ExistsQuietAsync(IExecutionTarget session, string absolutePath, CancellationToken ct)
+    {
+        TargetPath path;
+        try
+        {
+            path = ToHostPath(absolutePath);
+        }
+        catch (PathEscapesSandboxException)
+        {
+            return false;
+        }
+
+        return await session.ExistsAsync(path, ct).ConfigureAwait(false);
+    }
+
+    private static string? GetTag(IReadOnlyDictionary<string, string> tags, string key) =>
+        tags.TryGetValue(key, out var value) ? value : null;
 
     /// <summary>
     /// Translates a <see cref="ProvisioningRequest"/>'s free-form parameters into an install spec.
