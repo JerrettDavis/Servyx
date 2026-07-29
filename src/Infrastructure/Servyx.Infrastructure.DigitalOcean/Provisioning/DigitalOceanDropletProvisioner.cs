@@ -78,8 +78,19 @@ namespace Servyx.Infrastructure.DigitalOcean.Provisioning;
 /// applied</em> rather than quietly ignored, because a caller who believed a port had been opened when nothing
 /// had would expose a server it thought was firewalled.
 /// </para>
+/// <para>
+/// <strong>Maintenance is preview-only, and on a cloud machine that distinction is the whole safety
+/// story.</strong> This type also implements <see cref="IMaintainer"/> — in
+/// <c>DigitalOceanDropletProvisioner.Maintenance.cs</c>, whose remarks carry the full reasoning. Both members
+/// there read the live droplet and produce a description: an <see cref="UpdatePlan"/> or a
+/// <see cref="DriftResult"/>. Neither issues a mutating request, there is no resize, rebuild or destroy call
+/// anywhere on that path, and this solution has no executor that applies an <see cref="UpdatePlan"/>. That
+/// matters more here than it does for the container adapter: recreating a container discards a writable
+/// layer, whereas rebuilding a droplet erases the machine's disk outright, so the plan is a description of
+/// that outcome rather than a step towards it.
+/// </para>
 /// </remarks>
-public sealed class DigitalOceanDropletProvisioner : IProvisioner
+public sealed partial class DigitalOceanDropletProvisioner : IProvisioner
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "digitalocean-droplet";
@@ -200,12 +211,38 @@ public sealed class DigitalOceanDropletProvisioner : IProvisioner
     /// <see cref="ProvisioningCapabilities.Resize"/>, <see cref="ProvisioningCapabilities.Snapshot"/>,
     /// <see cref="ProvisioningCapabilities.StaticAddress"/> and
     /// <see cref="ProvisioningCapabilities.FirewallRules"/> are all deliberately absent — see the type remarks.
+    /// <para>
+    /// <strong>The three maintenance bits, and exactly what each one means here.</strong>
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> is the registry-backed form: the comparison reads
+    /// the droplet back from DigitalOcean, so a "matches" answer is about the machine as the provider
+    /// describes it right now.
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is claimed because two of the differences this
+    /// adapter can find are genuinely mutations of the existing droplet — a size change is a DigitalOcean
+    /// <em>resize</em> action and a tag change is a tag attach/detach, and after either the droplet still has
+    /// the same id, the same address and the same disk.
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is claimed for the image case, and the claim
+    /// is deliberately one notch louder than the mechanism: DigitalOcean's <em>rebuild</em> action keeps the
+    /// droplet's id and its IP, so on identity alone it would qualify as in-place — but it reimages the boot
+    /// disk, so the machine that comes back has none of the state the machine that went in had. Filing that
+    /// under "in-place update" would tell whoever approves the plan that their data is being edited around
+    /// rather than deleted. The overstatement is in the safe direction and the plan text says exactly what
+    /// happens.
+    /// </para>
+    /// <para>
+    /// Note what none of the three implies: nothing on this type performs a resize, a rebuild or a retag.
+    /// <see cref="ProvisioningCapabilities.Resize"/> stays absent for precisely that reason — being able to
+    /// <em>plan</em> a resize is not being able to do one, and no code path in this assembly issues
+    /// <c>POST /v2/droplets/{id}/actions</c> at all.
+    /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
         | ProvisioningCapabilities.TagQuery
-        | ProvisioningCapabilities.EstimatesCost;
+        | ProvisioningCapabilities.EstimatesCost
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.RecreateToUpdate
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <inheritdoc />
     /// <remarks>

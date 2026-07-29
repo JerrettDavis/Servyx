@@ -127,8 +127,17 @@ namespace Servyx.Infrastructure.Azure.Provisioning;
 /// internet other than what the platform allows — so a game port a caller asked for is not merely un-opened,
 /// it is actively closed.
 /// </para>
+/// <para>
+/// <strong>Maintenance is preview-only.</strong> This type also implements <see cref="IMaintainer"/> — in
+/// <c>AzureVirtualMachineProvisioner.Maintenance.cs</c>, whose remarks carry the full reasoning. Both members
+/// there read the live machine and produce a description: an <see cref="UpdatePlan"/> or a
+/// <see cref="DriftResult"/>. Neither issues a mutating request; there is no resize call, no VM replacement
+/// sequence and no delete on that path, and this solution has no executor that applies an
+/// <see cref="UpdatePlan"/>. The distinction is sharper here than for a container: a plan that replaces this
+/// VM is a plan that deletes its managed OS disk, by the <c>deleteOption</c> the create sequence declared.
+/// </para>
 /// </remarks>
-public sealed class AzureVirtualMachineProvisioner : IProvisioner
+public sealed partial class AzureVirtualMachineProvisioner : IProvisioner
 {
     /// <summary>The stable <see cref="IProvisioner.ProvisionerId"/> of this provisioner.</summary>
     public const string Id = "azure-vm";
@@ -303,12 +312,42 @@ public sealed class AzureVirtualMachineProvisioner : IProvisioner
     /// create a <c>Static</c>-allocation public IP: the bit means the adapter can allocate and attach a static
     /// address as an operation on an existing resource, which it cannot. Creating one as part of a new host is
     /// not the same promise.
+    /// <para>
+    /// <strong>The three maintenance bits, and what each one means here.</strong>
+    /// <see cref="ProvisioningCapabilities.DetectDrift"/> is the registry-backed form: the comparison reads
+    /// the machine back from ARM, so a "matches" answer is about the VM as Azure describes it right now.
+    /// <see cref="ProvisioningCapabilities.UpdateInPlace"/> is claimed because a size change really is a
+    /// mutation of the existing resource — an ARM write that changes
+    /// <c>properties.hardwareProfile.vmSize</c> leaves the VM's ARM id, its network interface, its address
+    /// and its managed OS disk exactly as they were — and so is a tag change.
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> is claimed because an image change is not:
+    /// <c>properties.storageProfile.imageReference</c> is fixed when the machine is created, so reaching a
+    /// different image means deleting this VM and creating another, with the interruption and the data
+    /// consequence that implies.
+    /// </para>
+    /// <para>
+    /// This is the first adapter in the codebase to hold both update bits, and the pair is a real fact about
+    /// ARM rather than hedging: the container adapter holds only
+    /// <see cref="ProvisioningCapabilities.RecreateToUpdate"/> because an engine offers no property edits at
+    /// all, the SSH adapter holds only <see cref="ProvisioningCapabilities.UpdateInPlace"/> because a process
+    /// install has no provider identity to discard, and a cloud VM genuinely has both shapes depending on
+    /// which property is being changed. Which one a given request gets is answered per plan by
+    /// <see cref="PlannedChange.RequiresRecreate"/>, never by the bits.
+    /// </para>
+    /// <para>
+    /// None of the three implies execution. Nothing on this type resizes, replaces or retags a machine;
+    /// <see cref="ProvisioningCapabilities.Resize"/> stays absent for exactly that reason, because being able
+    /// to plan a resize is not being able to perform one.
+    /// </para>
     /// </remarks>
     public ProvisioningCapabilities Capabilities =>
         ProvisioningCapabilities.Create
         | ProvisioningCapabilities.Destroy
         | ProvisioningCapabilities.TagQuery
-        | ProvisioningCapabilities.EstimatesCost;
+        | ProvisioningCapabilities.EstimatesCost
+        | ProvisioningCapabilities.UpdateInPlace
+        | ProvisioningCapabilities.RecreateToUpdate
+        | ProvisioningCapabilities.DetectDrift;
 
     /// <inheritdoc />
     /// <remarks>

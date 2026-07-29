@@ -1352,7 +1352,7 @@ public class AzureVirtualMachineProvisionerTests
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
-    public void The_provisioner_claims_exactly_the_four_capabilities_it_implements()
+    public void The_provisioner_claims_exactly_the_capabilities_it_implements()
     {
         var scenario = new AzureScenario();
 
@@ -1360,7 +1360,10 @@ public class AzureVirtualMachineProvisionerTests
             ProvisioningCapabilities.Create
             | ProvisioningCapabilities.Destroy
             | ProvisioningCapabilities.TagQuery
-            | ProvisioningCapabilities.EstimatesCost);
+            | ProvisioningCapabilities.EstimatesCost
+            | ProvisioningCapabilities.UpdateInPlace
+            | ProvisioningCapabilities.RecreateToUpdate
+            | ProvisioningCapabilities.DetectDrift);
     }
 
     [Theory]
@@ -1368,9 +1371,6 @@ public class AzureVirtualMachineProvisionerTests
     [InlineData(ProvisioningCapabilities.Snapshot)]
     [InlineData(ProvisioningCapabilities.StaticAddress)]
     [InlineData(ProvisioningCapabilities.FirewallRules)]
-    [InlineData(ProvisioningCapabilities.UpdateInPlace)]
-    [InlineData(ProvisioningCapabilities.RecreateToUpdate)]
-    [InlineData(ProvisioningCapabilities.DetectDrift)]
     public void Every_capability_the_provisioner_does_not_implement_is_absent(ProvisioningCapabilities absent)
     {
         var scenario = new AzureScenario();

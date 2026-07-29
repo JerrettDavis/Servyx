@@ -43,6 +43,23 @@ public class ServyxTagKeysTests
     }
 
     [Fact]
+    public void The_two_drift_expectation_keys_are_pinned_and_are_descriptive_rather_than_identifying()
+    {
+        // A ResourceHandle has no image or size field, so these keys are the only place a drift check's
+        // expectation can live. Their spellings are pinned for the same reason every other key's is.
+        ServyxTagKeys.Image.Should().Be("servyx.image");
+        ServyxTagKeys.Size.Should().Be("servyx.size");
+
+        ServyxTagKeys.Image.Should().StartWith(ServyxTagKeys.Prefix);
+        ServyxTagKeys.Size.Should().StartWith(ServyxTagKeys.Prefix);
+
+        // Neither identifies a resource: one missing them is still unambiguously Servyx-owned and still fully
+        // sweepable, so both travel as ordinary extras and a caller can never shadow an identity key with one.
+        ServyxTagKeys.Canonical.Should().NotContain(ServyxTagKeys.Image);
+        ServyxTagKeys.Canonical.Should().NotContain(ServyxTagKeys.Size);
+    }
+
+    [Fact]
     public void Build_emits_exactly_the_canonical_keys_when_given_no_extras()
     {
         var tags = ServyxTagKeys.Build("srv-0001", "job-42", "conn-1");

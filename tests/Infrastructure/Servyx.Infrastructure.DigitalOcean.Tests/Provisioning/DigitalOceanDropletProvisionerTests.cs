@@ -667,7 +667,7 @@ public class DigitalOceanDropletProvisionerTests
     // ---------------------------------------------------------------------------------------------------
 
     [Fact]
-    public void The_provisioner_claims_exactly_the_four_capabilities_it_implements()
+    public void The_provisioner_claims_exactly_the_capabilities_it_implements()
     {
         var scenario = new DigitalOceanScenario();
 
@@ -675,7 +675,10 @@ public class DigitalOceanDropletProvisionerTests
             ProvisioningCapabilities.Create
             | ProvisioningCapabilities.Destroy
             | ProvisioningCapabilities.TagQuery
-            | ProvisioningCapabilities.EstimatesCost);
+            | ProvisioningCapabilities.EstimatesCost
+            | ProvisioningCapabilities.UpdateInPlace
+            | ProvisioningCapabilities.RecreateToUpdate
+            | ProvisioningCapabilities.DetectDrift);
     }
 
     [Theory]

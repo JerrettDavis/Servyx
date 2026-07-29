@@ -225,17 +225,90 @@ internal sealed class AzureScenario
         string id = VmId,
         string provisioningState = "Succeeded",
         string vmSize = VmSize,
-        IReadOnlyDictionary<string, string>? tags = null) =>
-        "{\"id\":\"" + id + "\",\"name\":\"" + VmName + "\",\"type\":\"Microsoft.Compute/virtualMachines\","
-        + "\"location\":\"" + Region + "\","
-        + "\"tags\":" + TagsJson(tags) + ","
-        + "\"properties\":{"
-        + "\"provisioningState\":\"" + provisioningState + "\","
-        + "\"timeCreated\":\"2026-07-27T10:00:00Z\","
-        + "\"hardwareProfile\":{\"vmSize\":\"" + vmSize + "\"},"
-        + "\"osProfile\":{\"adminUsername\":\"azureuser\",\"computerName\":\"" + VmName + "\"},"
-        + "\"networkProfile\":{\"networkInterfaces\":[{\"id\":\"" + NicId + "\"}]}"
-        + "}}";
+        IReadOnlyDictionary<string, string>? tags = null,
+        string? imageUrn = ImageUrn,
+        string? osDiskDeleteOption = "Delete",
+        string location = Region)
+    {
+        var parts = imageUrn?.Split(':');
+        var imageJson = parts is { Length: 4 }
+            ? "\"imageReference\":{\"publisher\":\"" + parts[0] + "\",\"offer\":\"" + parts[1]
+              + "\",\"sku\":\"" + parts[2] + "\",\"version\":\"" + parts[3] + "\"},"
+            : string.Empty;
+
+        var osDiskJson = "\"osDisk\":{\"name\":\"" + VmName + "_OsDisk\",\"createOption\":\"FromImage\""
+            + (osDiskDeleteOption is null ? string.Empty : ",\"deleteOption\":\"" + osDiskDeleteOption + "\"")
+            + ",\"managedDisk\":{\"storageAccountType\":\"Premium_LRS\"}}";
+
+        return "{\"id\":\"" + id + "\",\"name\":\"" + VmName + "\",\"type\":\"Microsoft.Compute/virtualMachines\","
+            + "\"location\":\"" + location + "\","
+            + "\"tags\":" + TagsJson(tags) + ","
+            + "\"properties\":{"
+            + "\"provisioningState\":\"" + provisioningState + "\","
+            + "\"timeCreated\":\"2026-07-27T10:00:00Z\","
+            + "\"hardwareProfile\":{\"vmSize\":\"" + vmSize + "\"},"
+            + "\"storageProfile\":{" + imageJson + osDiskJson + "},"
+            + "\"osProfile\":{\"adminUsername\":\"azureuser\",\"computerName\":\"" + VmName + "\"},"
+            + "\"networkProfile\":{\"networkInterfaces\":[{\"id\":\"" + NicId + "\"}]}"
+            + "}}";
+    }
+
+    /// <summary>
+    /// The handle Servyx would have recorded for the machine, optionally carrying the two descriptive
+    /// expectations a drift check needs in order to be able to prove a match.
+    /// </summary>
+    /// <remarks>
+    /// The size and image expectations are ordinary Servyx tags a caller opts into with <c>tag:</c>
+    /// provisioning parameters — the adapter does not stamp them itself — so a handle built without them is
+    /// just as realistic, and is what the "cannot prove a match" tests use.
+    /// </remarks>
+    internal static ResourceHandle RecordedHandle(
+        string region = Region,
+        string? size = VmSize,
+        string? image = ImageUrn,
+        string resourceId = VmId,
+        string provisionerId = AzureVirtualMachineProvisioner.Id)
+    {
+        var tags = new Dictionary<string, string>(CanonicalVmTags, StringComparer.Ordinal);
+
+        if (size is not null)
+        {
+            tags[ServyxTagKeys.Size] = size;
+        }
+
+        if (image is not null)
+        {
+            tags[ServyxTagKeys.Image] = image;
+        }
+
+        return new ResourceHandle(provisionerId, resourceId, region, tags);
+    }
+
+    /// <summary>
+    /// Answers the token exchange and every ARM GET with one VM payload, and fails loudly on any ARM request
+    /// that is not a GET.
+    /// </summary>
+    /// <remarks>
+    /// The "anything else" branch is the assertion, not the convenience: planning and drift detection must
+    /// issue reads and nothing else, so a PUT, PATCH or DELETE from either path fails the test where it
+    /// happens rather than being silently answered.
+    /// </remarks>
+    internal void RouteReadOnly(string? virtualMachineJson = null) =>
+        Api.Responder = request =>
+            RouteTokenExchange(request)
+            ?? (request.Method == HttpMethod.Get
+                ? AzureArmApiDouble.Json(HttpStatusCode.OK, virtualMachineJson ?? VirtualMachineJson())
+                : throw new InvalidOperationException(
+                    $"A read-only path issued a mutating {request.Method} request to '{request.Uri}'."));
+
+    /// <summary>Answers every ARM GET with a 404, as ARM does for a machine that no longer exists.</summary>
+    internal void RouteMissingVirtualMachine() =>
+        Api.Responder = request =>
+            RouteTokenExchange(request)
+            ?? (request.Method == HttpMethod.Get
+                ? AzureArmApiDouble.Empty(HttpStatusCode.NotFound)
+                : throw new InvalidOperationException(
+                    $"A read-only path issued a mutating {request.Method} request to '{request.Uri}'."));
 
     /// <summary>The network interface as ARM reports it.</summary>
     internal static string NetworkInterfaceJson(

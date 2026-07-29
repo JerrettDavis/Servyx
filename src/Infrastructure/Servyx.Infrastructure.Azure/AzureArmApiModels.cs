@@ -130,6 +130,19 @@ internal sealed class ArmVirtualMachineProperties
     [JsonPropertyName("hardwareProfile")]
     public ArmHardwareProfile? HardwareProfile { get; init; }
 
+    /// <summary>
+    /// The VM's image reference and OS disk, as ARM currently reports them.
+    /// </summary>
+    /// <remarks>
+    /// Read only by maintenance, and both halves are load-bearing there. The image reference is what a drift
+    /// check compares against and what tells update planning whether the plan it is about to describe is a
+    /// VM replacement. The OS disk's <c>deleteOption</c> is what lets a replacement plan state the fate of
+    /// the machine's data as something read off the live machine rather than assumed from what this adapter
+    /// wrote at create time.
+    /// </remarks>
+    [JsonPropertyName("storageProfile")]
+    public ArmStorageProfile? StorageProfile { get; init; }
+
     [JsonPropertyName("networkProfile")]
     public ArmNetworkProfile? NetworkProfile { get; init; }
 }
@@ -139,6 +152,58 @@ internal sealed class ArmHardwareProfile
 {
     [JsonPropertyName("vmSize")]
     public string? VmSize { get; init; }
+}
+
+/// <summary>A VM's image and OS disk, as ARM reports them on a read.</summary>
+/// <remarks>
+/// A separate type from <c>ArmStorageProfileRequest</c> on purpose: the request model's members are
+/// <c>required</c>, because a write that omitted one would be rejected by ARM, whereas a read must cope with
+/// an older API version, a VM created from something other than a marketplace image, or a field ARM simply
+/// does not return. Reusing the write model here would turn a partial response into a deserialisation
+/// failure on a read path whose whole job is to report what is actually there.
+/// </remarks>
+internal sealed class ArmStorageProfile
+{
+    [JsonPropertyName("imageReference")]
+    public ArmImageReferenceInfo? ImageReference { get; init; }
+
+    [JsonPropertyName("osDisk")]
+    public ArmOsDisk? OsDisk { get; init; }
+}
+
+/// <summary>The marketplace image a VM was created from, as ARM reports it.</summary>
+internal sealed class ArmImageReferenceInfo
+{
+    [JsonPropertyName("publisher")]
+    public string? Publisher { get; init; }
+
+    [JsonPropertyName("offer")]
+    public string? Offer { get; init; }
+
+    [JsonPropertyName("sku")]
+    public string? Sku { get; init; }
+
+    [JsonPropertyName("version")]
+    public string? Version { get; init; }
+}
+
+/// <summary>A VM's OS disk, as ARM reports it.</summary>
+internal sealed class ArmOsDisk
+{
+    [JsonPropertyName("name")]
+    public string? Name { get; init; }
+
+    /// <summary>
+    /// What happens to the managed disk when the VM is deleted: <c>Delete</c> or <c>Detach</c>.
+    /// </summary>
+    /// <remarks>
+    /// This adapter writes <c>Delete</c> at create time (see <c>ArmOsDiskRequest</c>'s remarks for why), but
+    /// maintenance reads the value back rather than assuming it: a plan that replaces the VM has to state
+    /// what becomes of the machine's data, and that fate is decided by whatever this field says on the live
+    /// machine, not by what the create request said months earlier.
+    /// </remarks>
+    [JsonPropertyName("deleteOption")]
+    public string? DeleteOption { get; init; }
 }
 
 /// <summary>A VM's NIC attachments. The address a descriptor names is reached through these.</summary>

@@ -115,6 +115,12 @@ internal sealed class DigitalOceanScenario
         "servyx_managed:true",
     ];
 
+    /// <summary>The image slug the substituted API reports the droplet is running.</summary>
+    internal const string ImageSlug = "ubuntu-24-04-x64";
+
+    /// <summary>The boot-disk size, in gigabytes, the substituted API reports for the droplet.</summary>
+    internal const int DiskGigabytes = 80;
+
     /// <summary>A droplet object as the DigitalOcean API reports it.</summary>
     internal static string DropletJson(
         long id = DropletId,
@@ -122,7 +128,10 @@ internal sealed class DigitalOceanScenario
         string region = "nyc3",
         string sizeSlug = "s-2vcpu-4gb",
         IReadOnlyList<string>? tags = null,
-        bool withNetworks = true)
+        bool withNetworks = true,
+        string? imageSlug = ImageSlug,
+        long imageId = 178432517,
+        int disk = DiskGigabytes)
     {
         var tagJson = string.Join(",", (tags ?? CanonicalDropletTags).Select(t => "\"" + t + "\""));
         var networks = withNetworks
@@ -130,11 +139,19 @@ internal sealed class DigitalOceanScenario
               + "{\"ip_address\":\"" + PublicIp + "\",\"netmask\":\"255.255.240.0\",\"gateway\":\"203.0.113.1\",\"type\":\"public\"}],\"v6\":[]}"
             : "{\"v4\":[],\"v6\":[]}";
 
+        // A custom image or a snapshot has no slug at all, so the slug member is omitted rather than emptied
+        // when a test asks for that shape - which is exactly how DigitalOcean reports one.
+        var image = "{\"id\":" + imageId.ToString(CultureInfo.InvariantCulture)
+            + (imageSlug is null ? string.Empty : ",\"slug\":\"" + imageSlug + "\"")
+            + ",\"distribution\":\"Ubuntu\"}";
+
         return "{\"id\":" + id.ToString(CultureInfo.InvariantCulture)
             + ",\"name\":\"palworld-01\""
             + ",\"status\":\"" + status + "\""
             + ",\"created_at\":\"2026-07-27T10:00:00Z\""
             + ",\"size_slug\":\"" + sizeSlug + "\""
+            + ",\"disk\":" + disk.ToString(CultureInfo.InvariantCulture)
+            + ",\"image\":" + image
             + ",\"tags\":[" + tagJson + "]"
             + ",\"region\":{\"slug\":\"" + region + "\"}"
             + ",\"networks\":" + networks
@@ -148,8 +165,69 @@ internal sealed class DigitalOceanScenario
         string region = "nyc3",
         string sizeSlug = "s-2vcpu-4gb",
         IReadOnlyList<string>? tags = null,
-        bool withNetworks = true) =>
-        "{\"droplet\":" + DropletJson(id, status, region, sizeSlug, tags, withNetworks) + "}";
+        bool withNetworks = true,
+        string? imageSlug = ImageSlug,
+        long imageId = 178432517,
+        int disk = DiskGigabytes) =>
+        "{\"droplet\":" + DropletJson(id, status, region, sizeSlug, tags, withNetworks, imageSlug, imageId, disk) + "}";
+
+    /// <summary>
+    /// The handle Servyx would have recorded for the droplet, optionally carrying the two descriptive
+    /// expectations a drift check needs in order to be able to prove a match.
+    /// </summary>
+    /// <remarks>
+    /// The size and image expectations are ordinary Servyx tags a caller opts into with <c>tag:</c>
+    /// provisioning parameters — the adapter does not stamp them itself — so a handle built without them is
+    /// just as realistic, and is what the "cannot prove a match" tests use.
+    /// </remarks>
+    internal static ResourceHandle RecordedHandle(
+        string region = "nyc3",
+        string? size = "s-2vcpu-4gb",
+        string? image = ImageSlug,
+        long id = DropletId,
+        string provisionerId = DigitalOceanDropletProvisioner.Id)
+    {
+        var tags = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [ServyxTagKeys.Managed] = ServyxTagKeys.ManagedValue,
+            [ServyxTagKeys.InstanceId] = InstanceId,
+            [ServyxTagKeys.JobId] = JobId,
+            [ServyxTagKeys.ConnectorId] = ConnectorId,
+        };
+
+        if (size is not null)
+        {
+            tags[ServyxTagKeys.Size] = size;
+        }
+
+        if (image is not null)
+        {
+            tags[ServyxTagKeys.Image] = image;
+        }
+
+        return new ResourceHandle(provisionerId, id.ToString(CultureInfo.InvariantCulture), region, tags);
+    }
+
+    /// <summary>Answers every GET with one droplet payload, and fails loudly on anything that is not a GET.</summary>
+    /// <remarks>
+    /// The "anything else" branch is the assertion, not the convenience: planning and drift detection must
+    /// issue reads and nothing else, so a POST, PUT or DELETE from either path fails the test where it
+    /// happens rather than being silently answered.
+    /// </remarks>
+    internal void RouteReadOnly(string? envelope = null)
+    {
+        Api.Responder = request => request.Method == HttpMethod.Get
+            ? DigitalOceanApiDouble.Json(HttpStatusCode.OK, envelope ?? DropletEnvelopeJson())
+            : throw new InvalidOperationException(
+                $"A read-only path issued a mutating {request.Method} request to '{request.Uri}'.");
+    }
+
+    /// <summary>Answers every GET with a 404, as DigitalOcean does for a droplet that no longer exists.</summary>
+    internal void RouteMissingDroplet() =>
+        Api.Responder = request => request.Method == HttpMethod.Get
+            ? DigitalOceanApiDouble.Empty(HttpStatusCode.NotFound)
+            : throw new InvalidOperationException(
+                $"A read-only path issued a mutating {request.Method} request to '{request.Uri}'.");
 
     /// <summary>The <c>{ "droplets": [ ... ] }</c> envelope a list answers with.</summary>
     internal static string DropletListJson(string? nextPage = null, params string[] droplets)

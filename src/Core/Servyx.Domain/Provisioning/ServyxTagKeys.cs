@@ -91,6 +91,28 @@ public static class ServyxTagKeys
     public const string Image = Prefix + "image";
 
     /// <summary>
+    /// The machine size/shape reference the resource was created at — a DigitalOcean size slug, an Azure VM
+    /// size — recorded on the resource so a later drift check has something to compare the live value
+    /// against.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Exists for exactly the reason <see cref="Image"/> does, and reads the same way: a
+    /// <see cref="ResourceHandle"/> carries no size field, so its <see cref="ResourceHandle.Tags"/> is the
+    /// only place an expectation can live, and a check with no recorded expectation reports the size as
+    /// unverifiable rather than as unchanged. On a cloud VM the two together are what a drift check is
+    /// mostly <em>for</em>: an out-of-band resize is the cheapest way for a machine to stop matching what
+    /// Servyx recorded while still looking healthy.
+    /// </para>
+    /// <para>
+    /// Descriptive rather than identifying, so — like <see cref="RootPath"/> and <see cref="Image"/> — it is
+    /// deliberately not one of the <see cref="Canonical"/> keys and travels as an ordinary extra. Adapters
+    /// whose resources have no size concept (a container, a process) simply never write it.
+    /// </para>
+    /// </remarks>
+    public const string Size = Prefix + "size";
+
+    /// <summary>
     /// The identity keys every Servyx-managed resource carries, in the order <see cref="Build"/> writes
     /// them. A resource missing any of these cannot be attributed after the fact, which is why
     /// <see cref="TryReadIdentity"/> refuses to reconstruct an identity from a partial set rather than
