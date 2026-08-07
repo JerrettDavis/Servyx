@@ -1,6 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Servyx.Domain.Definitions;
 using Servyx.Domain.Provisioning;
+using Servyx.Infrastructure.Persistence.Definitions;
 using Servyx.Infrastructure.Persistence.Interceptors;
 using Servyx.Infrastructure.Persistence.Provisioning;
 
@@ -26,9 +28,25 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<SqliteWriteAheadLogInterceptor>();
 
-        services.AddDbContext<ServyxDbContext>((sp, options) => options
+        // AddDbContextFactory FIRST, then a scoped ServyxDbContext derived FROM the factory — never
+        // AddDbContext<ServyxDbContext>(...) and AddDbContextFactory<ServyxDbContext>(...) side by side for
+        // the same context type. That combination was this project's own real bug, latent until M6's second
+        // real game definition finally made ServerQueryService's multi-definition constructor run for real
+        // outside a unit test: AddDbContext registers DbContextOptions<ServyxDbContext> Scoped; when
+        // AddDbContextFactory then runs second, its own TryAdd for that same options type is a no-op, so the
+        // singleton IDbContextFactory<ServyxDbContext> (needed by the singleton EfServerDefinitionBindingStore,
+        // consumed by the also-singleton ServerQueryService) ends up depending on a Scoped service — a
+        // container-validation error only Development's default ValidateScopes=true ever surfaced, and only
+        // once a live host actually resolved the container with more than one definition loaded. Deriving
+        // the scoped context from the factory (services.AddScoped(sp => factory.CreateDbContext())) is the
+        // combination EF Core actually supports for "a factory for one singleton consumer, plus ordinary
+        // scoped injection for another" — see EfProvisioningLedger, which still gets ServyxDbContext
+        // injected directly and is unaffected by this change.
+        services.AddDbContextFactory<ServyxDbContext>((sp, options) => options
             .UseSqlite(connectionString)
             .AddInterceptors(sp.GetRequiredService<SqliteWriteAheadLogInterceptor>()));
+
+        services.AddScoped(sp => sp.GetRequiredService<IDbContextFactory<ServyxDbContext>>().CreateDbContext());
 
         return services;
     }
@@ -59,6 +77,27 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddScoped<IProvisioningLedger, EfProvisioningLedger>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfServerDefinitionBindingStore"/> as the <see cref="IServerDefinitionBindingStore"/>,
+    /// backed by the <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A
+    /// sibling of <see cref="AddServyxProvisioningLedger"/> for the same reason — this is a distinct opt-in
+    /// decision, not a side effect of asking for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, unlike <see cref="AddServyxProvisioningLedger"/>'s scoped ledger — its sole
+    /// consumer, <c>ServerQueryService</c>, is itself a process-lifetime singleton. See
+    /// <see cref="EfServerDefinitionBindingStore"/>'s own remarks for why that is safe here (a short-lived
+    /// context per call, not a held scoped dependency).
+    /// </remarks>
+    public static IServiceCollection AddServyxServerDefinitionBindingStore(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IServerDefinitionBindingStore, EfServerDefinitionBindingStore>();
 
         return services;
     }

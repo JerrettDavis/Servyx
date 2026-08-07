@@ -1,0 +1,11 @@
+{
+    "BlockIO": "0B / 27GB",
+    "CPUPerc": "138.51%",
+    "Container": "palworld-server",
+    "ID": "1cae202fb534",
+    "MemPerc": "26.76%",
+    "MemUsage": "2.141GiB / 8GiB",
+    "Name": "palworld-server",
+    "NetIO": "14.1MB / 49.5MB",
+    "PIDs": "68"
+}

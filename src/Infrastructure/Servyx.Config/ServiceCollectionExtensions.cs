@@ -7,10 +7,12 @@ namespace Servyx.Config;
 public static class ServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers <see cref="DotEnvConfigAdapter"/> and <see cref="IniConfigAdapter"/> (both as
-    /// <see cref="IConfigAdapter"/>, resolvable via <see cref="IConfigAdapter.FormatId"/>),
-    /// <see cref="UnrealOptionSettingsCodec"/> (as <see cref="IConfigValueCodec"/>, resolvable via
-    /// <see cref="IConfigValueCodec.CodecId"/>), and <see cref="ConfigMerger"/> as <see cref="IConfigMerger"/>.
+    /// Registers <see cref="DotEnvConfigAdapter"/>, <see cref="IniConfigAdapter"/>,
+    /// <see cref="PropertiesConfigAdapter"/>, and <see cref="JsonConfigAdapter"/> (all as
+    /// <see cref="IConfigAdapter"/>, resolvable via
+    /// <see cref="IConfigAdapter.FormatId"/>), <see cref="UnrealOptionSettingsCodec"/> (as
+    /// <see cref="IConfigValueCodec"/>, resolvable via <see cref="IConfigValueCodec.CodecId"/>), and
+    /// <see cref="ConfigMerger"/> as <see cref="IConfigMerger"/>.
     /// </summary>
     public static IServiceCollection AddServyxConfig(this IServiceCollection services)
     {
@@ -18,6 +20,8 @@ public static class ServiceCollectionExtensions
 
         services.AddSingleton<IConfigAdapter, DotEnvConfigAdapter>();
         services.AddSingleton<IConfigAdapter, IniConfigAdapter>();
+        services.AddSingleton<IConfigAdapter, PropertiesConfigAdapter>();
+        services.AddSingleton<IConfigAdapter, JsonConfigAdapter>();
         services.AddSingleton<IConfigValueCodec, UnrealOptionSettingsCodec>();
         services.AddSingleton<IConfigMerger, ConfigMerger>();
 

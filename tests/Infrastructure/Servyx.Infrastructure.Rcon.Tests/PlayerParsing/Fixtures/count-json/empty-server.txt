@@ -1,0 +1,1 @@
+{"data":{"serverGameState":{"numConnectedPlayers":0,"techTier":1}}}

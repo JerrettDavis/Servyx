@@ -1,4 +1,5 @@
 using System.Globalization;
+using Microsoft.Extensions.Logging;
 using Servyx.Domain.Backups;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
@@ -26,6 +27,15 @@ namespace Servyx.Web.Services;
 /// <param name="DeploymentKind">The definition's deployment kind, used by adopters' <c>Supports</c>.</param>
 /// <param name="DefaultRetention">Retention applied when a caller supplies none.</param>
 /// <param name="Writable">Whether the operator granted this server <c>WriteMode = Enabled</c>.</param>
+/// <param name="ForeignDirectory">
+/// Root-relative directory some other mechanism (a distro cron job, the game's own scheduled export)
+/// writes archives into, or <see langword="null"/> when the operator declared none. Named here, not
+/// guessed: see <see cref="SshBackupWiringOptions"/>'s remarks for why Servyx will not infer this path.
+/// </param>
+/// <param name="ForeignPattern">
+/// Filename glob identifying an archive inside <paramref name="ForeignDirectory"/> (e.g. <c>*.tar.gz</c>).
+/// Meaningless when <paramref name="ForeignDirectory"/> is <see langword="null"/>.
+/// </param>
 public sealed record SshBackupServer(
     string ServerKey,
     string Endpoint,
@@ -36,7 +46,9 @@ public sealed record SshBackupServer(
     string StoreDirectory,
     string DeploymentKind,
     RetentionPolicy DefaultRetention,
-    bool Writable);
+    bool Writable,
+    string? ForeignDirectory = null,
+    string ForeignPattern = SshBackupWiringOptions.DefaultForeignPattern);
 
 /// <summary>
 /// The SSH-hosted servers the operator has configured for backups, read from
@@ -82,6 +94,12 @@ public sealed class SshBackupWiringOptions
 
     /// <summary>The default directory Servyx writes its own archives into, relative to the data root.</summary>
     public const string DefaultStoreDirectory = BackupWiringOptions.DefaultStoreDirectory;
+
+    /// <summary>
+    /// The filename glob assumed for a declared foreign archive directory when the operator names a
+    /// directory but no pattern — the shape a plain <c>tar.gz</c> cron job produces.
+    /// </summary>
+    public const string DefaultForeignPattern = "*.tar.gz";
 
     /// <summary>The <see cref="SecretUrn"/> scope SSH credentials live under.</summary>
     public const string SecretScope = "server";
@@ -161,7 +179,13 @@ public sealed class SshBackupWiringOptions
     /// </remarks>
     /// <param name="configuration">The application configuration.</param>
     /// <param name="gate">The provisioning gate; a closed gate yields no servers at all.</param>
-    public static SshBackupWiringOptions FromConfiguration(IConfiguration configuration, ProvisioningGate gate)
+    /// <param name="logger">
+    /// Where a declared-but-inert <c>ForeignDirectory</c> is reported (see <see cref="SshBackupServer.ForeignDirectory"/>'s
+    /// remarks). Optional so every existing call site keeps compiling; a caller that omits it gets a server
+    /// object exactly as before, just without the warning.
+    /// </param>
+    public static SshBackupWiringOptions FromConfiguration(
+        IConfiguration configuration, ProvisioningGate gate, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(gate);
@@ -204,6 +228,31 @@ public sealed class SshBackupWiringOptions
                 ? DefaultStoreDirectory
                 : ssh["StoreDirectory"]!.Trim('/');
 
+            // Root-relative, exactly like StoreDirectory above: nothing can be inferred, so an unset value
+            // means "no foreign directory declared" (None below), never a guessed default like "backups".
+            var foreignDirectory = string.IsNullOrWhiteSpace(ssh["ForeignDirectory"])
+                ? null
+                : ssh["ForeignDirectory"]!.Trim('/');
+            var foreignPattern = string.IsNullOrWhiteSpace(ssh["ForeignPattern"])
+                ? DefaultForeignPattern
+                : ssh["ForeignPattern"]!.Trim();
+
+            // Naming a directory is not enough to make its archives appear: SshBackupProvider only ever
+            // surfaces what a registered IBackupAdopter discovers inside a declared directory, and this
+            // project registers none for SSH (see AddServyxSshBackups()'s remarks — a generic SSH host
+            // ships no convention Servyx could adopt on its own say-so). Without this warning, an operator
+            // who sets ForeignDirectory would see nothing adopted and no error at all — a silent-failure
+            // shape this codebase otherwise goes out of its way to avoid.
+            if (foreignDirectory is not null)
+            {
+                logger?.LogWarning(
+                    "'{Section}:{ServerKey}:{SshKey}:ForeignDirectory' names '{Directory}', but no " +
+                    "IBackupAdopter is registered for SSH-hosted backups, so nothing in it will be adopted " +
+                    "or listed. The directory is declared and ready for a future host-specific adopter; on " +
+                    "its own it does nothing.",
+                    SectionKey, server.Key, SshKey, foreignDirectory);
+            }
+
             servers.Add(new SshBackupServer(
                 server.Key,
                 host.Trim(),
@@ -218,7 +267,9 @@ public sealed class SshBackupWiringOptions
                     ReadCount(ssh["KeepDaily"]) ?? BackupWiringOptions.FallbackRetention.KeepDaily,
                     ReadCount(ssh["KeepWeekly"]) ?? BackupWiringOptions.FallbackRetention.KeepWeekly),
                 Enum.TryParse<WriteMode>(server[ServerWriteModes.WriteModeKey], ignoreCase: true, out var mode)
-                    && mode != WriteMode.ReadOnly));
+                    && mode != WriteMode.ReadOnly,
+                foreignDirectory,
+                foreignPattern));
         }
 
         return servers.Count == 0 ? None : new SshBackupWiringOptions(servers);

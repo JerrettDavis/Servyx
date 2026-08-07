@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- The only project under src/Core allowed to depend on YamlDotNet. Servyx.Domain stays parser-free
+         by design (see the remarks on GameDefinition) so Application and Web can consume the typed model
+         with zero YAML dependency; this project exists specifically to own that dependency and turn raw
+         YAML into (or against) the Servyx.Domain.Definitions.Model shape. -->
+    <PackageReference Include="YamlDotNet" />
+
+    <!-- FileSystemGameDefinitionProvider/GameDefinitionCatalog's DI registration (ServiceCollectionExtensions),
+         configuration reads, logging, and DefinitionCatalogRefreshService's BackgroundService base. -->
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Servyx.Domain\Servyx.Domain.csproj" />
+  </ItemGroup>
+
+</Project>

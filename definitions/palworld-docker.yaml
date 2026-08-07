@@ -107,12 +107,23 @@ lifecycle:
       interval: 15s
       timeout: 12m
   stop:
-    - { kind: control, channel: rcon, command: shutdown, args: { seconds: 30 }, timeout: 45s }
+    - { kind: control, channel: rcon, command: shutdown, args: { seconds: 30, message: "Server shutting down" }, timeout: 45s }
     - { kind: control, channel: rcon, command: doexit, timeout: 15s }
     - { kind: signal, signal: SIGINT, timeout: 30s }
     - { kind: kill }
   crashDetection:
     - { kind: log-regex, pattern: 'Fatal error|Assertion failed', action: mark-crashed }
+
+  # The image's own HEALTHCHECK calls /v1/api/info without admin credentials and gets 401 on every
+  # probe, so Servyx must not take it at face value ("ignore") — see the explanation below, shown to an
+  # operator whenever this deployment's discovered health is unhealthy.
+  healthSignal:
+    trust: ignore
+    explanation: >-
+      The container's own HEALTHCHECK calls http://localhost:8212/v1/api/info without admin
+      credentials and receives 401 Unauthorized on every probe. The Palworld server itself is
+      healthy — /v1/api/players returns OK on the same polling cycle. Servyx derives readiness
+      from its own authenticated detectors, never from this signal.
 
 control:
   channels:

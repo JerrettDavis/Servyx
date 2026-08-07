@@ -16,19 +16,23 @@ namespace Servyx.Infrastructure.Ssh;
 /// </summary>
 public sealed class SftpFileChannel : IExecutionTarget
 {
-    private readonly SftpClient _client;
+    private readonly ISftpClient _client;
     private readonly bool _ownsClient;
     private readonly ILogger _logger;
     private bool _disposed;
 
     /// <summary>Creates a channel backed by an already-connected <paramref name="client"/>.</summary>
-    /// <param name="client">An already-connected <see cref="SftpClient"/>.</param>
+    /// <param name="client">
+    /// An already-connected client. Typed as <see cref="ISftpClient"/> rather than the concrete
+    /// <see cref="SftpClient"/> — which every real construction site still passes, since it implements this
+    /// interface — purely so tests can substitute a fake/mock without a live SSH connection.
+    /// </param>
     /// <param name="ownsClient">Whether this instance disposes <paramref name="client"/> when it is itself disposed.</param>
     /// <param name="logger">
     /// Used to record non-fatal but noteworthy events — in particular, a non-atomic write fallback when the
     /// server lacks the <c>posix-rename@openssh.com</c> extension. Defaults to a no-op logger.
     /// </param>
-    public SftpFileChannel(SftpClient client, bool ownsClient, ILogger? logger = null)
+    public SftpFileChannel(ISftpClient client, bool ownsClient, ILogger? logger = null)
     {
         ArgumentNullException.ThrowIfNull(client);
 
@@ -83,6 +87,18 @@ public sealed class SftpFileChannel : IExecutionTarget
     }
 
     /// <inheritdoc />
+    /// <exception cref="DirectoryNotFoundException">
+    /// <paramref name="path"/> does not exist on the remote host. Translated from SSH.NET's
+    /// <see cref="SftpPathNotFoundException"/> the same way <see cref="StatAsync"/> and
+    /// <see cref="OpenReadAsync"/> already translate it for their own not-found cases — a caller that
+    /// distinguishes "this path does not exist" from "this read otherwise failed" (see
+    /// <c>Servyx.Web.Services.LiveDashboardDataService.ReadSavesAsync</c>, which treats a missing world root
+    /// as a genuine empty result and anything else as a failure) needs that distinction to hold identically
+    /// across every <see cref="IExecutionTarget"/> implementation, not just <see cref="Servyx.Infrastructure.Docker.DockerExecutionTarget"/>'s.
+    /// Before this fix, this method alone let <see cref="SftpPathNotFoundException"/> propagate uncaught,
+    /// which inverted that distinction for a missing directory specifically: a genuinely empty world root
+    /// over SSH reported as a read failure instead of "no saves yet".
+    /// </exception>
     public async Task<IReadOnlyList<FileEntry>> ListDirectoryAsync(TargetPath path, CancellationToken ct = default)
     {
         ThrowIfDisposed();
@@ -90,18 +106,25 @@ public sealed class SftpFileChannel : IExecutionTarget
         var remotePath = ToRemotePath(path);
         var entries = new List<FileEntry>();
 
-        await foreach (var file in _client.ListDirectoryAsync(remotePath, ct).ConfigureAwait(false))
+        try
         {
-            if (file.Name is "." or "..")
+            await foreach (var file in _client.ListDirectoryAsync(remotePath, ct).ConfigureAwait(false))
             {
-                continue;
-            }
+                if (file.Name is "." or "..")
+                {
+                    continue;
+                }
 
-            entries.Add(new FileEntry(
-                file.Name,
-                file.IsDirectory,
-                file.IsDirectory ? null : file.Attributes.Size,
-                file.LastWriteTimeUtc));
+                entries.Add(new FileEntry(
+                    file.Name,
+                    file.IsDirectory,
+                    file.IsDirectory ? null : file.Attributes.Size,
+                    file.LastWriteTimeUtc));
+            }
+        }
+        catch (SftpPathNotFoundException ex)
+        {
+            throw new DirectoryNotFoundException($"Directory '{remotePath}' does not exist.", ex);
         }
 
         entries.Sort((a, b) => string.CompareOrdinal(a.Name, b.Name));
@@ -159,6 +182,7 @@ public sealed class SftpFileChannel : IExecutionTarget
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(options);
+        options.ThrowIfBeyondPlainAtomicRename(nameof(SftpFileChannel));
 
         var remotePath = ToRemotePath(path);
         var (directory, fileName) = SplitPath(remotePath);

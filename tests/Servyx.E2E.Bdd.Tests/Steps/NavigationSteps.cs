@@ -13,14 +13,31 @@ namespace Servyx.E2E.Bdd.Tests.Steps;
 [Binding]
 public sealed class NavigationSteps(IPage page, ScreenshotRecorder recorder, AssertionLedger ledger)
 {
-    /// <summary>Maps the seeded demo server's display name to its route id (only one exists in the Mock data source).</summary>
-    private static string ServerIdFor(string serverName) => serverName.ToLowerInvariant();
+    /// <summary>
+    /// Maps a seeded demo server's display name to its route id. Both mock servers happen to derive their
+    /// id from their display name the same way — lowercased, spaces replaced with hyphens
+    /// ("Example Remote Palworld" -&gt; "example-remote-palworld") — see <c>MockDashboardDataService</c>.
+    /// </summary>
+    private static string ServerIdFor(string serverName) => serverName.ToLowerInvariant().Replace(' ', '-');
 
     [Given(@"^Servyx is running against the demonstration host$")]
     public async Task GivenServyxIsRunningAsync()
     {
         // A readiness check, not a business assertion: confirms the shared app+browser fixture (started
         // once for the whole run, see TestRunContext) actually responds before any scenario proceeds.
+        await page.GotoAsync("/");
+        await Expect(page.Locator("nav.svx-nav")).ToBeVisibleAsync();
+    }
+
+    /// <summary>
+    /// The <c>@write-enabled-host</c> counterpart of <see cref="GivenServyxIsRunningAsync"/> — same
+    /// readiness check, against the second app process <see cref="ScenarioHooks"/> points this scenario's
+    /// browser context at (see <see cref="WriteEnabledAppFixture"/>). A distinct step, not a reused one, so
+    /// the feature file names out loud which host a scenario is running against.
+    /// </summary>
+    [Given(@"^Servyx is running with provisioning enabled and per-server write grants$")]
+    public async Task GivenServyxIsRunningWithWriteGrantsAsync()
+    {
         await page.GotoAsync("/");
         await Expect(page.Locator("nav.svx-nav")).ToBeVisibleAsync();
     }
@@ -40,6 +57,12 @@ public sealed class NavigationSteps(IPage page, ScreenshotRecorder recorder, Ass
 
     [When(@"^I open the games page$")]
     public async Task WhenIOpenTheGamesPageAsync() => await page.GotoAsync("games");
+
+    [When(@"^I open the deploy page$")]
+    public async Task WhenIOpenTheDeployPageAsync() => await page.GotoAsync("deploy");
+
+    [When(@"^I open the audit page$")]
+    public async Task WhenIOpenTheAuditPageAsync() => await page.GotoAsync("audit");
 
     [When(@"^I open the ""(.*)"" tab$")]
     public async Task WhenIOpenTheTabAsync(string tabName)

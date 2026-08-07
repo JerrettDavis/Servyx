@@ -52,10 +52,17 @@ public static class ServerWriteModes
     /// </summary>
     /// <param name="configuration">The application configuration.</param>
     /// <param name="gate">The provisioning gate; a closed gate yields no grants at all.</param>
-    public static IReadOnlyList<WriteModeGrant> ReadGrants(IConfiguration configuration, ProvisioningGate gate)
+    /// <param name="logger">
+    /// Where a misspelled <see cref="WriteModeKey"/> value is reported. Naming the key and the offending
+    /// value turns a silent fail-closed into a diagnosable one — the server is still read-only either way,
+    /// but the operator finds out why without guessing.
+    /// </param>
+    public static IReadOnlyList<WriteModeGrant> ReadGrants(
+        IConfiguration configuration, ProvisioningGate gate, ILogger logger)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(gate);
+        ArgumentNullException.ThrowIfNull(logger);
 
         if (!gate.Enabled)
         {
@@ -71,11 +78,26 @@ public static class ServerWriteModes
                 continue;
             }
 
-            if (!Enum.TryParse<WriteMode>(server[WriteModeKey], ignoreCase: true, out var mode) ||
-                mode == WriteMode.ReadOnly)
+            var rawMode = server[WriteModeKey];
+            if (!Enum.TryParse<WriteMode>(rawMode, ignoreCase: true, out var mode))
             {
-                // Absent, misspelled, or explicitly read-only — all three mean the same thing, and it is
-                // the default, so there is nothing to grant.
+                // Absent or empty is the ordinary, silent shape of "not writable"; anything else present is
+                // a typo the operator deserves to be told about, even though the outcome — read-only — is
+                // identical either way.
+                if (!string.IsNullOrWhiteSpace(rawMode))
+                {
+                    logger.LogWarning(
+                        "'{SectionKey}:{Server}:{WriteModeKey}' is not a recognized WriteMode (was '{Value}'); " +
+                        "'{Server}' stays ReadOnly.",
+                        SectionKey, server.Key, WriteModeKey, rawMode, server.Key);
+                }
+
+                continue;
+            }
+
+            if (mode == WriteMode.ReadOnly)
+            {
+                // Explicitly read-only — a legitimate, intentional value, not a misconfiguration to warn about.
                 continue;
             }
 

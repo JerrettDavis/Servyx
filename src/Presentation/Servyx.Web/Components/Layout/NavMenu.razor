@@ -3,8 +3,15 @@
 @inject IServiceProvider Services
 
 <div class="svx-brand">
-    <span class="svx-brand-mark" aria-hidden="true">S</span>
-    <span class="svx-brand-word">Servyx</span>
+    @if (!string.IsNullOrWhiteSpace(_brand.LogoAssetPath))
+    {
+        <img src="@_brand.LogoAssetPath" alt="@_brand.ProductName" class="svx-brand-mark" />
+    }
+    else
+    {
+        <span class="svx-brand-mark" aria-hidden="true">@_brand.ProductName[0]</span>
+    }
+    <span class="svx-brand-word">@_brand.ProductName</span>
 </div>
 
 <nav class="svx-nav" aria-label="Primary">
@@ -27,6 +34,7 @@
 
 @code {
     private bool _provisioningEnabled;
+    private BrandingOptions _brand = BrandingOptions.Default;
 
     /// <summary>
     /// The gate is resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>d, because a
@@ -37,6 +45,7 @@
     protected override void OnInitialized()
     {
         _provisioningEnabled = (Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate ?? ProvisioningGate.Closed).Enabled;
+        _brand = Services.GetService(typeof(BrandingOptions)) as BrandingOptions ?? BrandingOptions.Default;
 
         Nav.LocationChanged += OnLocationChanged;
     }

@@ -345,6 +345,7 @@ public sealed class LocalExecutionTarget : IExecutionTarget
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(options);
+        options.ThrowIfBeyondPlainAtomicRename(nameof(LocalExecutionTarget));
 
         var local = ToLocalPath(path);
 

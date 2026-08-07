@@ -5,6 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- Container-backed tests are opt-in, exactly as in Servyx.Infrastructure.Ssh.Tests: a bare
+         `dotnet test` (including CI's) never touches a Docker daemon, while an explicit
+         filter of "Category=Integration" overrides this default and runs them. See docs/testing.md. -->
+    <VSTestTestCaseFilter Condition="'$(VSTestTestCaseFilter)' == ''">Category!=Integration</VSTestTestCaseFilter>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,6 +20,7 @@
     <PackageReference Include="AwesomeAssertions" />
     <PackageReference Include="TinyBDD" />
     <PackageReference Include="TinyBDD.Xunit" />
+    <PackageReference Include="Xunit.SkippableFact" />
   </ItemGroup>
 
   <ItemGroup>

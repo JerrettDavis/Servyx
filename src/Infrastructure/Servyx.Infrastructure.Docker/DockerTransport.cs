@@ -44,8 +44,16 @@ public sealed class DockerTransport : ITransport
     public string TransportId => "docker";
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <see cref="TransportCapabilities.ContainerScopedFiles"/> is declared because it is true here and
+    /// nowhere else in Servyx: <see cref="DockerExecutionTarget"/> reaches files through the Docker Engine's
+    /// container archive API and prefixes every <see cref="TargetPath"/> with the descriptor's
+    /// <c>rootPath</c> as an <em>in-container</em> path. No path this transport serves can land on the host
+    /// filesystem.
+    /// </remarks>
     public TransportCapabilities Capabilities =>
-        TransportCapabilities.FileRead | TransportCapabilities.DirectoryList | TransportCapabilities.ContainerApi;
+        TransportCapabilities.FileRead | TransportCapabilities.DirectoryList |
+        TransportCapabilities.ContainerApi | TransportCapabilities.ContainerScopedFiles;
 
     /// <inheritdoc />
     public async Task<TargetHealth> ProbeAsync(TargetDescriptor target, CancellationToken ct = default)

@@ -63,6 +63,35 @@ public sealed record DockerContainerSpec(string Image, string ContainerName, Ser
     /// <summary>The Docker restart policy name to apply (e.g. <c>"unless-stopped"</c>), or <see langword="null"/> for the daemon default.</summary>
     public string? RestartPolicy { get; init; }
 
+    /// <summary>
+    /// Files to materialize into the container's storage after it is created but before it is started for
+    /// the first time — the runtime destination of a game definition's <c>deployments[].files[]</c>.
+    /// </summary>
+    /// <remarks>
+    /// Empty for every ordinary container, and deliberately so: an image that takes its configuration from
+    /// environment variables needs none of this. It is non-empty only for the narrow class of image that
+    /// invents a credential for itself on first start unless it finds one already on disk — see the remarks
+    /// on <see cref="SeededFile"/>. Declaring any file here makes the provisioner require an
+    /// <c>ITransport</c>, because the bytes are written through the transport's guarded write path and
+    /// never through this adapter's own Docker client.
+    /// </remarks>
+    public IReadOnlyList<SeededFile> SeededFiles { get; init; } = [];
+
+    /// <summary>
+    /// How long the daemon waits for the workload to exit on its own before force-killing it, baked into the
+    /// container at create time — the Engine-API equivalent of Compose's <c>stop_grace_period</c>, and the
+    /// destination of a game definition's <c>deployments[].stopGracePeriodSeconds</c>.
+    /// </summary>
+    /// <remarks>
+    /// <see langword="null"/> leaves the daemon's own default in force, which is <em>ten seconds</em> — long
+    /// enough for almost nothing. A game that saves its world on shutdown routinely needs minutes, and a
+    /// container created without this value set will be SIGKILLed part-way through that save by any plain
+    /// <c>docker stop</c>, host reboot, or daemon shutdown, no matter how generous the definition's own
+    /// <c>lifecycle.stop</c> ladder is: the ladder governs what Servyx waits for, this governs what the
+    /// daemon waits for, and only the second one applies when Servyx is not the caller.
+    /// </remarks>
+    public TimeSpan? StopGracePeriod { get; init; }
+
     private static string Validate(string value, string name)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(value, name);

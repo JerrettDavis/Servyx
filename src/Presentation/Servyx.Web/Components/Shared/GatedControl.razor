@@ -1,9 +1,14 @@
 @* Wraps arbitrary form content (inputs, selects, groups of both) in a native <fieldset disabled>,
    which disables every nested control per standard HTML semantics, plus a lock icon and tooltip.
-   Use this for settings-form fields; use <GatedButton> for standalone action buttons. *@
+   Use this for settings-form fields; use <GatedButton> for standalone action buttons.
+   <see cref="Enabled"/> defaults to false, so a call site that has not been taught a write posture keeps
+   rendering byte-identically to before: permanently disabled, lock icon shown. *@
 
-<fieldset class="gated-control @CssClass" disabled title="@Reason" aria-label="@AriaLabel" data-testid="gated-control">
-    <span class="gated-control-lock" aria-hidden="true"><Icon Name="lock" Size="13" /></span>
+<fieldset class="gated-control @CssClass" disabled="@(!Enabled)" title="@(Enabled ? null : Reason)" aria-label="@AriaLabel" data-testid="gated-control">
+    @if (!Enabled)
+    {
+        <span class="gated-control-lock" aria-hidden="true"><Icon Name="lock" Size="13" /></span>
+    }
     @ChildContent
 </fieldset>
 
@@ -20,5 +25,11 @@
     [Parameter]
     public string CssClass { get; set; } = string.Empty;
 
-    private string AriaLabel => string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}";
+    /// <summary>Whether the wrapped controls are actually enabled. Defaults to <see langword="false"/> — see <see cref="GatedButton.Enabled"/>'s remarks.</summary>
+    [Parameter]
+    public bool Enabled { get; set; }
+
+    private string? AriaLabel => Enabled
+        ? Label
+        : (string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}");
 }

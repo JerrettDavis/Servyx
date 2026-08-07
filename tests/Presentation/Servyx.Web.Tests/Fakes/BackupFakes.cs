@@ -1,8 +1,75 @@
 using Microsoft.Extensions.Logging;
 using Servyx.Application.Backups;
 using Servyx.Domain.Backups;
+using Servyx.Web.Services;
 
 namespace Servyx.Web.Tests.Fakes;
+
+/// <summary>
+/// An <see cref="IDashboardDataService"/> whose <c>GetAllBackupsWithStatusAsync</c> answer is fixed by the
+/// test. Exists for the closed-gate (<c>Servyx:Provisioning:Enabled</c> off) branch of the Backups page,
+/// which reaches exactly that one member — every other member throws, so a page that started reaching for
+/// more of this fake than intended fails loudly rather than silently answering with invented data.
+/// </summary>
+/// <remarks>
+/// Web.Models types are referenced fully qualified throughout, deliberately not via a <c>using</c>: this
+/// file also builds <see cref="Servyx.Domain.Backups.BackupOwnership"/> artifacts for
+/// <see cref="FakeBackupDashboard"/> and <see cref="ScriptedBackupProvider"/> below, and
+/// <c>Servyx.Web.Models</c> declares its own, differently-cased <c>BackupOwnership</c> — importing both
+/// would make every unqualified use ambiguous.
+/// </remarks>
+public sealed class FixedBackupsListDataService : IDashboardDataService
+{
+    private readonly Servyx.Web.Models.BackupsListResult _result;
+
+    /// <summary>Creates a fake whose backups listing is always <paramref name="result"/>.</summary>
+    /// <param name="result">The result <c>GetAllBackupsWithStatusAsync</c> returns.</param>
+    public FixedBackupsListDataService(Servyx.Web.Models.BackupsListResult result) => _result = result;
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.BackupsListResult> GetAllBackupsWithStatusAsync(CancellationToken ct = default) =>
+        Task.FromResult(_result);
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.BackupEntry>> GetAllBackupsAsync(CancellationToken ct = default) =>
+        Task.FromResult(_result.Backups);
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.ConnectionStatus> GetDockerConnectionStatusAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.DockerConnectionInfo> GetDockerConnectionInfoAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.DashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.ServerSummary>> GetServersAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.ServerListResult> GetServersWithStatusAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.ServerDetail?> GetServerDetailAsync(string serverId, CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.SettingRow>> GetServerSettingsAsync(string serverId, CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.LogLine>> GetServerLogsAsync(string serverId, CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<Servyx.Web.Models.SaveInfo?> GetServerSavesAsync(string serverId, CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.BackupEntry>> GetServerBackupsAsync(string serverId, CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<IReadOnlyList<Servyx.Web.Models.GameCardSummary>> GetGamesAsync(CancellationToken ct = default) => throw Unused();
+
+    private static NotSupportedException Unused() =>
+        new($"{nameof(FixedBackupsListDataService)} answers the closed-gate Backups listing only.");
+}
 
 /// <summary>
 /// A hand-written <see cref="IBackupDashboard"/> that records which members a page or the scheduler
@@ -50,7 +117,7 @@ public sealed class FakeBackupDashboard : IBackupDashboard
     /// <summary>Adds an artifact to the listing.</summary>
     /// <param name="id">The artifact id.</param>
     /// <param name="ownership">Who owns it.</param>
-    public FakeBackupDashboard With(string id, BackupOwnership ownership)
+    public FakeBackupDashboard With(string id, Servyx.Domain.Backups.BackupOwnership ownership)
     {
         _artifacts.Add(new BackupArtifact(
             id,
@@ -210,7 +277,7 @@ public sealed class ScriptedBackupProvider : IBackupProvider
     /// <summary>Adds an artifact to the listing.</summary>
     /// <param name="id">The artifact id.</param>
     /// <param name="ownership">Who owns it.</param>
-    public ScriptedBackupProvider With(string id, BackupOwnership ownership)
+    public ScriptedBackupProvider With(string id, Servyx.Domain.Backups.BackupOwnership ownership)
     {
         _artifacts.Add(new BackupArtifact(id, ownership, DateTimeOffset.UnixEpoch.AddDays(_artifacts.Count), 1024, $"/palworld/{id}"));
         return this;

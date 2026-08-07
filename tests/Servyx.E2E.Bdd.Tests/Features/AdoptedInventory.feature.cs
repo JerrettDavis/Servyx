@@ -174,10 +174,10 @@ namespace Servyx.E2E.Bdd.Tests.Features
     await testRunner.WhenAsync("I open the dashboard", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 12
-    await testRunner.ThenAsync("the \"Servers online\" tile shows \"1 / 1\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("the \"Servers online\" tile shows \"2 / 2\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 13
-    await testRunner.AndAsync("the \"Total players\" tile shows \"3 / 32\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("the \"Total players\" tile shows \"10 / 64\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 14
     await testRunner.AndAsync("the \"Foreign backups\" tile shows \"5\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");

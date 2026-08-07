@@ -85,27 +85,9 @@ public class DockerExecutionTargetTests
         await act.Should().ThrowAsync<WritesDisabledException>();
     }
 
-    [Fact]
-    public async Task ExecuteAsync_throws_NotSupportedException()
-    {
-        var target = CreateTarget(out _);
-        var spec = new CommandSpec("echo", ["hello"]);
-
-        var act = async () => await target.ExecuteAsync(spec);
-
-        await act.Should().ThrowAsync<NotSupportedException>();
-    }
-
-    [Fact]
-    public void ExecuteStreamingAsync_throws_NotSupportedException()
-    {
-        var target = CreateTarget(out _);
-        var spec = new CommandSpec("echo", ["hello"]);
-
-        var act = () => target.ExecuteStreamingAsync(spec);
-
-        act.Should().Throw<NotSupportedException>();
-    }
+    // ExecuteAsync and ExecuteStreamingAsync are covered in DockerExecutionTargetExecuteTests.cs and
+    // DockerExecutionTargetLifecycleTests.cs — ExecuteAsync now runs a real docker exec rather than
+    // throwing, so those behaviours no longer belong in this (otherwise exec-agnostic) file.
 
     [Fact]
     public async Task DisposeAsync_disposes_owned_client()

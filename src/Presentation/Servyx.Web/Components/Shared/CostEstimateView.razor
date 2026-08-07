@@ -6,7 +6,7 @@
 <span class="svx-cost" data-testid="cost-estimate" title="@Source">@Format(Estimate)</span>
 @if (ShowConfidence)
 {
-    <span class="badge svx-cost-confidence" data-testid="cost-confidence">@(Estimate?.Confidence.ToString() ?? nameof(CostConfidence.Unknown))</span>
+    <span class="svx-badge svx-cost-confidence" data-testid="cost-confidence">@(Estimate?.Confidence.ToString() ?? nameof(CostConfidence.Unknown))</span>
 }
 
 @code {

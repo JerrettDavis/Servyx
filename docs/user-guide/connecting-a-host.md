@@ -1,6 +1,6 @@
 # Connecting a host
 
-Servyx reaches a game server through a **transport** — the pipe it uses to talk to the machine the server runs on. Today that's Docker; SSH is implemented in the codebase but is not yet wired into the running dashboard (see "What works today" below).
+Servyx reaches a game server through a **transport** — the pipe it uses to talk to the machine the server runs on. There are two: Docker (local or remote-over-TCP) and `ssh+docker` — a remote host reached over SSH, running Docker, that Servyx drives the `docker` CLI against. This page covers the transport model shared by both; for the concrete steps to declare an `ssh+docker` host in configuration, see [Adopting a remote host](adopting-a-remote-host.md).
 
 ## Local Docker
 
@@ -14,7 +14,7 @@ Servyx's Docker transport also understands `tcp://` (and `http(s)://`) endpoints
 
 Servyx's design treats SSH exec (running commands) and SFTP (reading and writing files) as **two separate channels that happen to often travel over the same connection**, not one channel that assumes the other. This matters in practice: it is entirely normal for a host to allow you to run commands over SSH while its SFTP subsystem is disabled, or vice versa. When that happens, Servyx reports the exec channel as working and the file channel as degraded (or the reverse) — it does not collapse "I can't read your files" into "I can't reach your host," because those are different problems with different fixes. See [Connectors](../connectors.md) for the full model, including how Docker-over-SSH composes both channels together, since the Docker API itself cannot read `.env` or `compose.yaml` — those live on the host filesystem, not inside anything the Docker API exposes.
 
-**What works today:** the SSH transport and its exec/SFTP composition are implemented and have their own test suite, but are not yet connected to the running `Servyx.Web` dashboard. Today's dashboard is Docker-only end to end. Treat this section as describing the model you'll configure once SSH hosts are exposed in the UI, not a feature you can use from the dashboard yet.
+**What works today:** the SSH transport and its exec/SFTP composition are wired into the running `Servyx.Web` dashboard — a host declared under `Servyx:Hosts:<name>` with `Transport: ssh+docker` replaces the dashboard's probe target, and the server it observes appears in the servers list with its **Host** column reading `ssh+docker` instead of a local Docker socket/pipe description. This milestone wires exactly one remote host: only the first configured entry under `Servyx:Hosts` is connected to anything, and there is still no in-dashboard wizard for declaring it — it's config, set before Servyx starts, not a form in the UI. See [Adopting a remote host](adopting-a-remote-host.md) for the full walkthrough: the config keys, host-key pinning, and getting the SSH credential into the secret store.
 
 ## Host-key trust (TOFU)
 
@@ -39,4 +39,4 @@ A host connection isn't simply up or down. Servyx reports, per connector: what's
 ![The servers list, showing state, health, players, uptime, host, and ports for each adopted server](../images/servers-list.png)
 
 ---
-**Next:** [Adopting servers](adopting-servers.md) · **See also:** [Connectors](../connectors.md)
+**Next:** [Adopting servers](adopting-servers.md) · **See also:** [Adopting a remote host](adopting-a-remote-host.md) · [Connectors](../connectors.md)

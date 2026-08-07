@@ -1,0 +1,20 @@
+<div class="svx-skeleton-group" aria-busy="true" aria-live="polite" data-testid="skeleton">
+    <span class="svx-visually-hidden">@Label</span>
+    @for (var i = 0; i < Rows; i++)
+    {
+        <div class="svx-skeleton" style="@RowStyle(i)"></div>
+    }
+</div>
+
+@code {
+    [Parameter] public int Rows { get; set; } = 3;
+    [Parameter] public string Label { get; set; } = "Loading";
+    [Parameter] public string Variant { get; set; } = "row";
+
+    private string RowStyle(int i) => Variant switch
+    {
+        "stat" => "height:5.25rem;border-radius:var(--svx-radius-lg);",
+        "card" => "height:9rem;border-radius:var(--svx-radius-lg);",
+        _      => $"height:2.75rem;border-radius:var(--svx-radius-md);opacity:{(1 - i * 0.12):0.00};",
+    };
+}

@@ -3,6 +3,8 @@ using System.Formats.Tar;
 using System.Globalization;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Domain.Backups;
 using Servyx.Domain.Transport;
 
@@ -78,6 +80,7 @@ public sealed class DockerBackupProvider : IBackupProvider
     private readonly IDockerBackupContextSource _contexts;
     private readonly IReadOnlyList<IBackupAdopter> _adopters;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger _logger;
     private readonly TimeSpan _restorePlanTtl;
     private readonly ConcurrentDictionary<string, PendingRestore> _plans = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, SandboxedPathResolver> _resolvers = new(StringComparer.Ordinal);
@@ -90,11 +93,18 @@ public sealed class DockerBackupProvider : IBackupProvider
     /// </param>
     /// <param name="timeProvider">Clock used for archive naming and restore-plan expiry.</param>
     /// <param name="restorePlanTtl">How long a restore plan stays applicable. Defaults to <see cref="DefaultRestorePlanTtl"/>.</param>
+    /// <param name="logger">
+    /// Where a failed <see cref="DockerBackupContext.Resume"/> step is reported. Optional only so existing
+    /// call sites keep compiling; a resume failure is never silent regardless, because it is also thrown
+    /// (see <see cref="BackupResumeFailedException"/>) whenever there is no more important exception already
+    /// in flight.
+    /// </param>
     public DockerBackupProvider(
         IDockerBackupContextSource contexts,
         IEnumerable<IBackupAdopter>? adopters = null,
         TimeProvider? timeProvider = null,
-        TimeSpan? restorePlanTtl = null)
+        TimeSpan? restorePlanTtl = null,
+        ILogger<DockerBackupProvider>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(contexts);
 
@@ -102,21 +112,57 @@ public sealed class DockerBackupProvider : IBackupProvider
         _adopters = adopters?.ToList() ?? [];
         _timeProvider = timeProvider ?? TimeProvider.System;
         _restorePlanTtl = restorePlanTtl ?? DefaultRestorePlanTtl;
+        _logger = logger ?? NullLogger<DockerBackupProvider>.Instance;
     }
 
     /// <inheritdoc />
     /// <remarks>
+    /// <para>
     /// Quiesces first when the definition declares a quiesce step, then archives the include set minus the
     /// exclude set, then writes the sidecar manifest. A failed quiesce aborts before anything is written —
     /// see <see cref="BackupQuiesceFailedException"/>.
+    /// </para>
+    /// <para>
+    /// <strong>The declared <see cref="DockerBackupContext.Resume"/> steps always run.</strong> The quiesce
+    /// and the capture sit inside a single <c>try</c> whose <c>finally</c> issues them, so they run after a
+    /// successful archive, after a capture that threw, after a quiesce that failed partway through its own
+    /// list, and after cancellation. This is the whole point of the resume phase: a quiesce that turns
+    /// saving off and a backup that then fails must not leave the server unable to save. See
+    /// <see cref="ResumeAsync"/> for why they are not bound to <paramref name="ct"/>, and
+    /// <see cref="BackupResumeFailedException"/> for how a resume failure is surfaced.
+    /// </para>
     /// </remarks>
     public async Task<BackupArtifact> CreateAsync(string serverId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
 
         var context = await GetContextAsync(serverId, ct).ConfigureAwait(false);
-        await QuiesceAsync(context, ct).ConfigureAwait(false);
 
+        var captureSucceeded = false;
+        try
+        {
+            await QuiesceAsync(context, ct).ConfigureAwait(false);
+            var artifact = await CaptureAsync(context, ct).ConfigureAwait(false);
+            captureSucceeded = true;
+            return artifact;
+        }
+        finally
+        {
+            // Guaranteed-execution point. 'captureSucceeded' does not decide *whether* the resume runs —
+            // it always runs — only whether a resume failure is allowed to throw from here. Throwing while
+            // an earlier exception is unwinding would replace the reason the backup failed with a
+            // downstream symptom; in that case the failure is logged and attached instead.
+            await ResumeAsync(context, throwOnFailure: captureSucceeded).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The capture itself: walk the include set, build the archive, write it and its sidecar manifest.
+    /// Split out of <see cref="CreateAsync"/> so the quiesce and everything it protects sit inside one
+    /// <c>try</c> whose <c>finally</c> owns the resume.
+    /// </summary>
+    private async Task<BackupArtifact> CaptureAsync(DockerBackupContext context, CancellationToken ct)
+    {
         var captured = await CollectAsync(context, ct).ConfigureAwait(false);
         var archiveBytes = await BuildArchiveAsync(captured, ct).ConfigureAwait(false);
         var sha256 = Convert.ToHexStringLower(SHA256.HashData(archiveBytes));
@@ -352,6 +398,17 @@ public sealed class DockerBackupProvider : IBackupProvider
                 context.Quiesce.CommandId);
         }
 
+        // Checked here, before a single command is issued, for the same reason the quiesce check is: a
+        // resume that could never be delivered must be refused while the server is still writing normally,
+        // not discovered in the finally block after the quiesce has already stopped it.
+        if (context.Resume.Count > 0 && context.Control is null)
+        {
+            throw new BackupResumeFailedException(
+                $"Server '{serverId}' declares a '{context.Resume[0].CommandId}' resume step but has no control channel to issue it on.",
+                serverId,
+                context.Resume[0].CommandId);
+        }
+
         return context;
     }
 
@@ -392,6 +449,106 @@ public sealed class DockerBackupProvider : IBackupProvider
                 $"Quiesce command '{step.CommandId}' on server '{context.ServerId}' failed: {ex.Message}",
                 ex);
         }
+    }
+
+    /// <summary>
+    /// Issues every declared <see cref="DockerBackupContext.Resume"/> step, in order, after capture has
+    /// finished — however it finished.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>No cancellation token is threaded in, and that is the point.</strong> Each step is bounded
+    /// only by its own declared timeout. An operator who cancels a backup is asking Servyx to stop copying
+    /// files; they are never asking it to leave the game server unable to write to disk. Passing the
+    /// caller's token here would mean a cancelled backup skipped exactly the commands that undo the
+    /// quiesce — the precise failure this phase exists to make impossible.
+    /// </para>
+    /// <para>
+    /// <strong>One failing step does not skip the rest.</strong> A resume list is a sequence of undos, and
+    /// a later one may be the one that re-enables saving. Every step is attempted, every failure is logged
+    /// as an error, and the failures are then reported together.
+    /// </para>
+    /// </remarks>
+    /// <param name="context">The context whose resume steps to issue.</param>
+    /// <param name="throwOnFailure">
+    /// Whether a failure may throw. False while an earlier exception is unwinding out of
+    /// <see cref="CreateAsync"/>, where throwing would hide the original failure — the error log is the
+    /// report in that case.
+    /// </param>
+    private async Task ResumeAsync(DockerBackupContext context, bool throwOnFailure)
+    {
+        if (context.Resume.Count == 0)
+        {
+            return;
+        }
+
+        // GetContextAsync already refused a context that declares a resume with no channel.
+        var control = context.Control!;
+        var failures = new List<Exception>();
+
+        foreach (var step in context.Resume)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(step.Timeout, _timeProvider);
+
+                var response = await control.InvokeAsync(step.CommandId, step.Arguments, timeout.Token).ConfigureAwait(false);
+                if (!response.Success)
+                {
+                    throw new BackupResumeFailedException(
+                        $"Resume command '{step.CommandId}' on server '{context.ServerId}' reported failure: {response.Text}",
+                        context.ServerId,
+                        step.CommandId);
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                failures.Add(new BackupResumeFailedException(
+                    $"Resume command '{step.CommandId}' on server '{context.ServerId}' did not complete within {step.Timeout}.",
+                    context.ServerId,
+                    step.CommandId,
+                    ex));
+            }
+            catch (BackupResumeFailedException ex)
+            {
+                failures.Add(ex);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new BackupResumeFailedException(
+                    $"Resume command '{step.CommandId}' on server '{context.ServerId}' failed: {ex.Message}",
+                    context.ServerId,
+                    step.CommandId,
+                    ex));
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var failure in failures)
+        {
+            // Logged unconditionally, on both the throwing and the non-throwing path. When an earlier
+            // failure is already unwinding, this log line is the only report the operator gets that the
+            // server may still be quiesced — so it is never conditional on whether we are about to throw.
+            _logger.LogError(
+                failure,
+                "Backup resume step failed for server {ServerId}; the server may still be quiesced and unable to write to disk.",
+                context.ServerId);
+        }
+
+        if (!throwOnFailure)
+        {
+            return;
+        }
+
+        throw failures.Count == 1
+            ? failures[0]
+            : new BackupResumeFailedException(
+                $"{failures.Count} resume steps failed for server '{context.ServerId}'; it may still be quiesced.",
+                new AggregateException(failures));
     }
 
     private async Task<List<CapturedEntry>> CollectAsync(DockerBackupContext context, CancellationToken ct)

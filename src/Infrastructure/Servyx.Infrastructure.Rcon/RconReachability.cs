@@ -9,18 +9,18 @@ namespace Servyx.Infrastructure.Rcon;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>This is the only strategy implemented.</strong> The definition lists three, in order —
-/// <c>direct-tcp</c>, then <c>docker-exec-tool</c> running the image's bundled <c>rcon-cli</c>, then
-/// <c>docker-exec-network</c>. The other two are represented by <see cref="UnavailableRconReachability"/>,
+/// The definition lists three strategies, in order — <c>direct-tcp</c>, then <c>docker-exec-tool</c> running
+/// the image's bundled <c>rcon-cli</c> (see <see cref="DockerExecToolRconReachability"/>), then
+/// <c>docker-exec-network</c>. The last one is still represented by <see cref="UnavailableRconReachability"/>,
 /// which reports <see cref="IsAvailableAsync"/> as <see langword="false"/> and refuses
 /// <see cref="AcquireAsync"/> with a stated reason, rather than by a stub that pretends.
 /// </para>
 /// <para>
 /// <strong>Known limitation on the real Palworld deployment.</strong> That definition declares RCON 25575
 /// with <c>published: false</c>, and the adopted <c>thijsvanloef/palworld-server-docker</c> container does
-/// not publish it. So on that host this strategy will correctly report itself unavailable, and — since the
-/// other two strategies are not implemented — no RCON session can be acquired there yet. That is a stated
-/// gap, not a silent one: <see cref="RconReachabilityChain"/> raises
+/// not publish it. So on that host this strategy will correctly report itself unavailable — but the chain
+/// falls through to <see cref="DockerExecToolRconReachability"/>, which is what actually reaches RCON on that
+/// container. If a deployment somehow lacked both, <see cref="RconReachabilityChain"/> would raise
 /// <see cref="RconUnreachableException"/> naming every strategy it tried.
 /// </para>
 /// <para>
@@ -36,6 +36,7 @@ public sealed class DirectTcpRconReachability : IRconReachability
 
     private readonly Func<RconEndpoint, IRconSession> _sessionFactory;
     private readonly TimeSpan _probeTimeout;
+    private string? _lastUnavailableReason;
 
     /// <summary>Creates the strategy.</summary>
     /// <param name="sessionFactory">
@@ -59,6 +60,12 @@ public sealed class DirectTcpRconReachability : IRconReachability
     public string StrategyId => Id;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// On failure, records a short reason in <see cref="LastUnavailableReason"/> — the socket error (e.g.
+    /// "connection refused", the exact shape of an unpublished port) or that the probe window elapsed. Built
+    /// entirely from <see cref="SocketException"/>/timeout facts about the TCP handshake: this method takes
+    /// no credential, so there is nothing secret it could fold in.
+    /// </remarks>
     public async Task<bool> IsAvailableAsync(RconEndpoint endpoint, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -70,18 +77,24 @@ public sealed class DirectTcpRconReachability : IRconReachability
         try
         {
             await tcp.ConnectAsync(endpoint.Host, endpoint.Port, linked.Token).ConfigureAwait(false);
+            _lastUnavailableReason = null;
             return true;
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             // The port did not accept inside the probe window. Unavailable, not an error.
+            _lastUnavailableReason = $"timed out waiting {_probeTimeout} for the port to accept a connection";
             return false;
         }
-        catch (SocketException)
+        catch (SocketException ex)
         {
+            _lastUnavailableReason = $"TCP connect failed ({ex.SocketErrorCode})";
             return false;
         }
     }
+
+    /// <inheritdoc />
+    public string? LastUnavailableReason => _lastUnavailableReason;
 
     /// <inheritdoc />
     public Task<IRconSession> AcquireAsync(RconEndpoint endpoint, CancellationToken ct = default)
@@ -115,21 +128,6 @@ public sealed class UnavailableRconReachability : IRconReachability
         Reason = reason;
     }
 
-    /// <summary>
-    /// The <c>docker-exec-tool</c> strategy — running the image's bundled <c>rcon-cli</c> through
-    /// <c>docker exec</c> with an argv array.
-    /// </summary>
-    /// <remarks>
-    /// This is the strategy that would actually work on the adopted Palworld container, and it is not
-    /// implemented at this milestone. It needs an exec channel on <see cref="Domain.Transport.IExecutionTarget"/>,
-    /// which <c>DockerExecutionTarget.ExecuteAsync</c> currently answers with <see cref="NotSupportedException"/>
-    /// by design — see the read-only-safety scenario that asserts exactly that.
-    /// </remarks>
-    public static UnavailableRconReachability DockerExecTool { get; } = new(
-        "docker-exec-tool",
-        "Servyx cannot yet reach RCON by running the image's bundled rcon-cli through 'docker exec': command "
-        + "execution on a Docker execution target is not implemented at this milestone.");
-
     /// <summary>The <c>docker-exec-network</c> strategy — reaching the port from a sibling container on the same network.</summary>
     public static UnavailableRconReachability DockerExecNetwork { get; } = new(
         "docker-exec-network",
@@ -151,6 +149,10 @@ public sealed class UnavailableRconReachability : IRconReachability
     /// <inheritdoc />
     /// <remarks>Always <see langword="false"/>, and it costs nothing — no socket is opened to find out.</remarks>
     public Task<bool> IsAvailableAsync(RconEndpoint endpoint, CancellationToken ct = default) => Task.FromResult(false);
+
+    /// <inheritdoc />
+    /// <remarks>Always <see cref="Reason"/>: this strategy's unavailability is declared, not probed.</remarks>
+    public string? LastUnavailableReason => Reason;
 
     /// <inheritdoc />
     /// <exception cref="NotSupportedException">Always. See <see cref="Reason"/>.</exception>
@@ -194,16 +196,30 @@ public sealed class RconReachabilityChain
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
+        var attempts = new List<string>(_strategies.Count);
+
         foreach (var strategy in _strategies)
         {
             if (await strategy.IsAvailableAsync(endpoint, ct).ConfigureAwait(false))
             {
                 return await strategy.AcquireAsync(endpoint, ct).ConfigureAwait(false);
             }
+
+            attempts.Add(DescribeAttempt(strategy));
         }
 
         throw new RconUnreachableException(
             $"No reachability strategy could reach the RCON endpoint {SourceRconConnection.Describe(endpoint)}. "
-            + $"Tried, in order: {string.Join(", ", _strategies.Select(s => s.StrategyId))}.");
+            + $"Tried, in order: {string.Join(", ", attempts)}.");
+    }
+
+    /// <summary>
+    /// Renders one strategy's attempt for <see cref="RconUnreachableException"/>'s message: the strategy id,
+    /// plus its <see cref="IRconReachability.LastUnavailableReason"/> in parentheses when it reported one.
+    /// </summary>
+    private static string DescribeAttempt(IRconReachability strategy)
+    {
+        var reason = strategy.LastUnavailableReason;
+        return string.IsNullOrWhiteSpace(reason) ? strategy.StrategyId : $"{strategy.StrategyId} ({reason})";
     }
 }

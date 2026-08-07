@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
 using Servyx.Domain.Configuration;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;
@@ -25,6 +26,30 @@ public class LiveDashboardDataServiceSecretMaskingTests : BunitContext
     private const string RealSecret = "supersecret123";
     private const string ServerId = "container-1";
 
+    private static readonly SettingConstraints NoConstraints = new(
+        MinLength: null, MaxLength: null, Min: null, Max: null, Step: null,
+        Values: null, Pattern: null, TrueValue: null, FalseValue: null);
+
+    /// <summary>
+    /// A minimal stand-in for what <c>GameDefinitionYamlParser</c> would produce from
+    /// <c>definitions/palworld-docker.yaml</c>'s <c>settings</c> block — just the rows this test exercises.
+    /// The admin-password row deliberately mirrors the real definition's schema-key/env-key divergence
+    /// ("admin-password" vs. its env-surface binding key "ADMIN_PASSWORD").
+    /// </summary>
+    private static readonly IReadOnlyList<SettingGroup> SettingGroups =
+    [
+        new("Identity",
+        [
+            new("SERVER_NAME", "Server name", "Identity", SettingType.String, false, null, null, false, null, NoConstraints,
+                [new SettingBinding.ByKey("env", BindingDirection.Write, Sensitive: false, "SERVER_NAME")]),
+        ]),
+        new("Security",
+        [
+            new("admin-password", "Admin / RCON password", "Security", SettingType.Secret, true, null, null, false, null, NoConstraints,
+                [new SettingBinding.ByKey("env", BindingDirection.Write, Sensitive: false, "ADMIN_PASSWORD")]),
+        ]),
+    ];
+
     [Fact]
     public async Task SecretEnvironmentValue_NeverReachesTheMappedViewModel_OrRenderedMarkup()
     {
@@ -37,16 +62,20 @@ public class LiveDashboardDataServiceSecretMaskingTests : BunitContext
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             Substitute.For<ITransport>(),
-            AdoptionCriteria.PalworldDefault,
-            NullLogger<ServerQueryService>.Instance);
+            new AdoptionCriteria("palworld", "Palworld Dedicated Server", "thijsvanloef/palworld-server-docker", "/palworld"),
+            NullLogger<ServerQueryService>.Instance,
+            SettingGroups);
 
-        var dataService = new LiveDashboardDataService(queryService, NullLogger<LiveDashboardDataService>.Instance);
+        var dataService = new LiveDashboardDataService(
+            queryService,
+            NullLogger<LiveDashboardDataService>.Instance,
+            new TargetDescriptor("docker", "npipe://./pipe/docker_engine", null, null, new Dictionary<string, string>()));
 
         var rows = await dataService.GetServerSettingsAsync(ServerId);
 
         // The mapped view model: not just the masked field, but nothing in the row at all.
         rows.Should().NotBeEmpty();
-        rows.Single(r => r.Key == "ADMIN_PASSWORD").Authoritative.Should().Be("********");
+        rows.Single(r => r.Key == "admin-password").Authoritative.Should().Be("********");
         foreach (var row in rows)
         {
             row.ToString().Should().NotContain(RealSecret);
@@ -119,7 +148,7 @@ public class LiveDashboardDataServiceSecretMaskingTests : BunitContext
         CreatedAt: DateTimeOffset.UtcNow,
         StartedAt: DateTimeOffset.UtcNow,
         Ports: [],
-        Mounts: [new DiscoveredMount(@"D:\Games\Palworld\data", "/palworld", true)],
+        Mounts: [new DiscoveredMount("/srv/palworld/data", "/palworld", true)],
         NetworkName: "palworld_default",
         ContainerIp: "172.19.0.2",
         MemoryLimitBytes: 8_000_000_000,

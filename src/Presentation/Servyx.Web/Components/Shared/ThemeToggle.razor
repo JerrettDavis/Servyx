@@ -1,0 +1,51 @@
+@* Three-state colour theme control (System / Light / Dark). The selected pip is driven purely by CSS,
+   keyed off the html[data-theme-choice] attribute the bootstrap script sets before first paint — so the
+   correct option is highlighted even before this component's own JS round trip resolves `_choice`. See
+   docs/design/theming-blueprint.md for the theme-switching contract. *@
+@inject IJSRuntime JS
+
+<div class="svx-theme-toggle" role="radiogroup" aria-label="Colour theme" data-testid="theme-toggle">
+    @foreach (var opt in Options)
+    {
+        <button type="button"
+                class="svx-theme-option"
+                data-choice="@opt.Value"
+                data-testid="@($"theme-{opt.Value}")"
+                role="radio"
+                aria-checked="@((_choice == opt.Value).ToString().ToLowerInvariant())"
+                aria-label="@opt.Label"
+                title="@opt.Title"
+                @onclick="() => ChooseAsync(opt.Value)">
+            <Icon Name="@opt.IconName" Size="15" />
+        </button>
+    }
+</div>
+
+@code {
+    private string _choice = "system";
+
+    private sealed record ThemeOption(string Value, string Label, string Title, string IconName);
+
+    private static readonly IReadOnlyList<ThemeOption> Options =
+    [
+        new("system", "Match system", "Match system theme", "monitor"),
+        new("light", "Light theme", "Light theme", "sun"),
+        new("dark", "Dark theme", "Dark theme", "moon"),
+    ];
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // Never call IJSRuntime before this fires — prerender has no JS (see theming-blueprint.md).
+        if (firstRender)
+        {
+            _choice = await JS.InvokeAsync<string>("servyxTheme.read");
+            StateHasChanged();
+        }
+    }
+
+    private async Task ChooseAsync(string value)
+    {
+        await JS.InvokeVoidAsync("servyxTheme.set", value);
+        _choice = value;
+    }
+}

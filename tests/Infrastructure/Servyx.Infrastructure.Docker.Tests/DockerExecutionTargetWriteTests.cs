@@ -267,6 +267,120 @@ public class DockerExecutionTargetWriteTests
             UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
     }
 
+    // -- DirectPlacement: the shape a write into a created-but-not-started container has to take ---------
+
+    [Fact]
+    public async Task A_direct_placement_write_reaches_the_target_without_executing_anything_in_the_container()
+    {
+        // The whole point. `docker exec` starts a process inside a *running* container, so the mv that
+        // finalizes an atomic write cannot happen before the container's first start. The archive endpoint
+        // can, so a direct placement is one PUT /containers/{id}/archive and nothing else.
+        var daemon = new DaemonRecorder(WriteMode.Enabled).WithMissing("config/credential");
+
+        await daemon.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("a-secret"),
+            new FileWriteOptions(null) { Strategy = FileWriteStrategy.DirectPlacement });
+
+        daemon.ExtractedTo.Should().ContainSingle().Which.Should().Be("/palworld/config");
+        ReadTar(daemon.ExtractedArchives.Single()).Single().Name
+            .Should().Be("credential", "a direct placement lands on the target's own name, with no temp sibling");
+        daemon.Commands.Should().BeEmpty("an exec would need a running container, which is exactly what there isn't");
+    }
+
+    [Fact]
+    public async Task A_direct_placement_write_carries_the_declared_mode_in_the_archive_itself()
+    {
+        // 0600 arrives with the file rather than after it: there is no window in which a credential sits
+        // at a wider mode, and no chmod exec that a not-yet-started container could not have run anyway.
+        var daemon = new DaemonRecorder(WriteMode.Enabled).WithMissing("config/credential");
+
+        await daemon.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("a-secret"),
+            new FileWriteOptions(null) { Strategy = FileWriteStrategy.DirectPlacement, Mode = 0x180 });
+
+        ReadTar(daemon.ExtractedArchives.Single()).Single().Mode
+            .Should().Be(UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        daemon.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task An_explicit_mode_wins_over_the_mode_the_file_already_had()
+    {
+        // Preserving an existing mode is right for a config write and wrong for a file that is being
+        // re-seeded deliberately: the caller stated what the permissions must be.
+        var daemon = new DaemonRecorder(WriteMode.Enabled).WithFile("config/credential", "old", mode: 0x1A4);
+
+        await daemon.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("new"),
+            new FileWriteOptions(null) { Strategy = FileWriteStrategy.DirectPlacement, Mode = 0x100 });
+
+        ReadTar(daemon.ExtractedArchives.Single()).Single().Mode.Should().Be(UnixFileMode.UserRead);
+    }
+
+    [Fact]
+    public async Task A_direct_placement_write_still_reports_and_checks_the_pre_image()
+    {
+        // Every read the write path makes is an archive read, so drift detection and the receipt work the
+        // same on a container that has never started as on one that is running.
+        var daemon = new DaemonRecorder(WriteMode.Enabled).WithFile("config/credential", "old");
+
+        var receipt = await daemon.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("new"),
+            new FileWriteOptions(Sha256("old")) { Strategy = FileWriteStrategy.DirectPlacement });
+
+        receipt.PreImageSha256.Should().Be(Sha256("old"));
+        receipt.PostImageSha256.Should().Be(Sha256("new"));
+
+        var other = new DaemonRecorder(WriteMode.Enabled).WithFile("config/credential", "old");
+        var drifted = async () => await other.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("newer"),
+            new FileWriteOptions(Sha256("something-else")) { Strategy = FileWriteStrategy.DirectPlacement });
+
+        await drifted.Should().ThrowAsync<TargetDriftException>();
+        other.ExtractedArchives.Should().BeEmpty("the refused write placed nothing");
+    }
+
+    [Fact]
+    public async Task A_direct_placement_write_is_refused_on_a_read_only_target_like_any_other()
+    {
+        var daemon = new DaemonRecorder(WriteMode.ReadOnly).WithMissing("config/credential");
+
+        var act = async () => await daemon.Target.WriteFileAsync(
+            Path("config/credential"),
+            Content("a-secret"),
+            new FileWriteOptions(null) { Strategy = FileWriteStrategy.DirectPlacement, Mode = 0x180 });
+
+        await act.Should().ThrowAsync<WritesDisabledException>();
+        daemon.ExtractedArchives.Should().BeEmpty();
+        daemon.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task The_default_strategy_is_still_the_atomic_one()
+    {
+        var daemon = new DaemonRecorder(WriteMode.Enabled).WithMissing("config/credential");
+
+        await daemon.Target.WriteFileAsync(Path("config/credential"), Content("x"), new FileWriteOptions(null));
+
+        ReadTar(daemon.ExtractedArchives.Single()).Single().Name.Should().StartWith("credential.servyx-tmp-");
+        daemon.Commands.Should().ContainSingle().Which[0].Should().Be("mv");
+    }
+
+    [Fact]
+    public void A_mode_outside_the_low_nine_permission_bits_is_refused_when_the_options_are_built()
+    {
+        var setUserId = () => new FileWriteOptions(null) { Mode = 0x800 };
+        var negative = () => new FileWriteOptions(null) { Mode = -1 };
+
+        setUserId.Should().Throw<ArgumentOutOfRangeException>();
+        negative.Should().Throw<ArgumentOutOfRangeException>();
+    }
+
     [Fact]
     public async Task A_failed_move_removes_the_temp_sibling_and_reports_the_target_unchanged()
     {
@@ -338,16 +452,18 @@ public class DockerExecutionTargetWriteTests
     }
 
     [Fact]
-    public async Task Even_write_enabled_the_general_exec_channel_stays_closed_until_M2()
+    public async Task The_general_exec_channel_runs_regardless_of_write_mode()
     {
-        // mv and rm are two fixed argv vectors this type issues itself. That is a different promise from
-        // "callers may run arbitrary commands", which remains M2's to make.
-        var daemon = new DaemonRecorder(WriteMode.Enabled);
+        // DockerExecutionTarget.ExecuteAsync carries no internal write-mode check of its own — gating a
+        // caller-declared CommandSpec by intent is WriteGuardedExecutionTarget's job, not this class's (see
+        // the class-level remarks). WriteFileAsync/DeleteAsync are the two members this class itself
+        // refuses; ExecuteAsync is not one of them, on any write mode.
+        var daemon = new DaemonRecorder(WriteMode.ReadOnly);
 
-        var act = async () => await daemon.Target.ExecuteAsync(new CommandSpec("rm", ["-rf", "/"]));
+        var result = await daemon.Target.ExecuteAsync(new CommandSpec("echo", ["hi"]));
 
-        await act.Should().ThrowAsync<NotSupportedException>();
-        daemon.Commands.Should().BeEmpty();
+        result.ExitCode.Should().Be(0);
+        daemon.Commands.Should().ContainSingle().Which.Should().Equal("echo", "hi");
     }
 
     [Fact]

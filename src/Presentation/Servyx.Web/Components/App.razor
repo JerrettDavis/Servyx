@@ -1,22 +1,48 @@
-﻿<!DOCTYPE html>
+﻿@inject BrandingOptions Brand
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
+    <script>
+        // Servyx theme bootstrap. Runs before first paint so the resolved theme is already
+        // on <html> when the stylesheets apply — no light-to-dark flash on load.
+        // DUPLICATED VERBATIM in Components/App.razor and Components/Pages/Login/LoginPage.razor.
+        // Keep the two copies identical. Full API lives in wwwroot/js/servyx-theme.js.
+        (function () {
+            var e = document.documentElement;
+            try {
+                var c = localStorage.getItem('svx-theme');
+                if (c !== 'light' && c !== 'dark') { c = 'system'; }
+                var r = c === 'system'
+                    ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                    : c;
+                e.setAttribute('data-theme', r);
+                e.setAttribute('data-theme-choice', c);
+                e.style.colorScheme = r;
+            } catch (_) {
+                e.setAttribute('data-theme', 'light');
+                e.setAttribute('data-theme-choice', 'system');
+            }
+        })();
+    </script>
+    <meta name="theme-color" content="#F4F6F9" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#0A0D12" media="(prefers-color-scheme: dark)" />
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
     <ResourcePreloader />
-    <link rel="stylesheet" href="@Assets["lib/bootstrap/dist/css/bootstrap.min.css"]" />
+    <link rel="stylesheet" href="@Assets["theme.css"]" />
     <link rel="stylesheet" href="@Assets["app.css"]" />
     <link rel="stylesheet" href="@Assets["Servyx.Web.styles.css"]" />
     <ImportMap />
-    <link rel="icon" type="image/png" href="favicon.png" />
+    <link rel="icon" type="image/png" href="@Brand.FaviconAssetPath" />
     <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 
 <body>
     <Routes @rendermode="InteractiveServer" />
     <ReconnectModal />
+    <script src="@Assets["js/servyx-theme.js"]"></script>
     <script src="@Assets["js/servyx-console.js"]"></script>
     <script src="@Assets["_framework/blazor.web.js"]"></script>
 </body>

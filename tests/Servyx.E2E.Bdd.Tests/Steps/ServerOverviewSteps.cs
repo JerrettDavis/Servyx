@@ -83,4 +83,59 @@ public sealed class ServerOverviewSteps(IPage page, AssertionLedger ledger)
 
         ledger.Record();
     }
+
+    /// <summary>
+    /// The <c>WriteMode.Enabled</c> counterpart of <see cref="ThenThePowerControlsAreAllPresentAndDisabledAsync"/>:
+    /// the same four controls, none of them locked. Only checks the rendered, clickable state of each
+    /// control — see the feature file's safety note for why nothing here ever clicks one.
+    /// </summary>
+    [Then(@"^the power controls ""(.*)"", ""(.*)"", ""(.*)"" and ""(.*)"" are all present and enabled$")]
+    public async Task ThenThePowerControlsAreAllPresentAndEnabledAsync(string a, string b, string c, string d)
+    {
+        var powerButtons = page.Locator("[data-testid='gated-button']");
+        await Expect(powerButtons).ToHaveCountAsync(4);
+        var count = await powerButtons.CountAsync();
+
+        foreach (var label in new[] { a, b, c, d })
+        {
+            var matchIndex = -1;
+            for (var i = 0; i < count; i++)
+            {
+                var text = (await powerButtons.Nth(i).Locator(".gated-button-text").InnerTextAsync()).Trim();
+                if (text == label)
+                {
+                    matchIndex = i;
+                    break;
+                }
+            }
+
+            matchIndex.Should().BeGreaterThanOrEqualTo(0, $"expected a power control labelled exactly '{label}'");
+            await Expect(powerButtons.Nth(matchIndex)).ToBeEnabledAsync();
+        }
+
+        ledger.Record();
+    }
+
+    /// <summary>
+    /// Asserts <c>WriteMode.PreviewOnly</c>'s Power card: the ordered stop-escalation ladder, and — the
+    /// point of the whole state — no power control of any kind, not even a locked one (see
+    /// ServerOverviewTab.razor's own remarks on why offering even a disabled button here would be
+    /// misleading).
+    /// </summary>
+    [Then(@"^the stop-escalation ladder is shown in order, with no power controls present$")]
+    public async Task ThenTheStopEscalationLadderIsShownWithNoPowerControlsAsync()
+    {
+        await Expect(page.Locator("[data-testid='gated-button']")).ToHaveCountAsync(0);
+
+        var stages = page.Locator("[data-testid='lifecycle-stop-stage']");
+        await Expect(stages).ToHaveCountAsync(4);
+
+        var expectedSubstrings = new[] { "RCON 'shutdown'", "RCON 'doexit'", "Signal SIGINT", "Force kill" };
+        for (var i = 0; i < expectedSubstrings.Length; i++)
+        {
+            await Expect(stages.Nth(i)).ToContainTextAsync(expectedSubstrings[i]);
+        }
+
+        ledger.Record();
+    }
 }

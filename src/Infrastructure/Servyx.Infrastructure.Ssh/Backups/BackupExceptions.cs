@@ -43,6 +43,52 @@ public sealed class BackupQuiesceFailedException : Exception
     public string? CommandId { get; }
 }
 
+/// <summary>
+/// Thrown when a declared post-capture resume step could not be completed — the step whose whole purpose is
+/// to undo the quiesce. Duplicates <c>Servyx.Infrastructure.Docker.Backups.BackupResumeFailedException</c>
+/// for the same reason this file's quiesce exception duplicates its Docker sibling: neither project
+/// references the other.
+/// </summary>
+/// <remarks>
+/// A quiesce that stopped the server writing to disk, followed by a resume that silently did not restore
+/// it, leaves a live server that looks healthy and is discarding every player action until someone restarts
+/// it. Nothing here is worth swallowing, so a resume failure is logged as an error <em>and</em> — whenever
+/// the capture itself succeeded, so there is no more important exception already in flight — thrown, even
+/// though the archive on disk is perfectly good. The archive is not what is at risk; the running server is.
+/// </remarks>
+public sealed class BackupResumeFailedException : Exception
+{
+    /// <summary>Creates a <see cref="BackupResumeFailedException"/> with a default message.</summary>
+    public BackupResumeFailedException()
+        : base("A post-backup resume step failed, so the server may still be quiesced.")
+    {
+    }
+
+    /// <summary>Creates a <see cref="BackupResumeFailedException"/> with the given message.</summary>
+    public BackupResumeFailedException(string message) : base(message) { }
+
+    /// <summary>Creates a <see cref="BackupResumeFailedException"/> with the given message and inner exception.</summary>
+    public BackupResumeFailedException(string message, Exception innerException) : base(message, innerException) { }
+
+    /// <summary>Creates a <see cref="BackupResumeFailedException"/> carrying the command that failed.</summary>
+    /// <param name="message">The exception message.</param>
+    /// <param name="serverId">The server whose resume failed.</param>
+    /// <param name="commandId">The control command id that failed.</param>
+    /// <param name="innerException">The underlying failure, if any.</param>
+    public BackupResumeFailedException(string message, string serverId, string commandId, Exception? innerException = null)
+        : base(message, innerException)
+    {
+        ServerId = serverId;
+        CommandId = commandId;
+    }
+
+    /// <summary>The server whose resume failed, if known.</summary>
+    public string? ServerId { get; }
+
+    /// <summary>The control command id that failed, if known.</summary>
+    public string? CommandId { get; }
+}
+
 /// <summary>Thrown when a backup id does not resolve to any artifact currently known for its server.</summary>
 public sealed class BackupNotFoundException : Exception
 {

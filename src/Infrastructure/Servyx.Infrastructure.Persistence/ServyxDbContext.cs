@@ -58,6 +58,12 @@ public sealed class ServyxDbContext : DbContext
     /// </summary>
     public DbSet<ProvisionedResourceRecord> ProvisionedResources => Set<ProvisionedResourceRecord>();
 
+    /// <summary>
+    /// Which game definition (by content hash) governs each discovered server. See
+    /// <see cref="ServerDefinitionBindingRecord"/> and <c>IServerDefinitionBindingStore</c>.
+    /// </summary>
+    public DbSet<ServerDefinitionBindingRecord> ServerDefinitionBindings => Set<ServerDefinitionBindingRecord>();
+
     /// <inheritdoc />
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {

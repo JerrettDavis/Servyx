@@ -1,4 +1,6 @@
+using NSubstitute;
 using Servyx.Domain.Rcon;
+using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon.Tests.Fakes;
 
 namespace Servyx.Infrastructure.Rcon.Tests;
@@ -44,7 +46,6 @@ public class RconReachabilityTests
     }
 
     [Theory]
-    [InlineData("docker-exec-tool")]
     [InlineData("docker-exec-network")]
     [InlineData("ssh-tunnel")]
     public async Task An_unimplemented_strategy_reports_itself_unavailable_rather_than_pretending(string strategyId)
@@ -58,10 +59,12 @@ public class RconReachabilityTests
     [Fact]
     public async Task An_unimplemented_strategy_refuses_to_be_acquired_and_says_why()
     {
-        var act = async () => await UnavailableRconReachability.DockerExecTool.AcquireAsync(new RconEndpoint("127.0.0.1", 25575));
+        // docker-exec-tool is real now (see DockerExecToolRconReachabilityTests); docker-exec-network is the
+        // strategy still represented by the honest stub.
+        var act = async () => await UnavailableRconReachability.DockerExecNetwork.AcquireAsync(new RconEndpoint("127.0.0.1", 25575));
 
         (await act.Should().ThrowAsync<NotSupportedException>())
-            .Which.Message.Should().Contain("rcon-cli");
+            .Which.Message.Should().Contain("sibling container");
     }
 
     [Fact]
@@ -74,7 +77,7 @@ public class RconReachabilityTests
         var chain = new RconReachabilityChain(
         [
             Direct(expected),
-            UnavailableRconReachability.DockerExecTool,
+            UnavailableDockerExecTool(),
             UnavailableRconReachability.DockerExecNetwork,
         ]);
 
@@ -93,7 +96,7 @@ public class RconReachabilityTests
         var chain = new RconReachabilityChain(
         [
             Direct(),
-            UnavailableRconReachability.DockerExecTool,
+            UnavailableDockerExecTool(),
             UnavailableRconReachability.DockerExecNetwork,
         ]);
 
@@ -115,8 +118,25 @@ public class RconReachabilityTests
 
     private static UnavailableRconReachability Unimplemented(string strategyId) => strategyId switch
     {
-        "docker-exec-tool" => UnavailableRconReachability.DockerExecTool,
         "docker-exec-network" => UnavailableRconReachability.DockerExecNetwork,
         _ => UnavailableRconReachability.SshTunnel,
     };
+
+    /// <summary>
+    /// A real <see cref="DockerExecToolRconReachability"/> whose probe always reports unavailable (its exec
+    /// channel throws), used only to prove the chain names the strategy correctly when it declines. Detailed
+    /// coverage of the strategy itself lives in DockerExecToolRconReachabilityTests.
+    /// </summary>
+    private static DockerExecToolRconReachability UnavailableDockerExecTool()
+    {
+        var target = Substitute.For<IExecutionTarget>();
+        target.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>())
+            .Returns<Task<CommandResult>>(_ => throw new InvalidOperationException("no exec channel in this test"));
+
+        return new DockerExecToolRconReachability(
+            target,
+            "palworld-server",
+            ["rcon-cli", "{command}"],
+            RconCommandCatalog.Empty);
+    }
 }

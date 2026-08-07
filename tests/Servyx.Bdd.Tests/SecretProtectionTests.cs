@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;
@@ -23,6 +24,30 @@ public class SecretProtectionTests(ITestOutputHelper output) : TinyBddXunitBase(
     private const string RealSecret = "supersecret123";
     private const string ServerId = "container-1";
 
+    private static readonly SettingConstraints NoConstraints = new(
+        MinLength: null, MaxLength: null, Min: null, Max: null, Step: null,
+        Values: null, Pattern: null, TrueValue: null, FalseValue: null);
+
+    /// <summary>
+    /// A minimal stand-in for what <c>GameDefinitionYamlParser</c> would produce from
+    /// <c>definitions/palworld-docker.yaml</c>'s <c>settings</c> block — just the rows these scenarios
+    /// exercise. The admin-password row deliberately mirrors the real definition's schema-key/env-key
+    /// divergence ("admin-password" vs. its env-surface binding key "ADMIN_PASSWORD").
+    /// </summary>
+    private static readonly IReadOnlyList<SettingGroup> SettingGroups =
+    [
+        new("Identity",
+        [
+            new("SERVER_NAME", "Server name", "Identity", SettingType.String, false, null, null, false, null, NoConstraints,
+                [new SettingBinding.ByKey("env", BindingDirection.Write, Sensitive: false, "SERVER_NAME")]),
+        ]),
+        new("Security",
+        [
+            new("admin-password", "Admin / RCON password", "Security", SettingType.Secret, true, null, null, false, null, NoConstraints,
+                [new SettingBinding.ByKey("env", BindingDirection.Write, Sensitive: false, "ADMIN_PASSWORD")]),
+        ]),
+    ];
+
     private static ServerQueryService CreateQueryService(IReadOnlyDictionary<string, string> environmentVariables)
     {
         var discovery = Substitute.For<IServerDiscovery>();
@@ -34,8 +59,9 @@ public class SecretProtectionTests(ITestOutputHelper output) : TinyBddXunitBase(
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             Substitute.For<ITransport>(),
-            AdoptionCriteria.PalworldDefault,
-            NullLogger<ServerQueryService>.Instance);
+            new AdoptionCriteria("palworld", "Palworld Dedicated Server", "thijsvanloef/palworld-server-docker", "/palworld"),
+            NullLogger<ServerQueryService>.Instance,
+            SettingGroups);
     }
 
     private static DiscoveredServer BuildDiscoveredServer(IReadOnlyDictionary<string, string> environmentVariables) => new(
@@ -48,7 +74,7 @@ public class SecretProtectionTests(ITestOutputHelper output) : TinyBddXunitBase(
         CreatedAt: DateTimeOffset.UtcNow,
         StartedAt: DateTimeOffset.UtcNow,
         Ports: [],
-        Mounts: [new DiscoveredMount(@"D:\Games\Palworld\data", "/palworld", true)],
+        Mounts: [new DiscoveredMount("/srv/palworld/data", "/palworld", true)],
         NetworkName: "palworld_default",
         ContainerIp: "172.19.0.2",
         MemoryLimitBytes: 8_000_000_000,
@@ -68,7 +94,7 @@ public class SecretProtectionTests(ITestOutputHelper output) : TinyBddXunitBase(
             .Then("the password value appears in no field of the result", detail => Task.FromResult(detail is not null && !detail.ToString()!.Contains(RealSecret)))
             .And(
                 "the setting is present but masked",
-                detail => Task.FromResult(detail!.Settings.Single(s => s.Key == "ADMIN_PASSWORD").Authoritative == "********"))
+                detail => Task.FromResult(detail!.Settings.Single(s => s.Key == "admin-password").Authoritative == "********"))
             .AssertPassed();
 
     [Scenario("An unknown environment variable does not appear at all — an allowlist, not a blocklist", "unit")]

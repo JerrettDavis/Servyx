@@ -29,7 +29,20 @@ public interface IServerQueryService
     /// <see cref="AdoptionCriteria"/>). Returns an empty list — never throws — if the daemon is
     /// unreachable or no container matches.
     /// </summary>
+    /// <remarks>
+    /// This flattens a discovery failure to an empty list, same as the rest of this interface's
+    /// degrade-honestly contract. A caller that needs to distinguish "discovery failed" from "genuinely
+    /// zero servers adopted" — e.g. to render that distinction in the UI — should call
+    /// <see cref="GetAdoptedServersWithStatusAsync"/> instead.
+    /// </remarks>
     Task<IReadOnlyList<ServerSummary>> GetAdoptedServersAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Same listing as <see cref="GetAdoptedServersAsync"/>, but reports whether discovery itself failed
+    /// rather than flattening that into an indistinguishable empty list. Never throws. See
+    /// <see cref="ServerListResult"/>.
+    /// </summary>
+    Task<ServerListResult> GetAdoptedServersWithStatusAsync(CancellationToken ct = default);
 
     /// <summary>Gets full detail for a single adopted server, or <see langword="null"/> if it is not found or unreachable.</summary>
     Task<ServerDetail?> GetServerDetailAsync(string serverId, CancellationToken ct = default);

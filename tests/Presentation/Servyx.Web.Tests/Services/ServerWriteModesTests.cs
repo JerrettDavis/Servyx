@@ -1,6 +1,9 @@
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
+using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;
 
@@ -32,7 +35,8 @@ public class ServerWriteModesTests
         // The flag-off host. Its behaviour has to be identical to the milestone that had no write path at all.
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", "Enabled")),
-            ProvisioningGate.Closed);
+            ProvisioningGate.Closed,
+            NullLogger.Instance);
 
         grants.Should().BeEmpty();
         Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.ReadOnly);
@@ -41,7 +45,8 @@ public class ServerWriteModesTests
     [Fact]
     public void No_configured_servers_yields_no_grants()
     {
-        ServerWriteModes.ReadGrants(Configuration(), new ProvisioningGate(enabled: true)).Should().BeEmpty();
+        ServerWriteModes.ReadGrants(Configuration(), new ProvisioningGate(enabled: true), NullLogger.Instance)
+            .Should().BeEmpty();
     }
 
     [Theory]
@@ -55,10 +60,47 @@ public class ServerWriteModesTests
     {
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", value)),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         grants.Should().BeEmpty();
         Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.ReadOnly);
+    }
+
+    [Fact]
+    public void An_unparseable_write_mode_fails_closed_and_warns()
+    {
+        var logger = new RecordingLogger();
+
+        var grants = ServerWriteModes.ReadGrants(
+            Configuration(("Servyx:Servers:palworld-server:WriteMode", "yes")),
+            new ProvisioningGate(enabled: true),
+            logger);
+
+        grants.Should().BeEmpty();
+        Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.ReadOnly);
+
+        logger.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Warning
+            && e.Message.Contains("palworld-server")
+            && e.Message.Contains("WriteMode")
+            && e.Message.Contains("yes"),
+            "an operator who mistypes a write mode deserves to be told, even though the outcome is the same " +
+            "safe read-only default either way");
+    }
+
+    [Fact]
+    public void An_absent_write_mode_is_silent_and_warns_about_nothing()
+    {
+        var logger = new RecordingLogger();
+
+        ServerWriteModes.ReadGrants(
+            Configuration(("Servyx:Servers:palworld-server:Backup:Enabled", "true")),
+            new ProvisioningGate(enabled: true),
+            logger);
+
+        logger.Entries.Should().BeEmpty(
+            "a server with no WriteMode key at all is the ordinary, silent shape of read-only — not a typo");
     }
 
     [Fact]
@@ -68,7 +110,8 @@ public class ServerWriteModesTests
             Configuration(
                 ("Servyx:Servers:palworld-server:WriteMode", "Enabled"),
                 ("Servyx:Servers:minecraft-server:WriteMode", "ReadOnly")),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.Enabled);
         Resolve(grants, Container("minecraft-server")).Should().Be(WriteMode.ReadOnly);
@@ -80,7 +123,8 @@ public class ServerWriteModesTests
     {
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", "PreviewOnly")),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.PreviewOnly);
     }
@@ -93,7 +137,8 @@ public class ServerWriteModesTests
     {
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", "Enabled")),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         var target = new TargetDescriptor(
             "docker",
@@ -110,7 +155,8 @@ public class ServerWriteModesTests
     {
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", "Enabled")),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         var overSsh = new TargetDescriptor(
             "ssh",
@@ -127,7 +173,8 @@ public class ServerWriteModesTests
     {
         var grants = ServerWriteModes.ReadGrants(
             Configuration(("Servyx:Servers:palworld-server:WriteMode", "enabled")),
-            new ProvisioningGate(enabled: true));
+            new ProvisioningGate(enabled: true),
+            NullLogger.Instance);
 
         Resolve(grants, Container("palworld-server")).Should().Be(WriteMode.Enabled);
     }

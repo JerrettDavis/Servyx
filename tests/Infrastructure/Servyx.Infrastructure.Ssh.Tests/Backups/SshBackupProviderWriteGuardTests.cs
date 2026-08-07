@@ -92,6 +92,30 @@ public class SshBackupProviderWriteGuardTests
         await act.Should().ThrowAsync<WritesDisabledException>();
     }
 
+    /// <summary>
+    /// Pins the exact exception type a caller (the Backups page, through <c>IBackupDashboard.ApplyRestoreAsync</c>)
+    /// must be able to catch: a server with no <see cref="Servyx.Domain.Transport.WriteModeGrant"/> refuses a
+    /// restore with <see cref="WritesDisabledException"/>, not some other failure mode, and nothing is written.
+    /// </summary>
+    [Fact]
+    public async Task Restore_is_refused_without_a_write_grant()
+    {
+        var enabled = new SshBackupScenario(WriteMode.Enabled).WithGameLayout();
+        var artifact = await enabled.Provider().CreateAsync(SshBackupScenario.ServerId);
+
+        var readOnly = new SshBackupScenario(WriteMode.ReadOnly).WithGameLayout();
+        CopyStore(enabled, readOnly);
+
+        var provider = readOnly.Provider();
+        var plan = await provider.PlanRestoreAsync(artifact.Id);
+
+        var act = async () => await provider.RestoreAsync(plan.Id);
+
+        (await act.Should().ThrowAsync<WritesDisabledException>())
+            .Which.Message.Should().Contain(SshBackupScenario.ServerId);
+        readOnly.Host.Commands.Should().NotContain(c => c.Arguments.Contains("--extract"));
+    }
+
     [Fact]
     public async Task Listing_inspecting_and_a_dry_run_prune_all_still_work_on_a_read_only_server()
     {

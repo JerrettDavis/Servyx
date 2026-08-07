@@ -146,13 +146,13 @@ public class DockerServerDiscoveryTests
             ],
             Mounts =
             [
-                new MountPoint { Source = @"D:\Games\Palworld\data", Destination = "/palworld", RW = true },
+                new MountPoint { Source = "/srv/palworld/data", Destination = "/palworld", RW = true },
             ],
             Labels = new Dictionary<string, string>
             {
                 ["com.docker.compose.project"] = "palworld",
-                ["com.docker.compose.project.config_files"] = "D:\\Games\\Palworld\\compose.yaml",
-                ["com.docker.compose.project.working_dir"] = "D:\\Games\\Palworld",
+                ["com.docker.compose.project.config_files"] = "/srv/palworld/compose.yaml",
+                ["com.docker.compose.project.working_dir"] = "/srv/palworld",
                 ["com.docker.compose.service"] = "palworld-server",
                 ["unrelated.label"] = "ignored",
             },
@@ -246,7 +246,7 @@ public class DockerServerDiscoveryTests
             ],
             Mounts =
             [
-                new MountPoint { Source = @"D:\Games\Palworld\data", Destination = "/palworld", RW = true },
+                new MountPoint { Source = "/srv/palworld/data", Destination = "/palworld", RW = true },
             ],
             Labels = new Dictionary<string, string>(),
         };
@@ -294,7 +294,7 @@ public class DockerServerDiscoveryTests
             ],
             Mounts =
             [
-                new MountPoint { Source = @"D:\Games\Palworld\data", Destination = "/palworld", RW = true },
+                new MountPoint { Source = "/srv/palworld/data", Destination = "/palworld", RW = true },
             ],
             Labels = new Dictionary<string, string>(),
         };

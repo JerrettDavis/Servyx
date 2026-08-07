@@ -11,8 +11,9 @@ directory.
 | Plain unit tests | `Servyx.Domain.Tests`, `Servyx.Application.Tests`, `Servyx.Infrastructure.Tests`, `Servyx.Infrastructure.Docker.Tests`, `Servyx.Config.Tests`, and the non-`Integration` tests in `Servyx.Infrastructure.Ssh.Tests` | Milliseconds | No | Pure logic and algorithms: value-object behavior, a single method's edge cases, calculations (e.g. `DockerCpuPercentCalculator`), parsing. `[Fact]`/`[Theory]` + AwesomeAssertions `.Should()`. No behavioral narrative needed — these test *how*, not *why*. `Servyx.Infrastructure.Docker.Tests` talks to a substituted `IDockerClient`/`IDockerEnvironment`, never a real daemon. `Servyx.Infrastructure.Tests`' secret-store and host-key-store tests write only under a per-test, GUID-named directory beneath `Path.GetTempPath()` — never outside it (note: those temp files/directories are not deleted afterwards, so they do accumulate in the OS temp folder over many runs; this is a hygiene nit, not a hermeticity violation). |
 | BDD scenarios | `Servyx.Bdd.Tests` | Milliseconds | No | **Product guarantees** expressed as `Given/When/Then` behavior, grouped by `[Feature]`: read-only safety, path sandboxing, container adoption, configuration drift, secret protection, graceful degradation, observability correctness. Fast and NSubstitute-backed like unit tests, but the point is the *readable scenario*, not the assertion mechanics — this is where you'd point a new contributor to understand what Servyx promises and why. Uses TinyBDD (see below). |
 | bUnit component tests | `Servyx.Web.Tests` | Milliseconds | No | Blazor component rendering in isolation: does this component render the right markup for these inputs, does a masked secret ever reach rendered HTML, is a gated control actually disabled. Fast because there's no real browser for almost all of these — but cannot exercise real user interaction (clicks that require a live SignalR circuit), real navigation, or anything CSS/layout-dependent. **One exception**: `Integration/InteractiveRenderModeTests.cs` in this project is not a bUnit test — it launches the real `Servyx.Web` app as a subprocess and issues a real loopback HTTP request to it (no Docker, no external network, just `127.0.0.1`), as a regression guard for a real outage bUnit structurally cannot detect (see the doc comment on that class). It runs by default; it is fast (well under a second) and does not warrant opt-in gating, but it is the one test in the default run that is not purely in-process. |
-| Container-backed integration tests | `Servyx.Infrastructure.Ssh.Tests` (the `[Trait("Category", "Integration")]` tests under `Integration/`) | Tens of seconds | **Yes** — starts a real `linuxserver/openssh-server` container per test via Testcontainers | Real, non-mocked round trips against an actual SSH/SFTP server: password and key auth, host-key TOFU pinning and rejection, atomic file writes, exec argument quoting, the exec-only shell-fallback file channel. These need a genuine SSH server on the other end and are deliberately excluded from the default run — see "Container-backed integration tests" below. |
+| Container-backed integration tests | `Servyx.Infrastructure.Ssh.Tests` (the `[Trait("Category", "Integration")]` tests under `Integration/`) | Tens of seconds | **Yes** — starts a real `linuxserver/openssh-server` container per test via Testcontainers | Real, non-mocked round trips against an actual SSH/SFTP server: password and key auth, host-key TOFU pinning and rejection, atomic file writes, exec argument quoting, the exec-only shell-fallback file channel. `SshDockerIntegrationTests.cs` additionally proves the `ssh+docker` transport against a planted stub `/usr/local/bin/docker` inside the same container (see "Testing the ssh+docker transport" below). These need a genuine SSH server on the other end and are deliberately excluded from the default run — see "Container-backed integration tests" below. |
 | E2E (Playwright) | `Servyx.E2E.Tests` | Seconds | No (runs against `Servyx:DataSource=Mock`) | Whole-page, real-browser flows: does the sidebar actually render, does clicking a real nav link actually navigate, does the whole page assembled from many components hang together. The layer of last resort — slow and heavier to maintain, so reserved for flows that specifically need a real browser and a real socket. Requires Playwright's browser binaries to be installed locally (see below); self-skips cleanly with an explanatory message if they aren't. |
+| Live remote smoke (read-only) | `Servyx.Remote.Tests` | Seconds | Real Docker on a real remote host | A strictly read-only smoke suite against the actual, live, production Palworld host over SSH — not a test double or a container anywhere. Excluded from `Servyx.sln` and from CI; quadruple-gated behind explicit environment variables. See "Testing the ssh+docker transport" below for the gating and the read-only guarantee. |
 
 If a behavior can be proven with a plain `[Fact]`, prove it there — don't
 reach for BDD narrative or a real browser just because they exist. Reach for
@@ -21,14 +22,115 @@ a sentence. Reach for bUnit when the point is "does this component render
 correctly." Reach for Playwright only when the point genuinely requires a
 real browser exercising several components together.
 
+## Testing the `ssh+docker` transport: four layers
+
+The `ssh+docker` transport (`src/Infrastructure/Servyx.Infrastructure.Ssh/Docker/`) — which manages
+a Docker container on a remote host by running the `docker` CLI over an SSH exec channel — is
+tested at four progressively more realistic layers. Each catches a class of bug the layer below it
+structurally cannot.
+
+| Layer | Where | Real SSH? | Real Docker? | Real production host? |
+|---|---|---|---|---|
+| 1. Unit | `Servyx.Infrastructure.Ssh.Tests` (non-`Integration`) | No | No | No |
+| 2. Hermetic container integration | `Servyx.Infrastructure.Ssh.Tests/Integration/SshDockerIntegrationTests.cs` | Yes | Stubbed | No |
+| 3. bUnit / composition-root | `Servyx.Web.Tests` | No | No | No |
+| 4. Live read-only smoke | `Servyx.Remote.Tests` | Yes | Yes | **Yes** |
+
+**Layer 1** covers `DockerCli`'s `CommandSpec` construction (argv shape, declared
+`CommandIntent`), `DockerInspectJson` parsing edge cases, and `SshDockerWiringOptions`'
+configuration-reading rules — all against in-memory fixtures or substituted collaborators, exactly
+like every other unit tier in the pyramid above.
+
+**Layer 2** is `SshDockerIntegrationTests`, tagged `[Trait("Category", "Integration")]` alongside
+the rest of `Servyx.Infrastructure.Ssh.Tests`' container-backed tests (same opt-in gating — see
+"Hermeticity policy" above; a bare `dotnet test` runs zero of these). It starts a throwaway
+`linuxserver/openssh-server` Testcontainer and plants a **stub** `/usr/local/bin/docker` shell
+script that dispatches on argv and echoes canned fixture JSON captured from a real production
+Palworld container (secrets scrubbed, public IP rewritten to `203.0.113.10`), then drives the real
+transport, discovery, log stream, and metrics source against it exactly as production code would.
+
+*Why a planted stub instead of mocking `IExecutionTarget` or `ITransport`:* a mocked target proves
+nothing about the actual wire path. What this transport depends on for correctness is that
+`docker ... --format {{json .}}` — including the literal `{{` `}}` template syntax and any
+argument containing spaces or special shell characters — survives `PosixArgv`'s quoting, gets
+carried faithfully over a *real* SSH exec channel, and comes back out the other side as bytes
+`DockerInspectJson` can parse. None of that is exercised by a mock; a mock's `docker` command never
+gets quoted, never gets shipped over a socket, and never gets echoed back by anything. The stub is
+the cheapest fixture that is still honest about the thing that actually breaks in practice: quoting
+across a real transport boundary. Verified live details worth knowing if you touch this fixture:
+a non-executable stub (`CopyAsync`'s default file mode) yields exit 126, a missing stub yields exit
+127 — both match `SshDockerTransport.ProbeAsync`'s branches exactly, and both were confirmed against
+a live container before being encoded as test expectations rather than assumed.
+
+**Layer 3** is ordinary bUnit/composition-root coverage in `Servyx.Web.Tests` — e.g. the
+`AddServyxSshDocker` registration shape (write-guarded `ITransport`, `LazyConnectingExecutionTarget`
+deferring the actual connect) — nothing here opens a socket.
+
+**Layer 4**, `Servyx.Remote.Tests`, is the only test project in this repository that talks to a
+real, live, production game server, and it is isolated accordingly:
+
+- **Not in `Servyx.sln`** — `dotnet build Servyx.sln` never builds it, and no IDE "run all tests"
+  reaches it.
+- **Not in `.github/workflows/ci.yml`**'s run list, for the same reason.
+- The project's own `VSTestTestCaseFilter` is `Category!=Integration` by default (same mechanism as
+  the hermeticity fix above), and every test additionally carries `[Trait("Category",
+  "Integration")]` — so even `dotnet test tests/Servyx.Remote.Tests` with no filter runs zero tests.
+- Every test is `[SkippableFact]` and calls `Skip.IfNot` against
+  `RemoteTestEnvironment.MissingReason`, which is non-null (and the whole suite skips) unless
+  **all** of the following environment variables are present and valid:
+
+  | Variable | Meaning |
+  |---|---|
+  | `SERVYX_REMOTE_E2E` | Must be exactly `"1"`. The master switch. |
+  | `SERVYX_REMOTE_ENDPOINT` | `[ssh:][user@]host[:port]` |
+  | `SERVYX_REMOTE_KEY_PATH` | A **Windows-readable** path to the private key |
+  | `SERVYX_REMOTE_CONTAINER` | The container name to observe |
+  | `SERVYX_REMOTE_FINGERPRINT` | The pinned `SHA256:...` host-key fingerprint(s), comma-separated |
+
+  No production coordinate — endpoint, username, key path, container name, or fingerprint — appears
+  anywhere in `Servyx.Remote.Tests`' own source; they exist only in the operator's environment for
+  the duration of one run. A missing or blank variable produces a skip reason naming exactly which
+  variable is absent, never a connection failure and never a guessed default.
+
+Run it explicitly:
+
+```bash
+dotnet test tests\Servyx.Remote.Tests --filter "Category=Integration"
+```
+
+**This is four independent gates that must all be satisfied at once** (project exclusion from the
+`.sln`, exclusion from CI, the project-level test-case filter, and the `[SkippableFact]` env-var
+check) — the same "opt-in must be explicit, not accidental" posture the hermeticity policy above
+applies to the container-backed SSH tests, deliberately raised to an even higher bar here because
+the blast radius of an accidental run is a real production host, not a throwaway container.
+
+**The read-only guarantee, verified rather than assumed.** Every session
+`Servyx.Remote.Tests` opens is wrapped in `WriteGuardedTransport` with its default
+`ReadOnlyWriteModeResolver` — every target is `WriteMode.ReadOnly` — with a recording decorator
+placed *inside* that guard, so what it records is exactly what production saw and nothing more. The
+suite:
+
+- Issues only the read-only docker verbs (`version`, `container ls`, `container inspect`, `logs`,
+  `stats`), asserted positively by an end-of-suite audit (`Every_command_this_suite_issues_is_read_only`)
+  that fails if any recorded `CommandSpec` is not `CommandIntent.ReadOnly` or uses any verb outside
+  that allow-list.
+- Builds one real mutating `CommandSpec` — `DockerCli.Stop` — purely to prove it is refused:
+  `Stopping_the_container_is_refused_before_any_io` asserts the call throws
+  `WritesDisabledException`, asserts the recorder (which sits *inside* the guard) never saw the
+  `stop` spec at all — proving the throw happens before the inner target is touched, not merely
+  before it succeeds — and then re-inspects the container to assert `State == "running"`, i.e. the
+  refusal cost production nothing.
+
 ## Hermeticity policy
 
 **The default run — `dotnet test Servyx.sln`, with no extra flags — is
 hermetic: no Docker daemon is touched, no container is started, and nothing
 reaches beyond the test process's own temp directory or, for the one
 exception noted above, `127.0.0.1`.** Any tier that needs a real external
-resource (today: the SSH/SFTP container tests) is opt-in and must be invoked
-with an explicit command, documented below.
+resource (today: the SSH/SFTP container tests, plus
+`Servyx.Infrastructure.Docker.Tests`' own Docker-backed pre-start-seeding
+integration tests) is opt-in and must be invoked with an explicit command,
+documented below.
 
 This used to not be true. The `Servyx.Infrastructure.Ssh.Tests` integration
 tests were gated only by `[SkippableFact]` plus a runtime Docker-availability
@@ -44,7 +146,11 @@ should be policy, not an accident of whether Docker happens to be running.
 The fix: `tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests/Servyx.Infrastructure.Ssh.Tests.csproj`
 sets the MSBuild property `VSTestTestCaseFilter` to `Category!=Integration`
 by default (only when the caller hasn't already supplied their own
-`VSTestTestCaseFilter`/`--filter`, so an explicit filter always wins). This
+`VSTestTestCaseFilter`/`--filter`, so an explicit filter always wins).
+`tests/Infrastructure/Servyx.Infrastructure.Docker.Tests/Servyx.Infrastructure.Docker.Tests.csproj`
+sets the identical property for the same reason, for its own Docker-backed
+`PreStartSeedingIntegrationTests` (exercising `deployments[].files[]` seeding
+against a real container) — the same opt-in mechanism, not a second one. This
 is what `dotnet test` uses internally to populate vstest's
 `/TestCaseFilter:` — setting it as a project default means the exclusion
 applies to a bare `dotnet test Servyx.sln` with **no special flags,
@@ -145,16 +251,28 @@ dotnet test tests/Presentation/Servyx.Web.Tests
 # nothing, verified)
 dotnet test tests/Servyx.Bdd.Tests
 
-# Container-backed SSH/SFTP integration tests only — opt-in, requires Docker
-# (skips cleanly, doesn't fail, if Docker is unavailable). See "Hermeticity
-# policy" above for why this is off by default and how the opt-in works.
+# Container-backed integration tests only — opt-in, requires Docker (skips
+# cleanly, doesn't fail, if Docker is unavailable). See "Hermeticity policy"
+# above for why this is off by default and how the opt-in works. The
+# solution-scoped form below runs both opt-in suites (SSH/SFTP and the
+# Docker pre-start-seeding tests); the two project-scoped forms run just one.
 dotnet test Servyx.sln --filter "Category=Integration"
 dotnet test tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests --filter "Category=Integration"
+dotnet test tests/Infrastructure/Servyx.Infrastructure.Docker.Tests --filter "Category=Integration"
 
 # E2E only — NOT part of Servyx.sln at all (a solution-scoped filter such as
 # `dotnet test Servyx.sln --filter "Category=e2e"` finds zero tests, since the
 # project isn't referenced by the .sln; verified). Must be run by project path:
 dotnet test tests/Servyx.E2E.Tests
+
+# Live remote smoke tests — NOT part of Servyx.sln, NOT part of CI, and a bare
+# `dotnet test tests/Servyx.Remote.Tests` (even with no filter) still runs ZERO
+# tests: this project's own VSTestTestCaseFilter default is "Category!=Integration".
+# Requires SERVYX_REMOTE_E2E=1 plus every SERVYX_REMOTE_* variable (see "Testing
+# the ssh+docker transport" above) — every test skips cleanly, never fails, if any
+# are absent. Talks to a REAL production game server: never run this without
+# understanding what it does.
+dotnet test tests/Servyx.Remote.Tests --filter "Category=Integration"
 ```
 
 ## E2E: one-time setup

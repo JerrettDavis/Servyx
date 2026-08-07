@@ -31,9 +31,13 @@ Servyx doesn't take your word for what it can do — it checks. Two kinds of che
 
 A check's result isn't a plain yes/no either. Servyx distinguishes **Verified** (an active check proved it), **Inferred** (a passive check strongly suggests it), **Unknown** (Servyx hasn't been able to determine the answer — a check didn't run, or failed), and **Denied** (Servyx checked and was refused). The distinction between Unknown and Denied matters: Unknown means "we don't know yet," not "no" — a server that is fully capable of something shouldn't be told it can't, just because a single check timed out once.
 
-## What read-only mode means today
+## What write access means today
 
-Servyx's current milestone is **strictly read-only** end to end: every mutating control across the whole product — every power button, every settings field, the console command box — is locked with the same message: *"Servyx is in read-only mode. Writes are enabled per-server in Milestone 4."* This is a simpler, uniform gate rather than the fully per-server, evidence-driven tier described above; the richer per-server evidence, remediation hints, and the interactive "verify a write will work" check are part of the control-plane design but are not yet wired into the running dashboard. Until then, every server behaves the same way from a write perspective, regardless of what the underlying host would actually permit.
+Servyx now has full write capability — Start, Restart, Stop, Kill, and more — but it ships **off**, and turning it on is a deliberate, explicit, per-server act. Nothing above (the five tiers, passive/active checks, Verified/Inferred/Unknown/Denied) changes because of this: those still describe how Servyx assesses what a deployment *would* permit. What's new is a separate, coarser gate in front of all of it — a process-wide switch plus a per-server grant — that decides whether Servyx is allowed to act on any of that at all, regardless of what a tier check finds.
+
+See [Enabling writes](enabling-writes.md) for exactly how that grant works (the two switches required, and why there's no single global "enable writes" toggle), and [Lifecycle control](lifecycle-control.md) for what a fully-enabled server's Power card actually does — Start/Restart/Stop/Kill, the stop-escalation ladder, and the honesty limits on live progress reporting.
+
+A server with no write grant is exactly as read-only as every server was before this capability existed: every mutating control still renders, locked, with the same "a disabled button is a feature" reasoning above. A server with only `WriteMode.PreviewOnly` sits between the two — Servyx will compute and show you what a mutating action *would* do, but nothing on the page can apply it. Which of these three postures a given server is in is a configuration fact, not something a tier check discovers.
 
 ---
-**Next:** [Configuration](configuration.md) · **See also:** [The Control Plane](../control-plane.md)
+**Next:** [Configuration](configuration.md) · **See also:** [The Control Plane](../control-plane.md) · [Enabling writes](enabling-writes.md) · [Lifecycle control](lifecycle-control.md)

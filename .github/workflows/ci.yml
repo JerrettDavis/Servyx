@@ -22,6 +22,31 @@
 #       Microsoft.Playwright and project-references Servyx.E2E.Tests
 #       (which also references Playwright). Same reasoning as above.
 #
+#   - tests/Servyx.Remote.Tests
+#       Talks to a REAL, LIVE, PRODUCTION game server over SSH. This one
+#       is excluded for a different and stronger reason than the two
+#       above: it is not that CI lacks a capability, it is that CI must
+#       never point at somebody's production host at all. The suite is
+#       strictly read-only (only `docker version`, `container ls`,
+#       `container inspect`, `logs`, and `stats` are ever issued, and it
+#       runs write-guarded so a mutating command is refused before any
+#       I/O), but "read-only" is not the same as "safe to run
+#       unattended from shared infrastructure": it needs a production
+#       SSH private key and a pinned host-key fingerprint, neither of
+#       which belongs in this workflow's environment.
+#
+#       Like Servyx.Infrastructure.Ssh.Tests, its .csproj defaults
+#       `VSTestTestCaseFilter` to `Category!=Integration`, so even a bare
+#       `dotnet test` on it runs ZERO tests; on top of that every test is
+#       [SkippableFact] gated on SERVYX_REMOTE_E2E=1 plus four
+#       SERVYX_REMOTE_* variables that carry every production coordinate
+#       (no endpoint, key path, container name, or fingerprint appears in
+#       its source). It is also deliberately absent from Servyx.sln, for
+#       the same reason the two E2E projects are. Adding it here would
+#       require overriding all of that on purpose - which is exactly the
+#       decision this comment exists to prevent someone making by
+#       accident.
+#
 # tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests is included below:
 # it references Testcontainers, but its .csproj sets
 # `VSTestTestCaseFilter` to `Category!=Integration` by default, so a bare
@@ -81,6 +106,7 @@ jobs:
       # Included (hermetic - no Docker, no browser binaries required):
       #   tests/Core/Servyx.Domain.Tests
       #   tests/Core/Servyx.Application.Tests
+      #   tests/Core/Servyx.Definitions.Tests
       #   tests/Infrastructure/Servyx.Infrastructure.Tests
       #   tests/Infrastructure/Servyx.Infrastructure.Docker.Tests
       #   tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests   (Testcontainers-backed
@@ -107,6 +133,10 @@ jobs:
       #     exercised against a loopback TcpListener bound to port 0 on 127.0.0.1 that speaks the
       #     wire format itself, so no game server, container, or outbound network access is
       #     required or attempted)
+      #   tests/Infrastructure/Servyx.Infrastructure.Persistence.Tests   (exercises EF Core against
+      #     a real Sqlite database, but SqliteDatabaseFixture opens a fresh in-memory Sqlite
+      #     database per test and applies migrations to it directly, so no external database
+      #     server, network access, or pre-provisioned state is required or attempted)
       #   tests/Infrastructure/Servyx.Config.Tests
       #   tests/Servyx.Bdd.Tests
       #   tests/Presentation/Servyx.Web.Tests
@@ -114,12 +144,15 @@ jobs:
       # Excluded (see header comment for why):
       #   tests/Servyx.E2E.Tests
       #   tests/Servyx.E2E.Bdd.Tests
+      #   tests/Servyx.Remote.Tests   (hits a real production game server
+      #     over SSH; never to be added here)
       - name: Test
         run: |
           set -e
           projects=(
             "tests/Core/Servyx.Domain.Tests"
             "tests/Core/Servyx.Application.Tests"
+            "tests/Core/Servyx.Definitions.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Docker.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Ssh.Tests"
@@ -128,6 +161,7 @@ jobs:
             "tests/Infrastructure/Servyx.Infrastructure.Azure.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Aws.Tests"
             "tests/Infrastructure/Servyx.Infrastructure.Rcon.Tests"
+            "tests/Infrastructure/Servyx.Infrastructure.Persistence.Tests"
             "tests/Infrastructure/Servyx.Config.Tests"
             "tests/Servyx.Bdd.Tests"
             "tests/Presentation/Servyx.Web.Tests"

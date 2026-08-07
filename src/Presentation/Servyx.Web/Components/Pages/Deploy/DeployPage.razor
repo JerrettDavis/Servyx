@@ -1,11 +1,12 @@
 @page "/deploy"
 @using Servyx.Application.Provisioning
+@using Servyx.Definitions
+@using Servyx.Domain.Definitions.Model
 @using Servyx.Domain.Provisioning
-@using Servyx.Web.Definitions
 @inject ProvisioningGate Gate
 @inject IServiceProvider Services
 
-<PageTitle>Deploy - Servyx</PageTitle>
+<SvxPageTitle Section="Deploy" />
 
 <div class="svx-page-header">
     <h2>Deploy</h2>
@@ -89,6 +90,40 @@ else
         }
     </div>
 
+    <div class="svx-card" data-testid="game-section">
+        <h3>Game</h3>
+
+        @* The catalog holds every currently loaded definition, not a single hardcoded one, so this section
+           renders one of three honest states rather than ever silently defaulting to a specific game — see
+           OnInitializedAsync and OnGameChanged. *@
+        @if (_games.Count == 0)
+        {
+            <p class="svx-page-description" data-testid="no-games">
+                No game definitions are loaded, so this deployment cannot be associated with a specific game.
+                Load a definition under the configured definitions directory to select one.
+            </p>
+        }
+        else if (_games.Count == 1)
+        {
+            <p class="svx-page-description" data-testid="single-game" data-game-id="@_games[0].Metadata.Id">
+                Deploying <strong>@_games[0].Metadata.Name</strong> — the only game definition loaded.
+            </p>
+        }
+        else
+        {
+            <label>
+                <span>Game</span>
+                <select class="svx-select" @bind="_gameDefinitionId" @bind:after="OnGameChanged"
+                        data-testid="game-select">
+                    @foreach (var game in _games)
+                    {
+                        <option value="@game.Metadata.Id">@game.Metadata.Name</option>
+                    }
+                </select>
+            </label>
+        }
+    </div>
+
     <div class="svx-card" data-testid="provisioner-list">
         <h3>Available provisioners</h3>
 
@@ -152,7 +187,7 @@ else
                  data-schema-for="@_schema.ProvisionerId">
                 <label>
                     <span>Provisioner</span>
-                    <select @bind="_selectedProvisionerId" @bind:after="OnProvisionerChanged"
+                    <select class="svx-select" @bind="_selectedProvisionerId" @bind:after="OnProvisionerChanged"
                             data-testid="provisioner-select">
                         @foreach (var provisioner in _provisioners)
                         {
@@ -167,12 +202,12 @@ else
                         <span>@field.Label</span>
                         @if (field.Kind is ProvisionerFieldKind.Multiline)
                         {
-                            <textarea rows="3" data-testid="@field.Id" value="@ValueOf(field)"
+                            <textarea class="svx-textarea" rows="3" data-testid="@field.Id" value="@ValueOf(field)"
                                       @onchange="e => SetField(field, e.Value)"></textarea>
                         }
                         else
                         {
-                            <input type="@(field.Kind is ProvisionerFieldKind.Number ? "number" : "text")"
+                            <input class="svx-input" type="@(field.Kind is ProvisionerFieldKind.Number ? "number" : "text")"
                                    data-testid="@field.Id" value="@ValueOf(field)"
                                    @onchange="e => SetField(field, e.Value)" />
                         }
@@ -187,13 +222,13 @@ else
                 {
                     <label class="svx-deploy-form-wide">
                         <span>Parameters</span>
-                        <textarea rows="4" data-testid="additional-parameters"
+                        <textarea class="svx-textarea" rows="4" data-testid="additional-parameters"
                                   value="@_additionalParameters"
                                   @onchange="e => _additionalParameters = e.Value?.ToString() ?? string.Empty"></textarea>
                     </label>
                 }
 
-                <button type="button" class="btn btn-primary" data-testid="preview-plan"
+                <button type="button" class="svx-btn svx-btn-primary" data-testid="preview-plan"
                         @onclick="PreviewPlanAsync">
                     Preview plan
                 </button>
@@ -262,7 +297,7 @@ else
                         }
                         else
                         {
-                            <button type="button" class="btn btn-primary" data-testid="apply-plan"
+                            <button type="button" class="svx-btn svx-btn-primary" data-testid="apply-plan"
                                     disabled="@ApplyDisabled"
                                     @onclick="ApplyPlanAsync">
                                 @(_applying ? "Applying…" : "Apply this plan")
@@ -398,7 +433,7 @@ else
                             <span data-col-label="Provisioner">@entry.Intent.ProvisionerId</span>
                             <span data-col-label="Region">@(entry.Intent.Region ?? "—")</span>
                             <span data-col-label="State">
-                                <span class="badge" data-testid="ledger-state">@entry.State</span>
+                                <span class="svx-badge" data-testid="ledger-state">@entry.State</span>
                             </span>
                             <span data-col-label="Provider resource">
                                 @* The real, provider-assigned id for a confirmed row — and, for an Intended
@@ -418,7 +453,7 @@ else
                                 @{
                                     var driftState = DriftStateFor(entry);
                                 }
-                                <span class="badge svx-drift-badge svx-drift-@driftState"
+                                <span class="svx-badge svx-drift-badge svx-drift-@driftState"
                                       data-testid="ledger-drift" data-drift="@driftState">@DriftLabelFor(entry)</span>
                             </span>
                         </div>
@@ -468,7 +503,7 @@ else
                             }
                             else
                             {
-                                <button type="button" class="btn" data-testid="plan-update"
+                                <button type="button" class="svx-btn" data-testid="plan-update"
                                         disabled="@(_updatePlanning && _updateRowId == entry.Intent.LedgerRowId)"
                                         @onclick="() => PlanUpdateAsync(entry)">
                                     Plan update
@@ -517,7 +552,7 @@ else
                     <dt>Update plan</dt>
                     <dd data-testid="update-plan-id">@plan.PlanId</dd>
                     <dt>Strategy</dt>
-                    <dd><span class="badge" data-testid="update-strategy">@plan.Strategy</span></dd>
+                    <dd><span class="svx-badge" data-testid="update-strategy">@plan.Strategy</span></dd>
                     <dt>Content hash</dt>
                     <dd><code data-testid="update-plan-hash">@plan.PlanHash</code></dd>
                     <dt>Observation expires</dt>
@@ -584,7 +619,7 @@ else
                         <div class="svx-data-impact-ack" data-testid="update-acknowledgement-step"
                              data-impact="@plan.DataImpact">
                             <label>
-                                <input type="checkbox" data-testid="update-acknowledge"
+                                <input type="checkbox" class="svx-checkbox" data-testid="update-acknowledge"
                                        @bind="_updateAcknowledged" />
                                 <span>
                                     I have read the above and accept that this update's impact on persistent
@@ -603,7 +638,7 @@ else
                     }
                     else
                     {
-                        <button type="button" class="btn btn-primary" data-testid="apply-update"
+                        <button type="button" class="svx-btn svx-btn-primary" data-testid="apply-update"
                                 disabled="@UpdateApplyDisabled(plan)"
                                 @onclick="() => ApplyUpdateAsync(entry, plan)">
                             @(_updateApplying ? "Applying…" : "Apply this update")
@@ -738,9 +773,25 @@ else
     private Dictionary<string, string> _fieldValues = [];
     private string _additionalParameters = string.Empty;
 
+    // Set once, in OnInitializedAsync, to whatever the container resolves for ProvisionerFormCatalog — which
+    // is null on every host this build ships, since nothing registers one (see ServiceCollectionExtensions
+    // across every project). Kept so OnGameChanged knows whether it is free to rebuild _formCatalog for a
+    // newly selected game's own image and port, or whether a host supplied its own catalog whose own choice
+    // of how — or whether — to vary by game this page has never known how to second-guess.
+    private ProvisionerFormCatalog? _diFormCatalog;
+
     private string _instanceId = string.Empty;
     private string _jobId = string.Empty;
-    private string _gameDefinitionId = "palworld";
+    private string _gameDefinitionId = string.Empty;
+
+    /// <summary>
+    /// Every definition the catalog currently holds that parsed as a real <see cref="GameDefinition"/>,
+    /// ordered alphabetically by <see cref="GameMetadata.Name"/> (with <see cref="GameMetadata.Id"/> as a
+    /// stable tiebreak) — the order the game-select's options and the single-definition readout both use.
+    /// Empty when no <see cref="GameDefinitionCatalog"/> is registered or it holds nothing loaded, which is
+    /// a real, honestly-rendered state (see the "Game" card) rather than a fallback to any specific game.
+    /// </summary>
+    private IReadOnlyList<GameDefinition> _games = [];
 
     /// <summary>
     /// Whether this process actually requires a login, which is what decides whether the warnings above may
@@ -771,17 +822,43 @@ else
         }
 
         string? containerImage = null;
-        if (Services.GetService(typeof(PalworldDefinitionInfo)) is PalworldDefinitionInfo definition)
+        string? hostPort = null;
+
+        // Resolved from the data-driven catalog rather than the retired PalworldDefinitionLoader, and over
+        // every definition it holds — not just one. LoadedDefinition.Document is typed object because a
+        // definition that failed validation can leave an id's slot pointing at something that never parsed
+        // as a GameDefinition at all (see GameDefinitionCatalog's own remarks); only the ones that did are
+        // offered here.
+        if (Services.GetService(typeof(GameDefinitionCatalog)) is GameDefinitionCatalog catalog)
         {
-            _gameDefinitionId = definition.GameId;
-            containerImage = definition.DefaultImage;
+            _games =
+            [
+                .. catalog.DefinitionsById.Values
+                    .Select(loaded => loaded.Document as GameDefinition)
+                    .OfType<GameDefinition>()
+                    .OrderBy(candidate => candidate.Metadata.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(candidate => candidate.Metadata.Id, StringComparer.Ordinal),
+            ];
+        }
+
+        if (_games.Count > 0)
+        {
+            // The first definition, alphabetically by display name, is preselected no matter how many are
+            // loaded — the same "pick the first and let the operator change it" policy the provisioner
+            // select just below already uses (see _selectedProvisionerId). One loaded definition keeps
+            // today's effective behavior undisturbed; two or more now render a real <select> (see the
+            // "Game" card) instead of silently staying on a hardcoded id nothing chose. Zero loaded
+            // definitions leaves _gameDefinitionId at its honest empty default instead — see the "Game"
+            // card's own empty state.
+            _gameDefinitionId = _games[0].Metadata.Id;
+            (containerImage, hostPort) = DeriveDockerDefaults(_games[0]);
         }
 
         // Resolved like everything else on this page — optionally — so a host that registers no catalog gets
-        // the shipped one rather than a render-time failure. The bundled definition's image is handed to it
-        // so Docker's Image field still starts where it always did.
-        _formCatalog = Services.GetService(typeof(ProvisionerFormCatalog)) as ProvisionerFormCatalog
-            ?? ProvisionerFormCatalog.CreateDefault(containerImage);
+        // the shipped one rather than a render-time failure. The selected definition's image and game port
+        // are handed to it so Docker's Image/Port fields start where the selected game says they should.
+        _diFormCatalog = Services.GetService(typeof(ProvisionerFormCatalog)) as ProvisionerFormCatalog;
+        _formCatalog = _diFormCatalog ?? ProvisionerFormCatalog.CreateDefault(containerImage, hostPort);
 
         // Fixed once per page instance so repeated previews of unchanged inputs produce the same plan hash.
         _instanceId = $"preview-{Guid.NewGuid():n}"[..20];
@@ -827,6 +904,72 @@ else
         _planError = null;
         _applyResult = null;
         _applyError = null;
+    }
+
+    /// <summary>
+    /// Reacts to the selected game changing: everything <see cref="OnInitializedAsync"/> derived from the
+    /// previously selected definition — its Docker image, its default host port, the settings/provisioner
+    /// form built from those — is re-derived for the newly selected one, and any pending plan or apply
+    /// result naming the old target is discarded.
+    /// </summary>
+    /// <remarks>
+    /// Applies the same discipline <see cref="OnProvisionerChanged"/> already applies when the provisioner
+    /// itself changes, and for the same reason: a plan or an applied-result box left on screen beside a
+    /// freshly selected game would describe what the <em>previous</em> game's deployment would do, not this
+    /// one's. <see cref="_formCatalog"/> itself is only rebuilt when nothing was registered for it in the
+    /// container (<see cref="_diFormCatalog"/> is <see langword="null"/>) — a host that supplies its own
+    /// <see cref="ProvisionerFormCatalog"/> owns how, or whether, it varies by game.
+    /// </remarks>
+    private void OnGameChanged()
+    {
+        if (_diFormCatalog is null)
+        {
+            var (containerImage, hostPort) = DeriveDockerDefaults(SelectedGame);
+            _formCatalog = ProvisionerFormCatalog.CreateDefault(containerImage, hostPort);
+        }
+
+        LoadFormForSelectedProvisioner();
+
+        _plan = null;
+        _planError = null;
+        _applyResult = null;
+        _applyError = null;
+    }
+
+    /// <summary>The definition <see cref="_gameDefinitionId"/> currently names, or <see langword="null"/> if it names none of <see cref="_games"/>.</summary>
+    private GameDefinition? SelectedGame =>
+        _games.FirstOrDefault(game => string.Equals(game.Metadata.Id, _gameDefinitionId, StringComparison.Ordinal));
+
+    /// <summary>
+    /// The Docker image and default host port <paramref name="definition"/>'s own <c>deployments</c> and
+    /// <c>capabilities</c> declare, or <see langword="null"/> for either when <paramref name="definition"/>
+    /// is <see langword="null"/> or declares neither.
+    /// </summary>
+    /// <remarks>
+    /// The image comes from this definition's first <see cref="DeploymentKind.Docker"/> profile, exactly as
+    /// <c>OnInitializedAsync</c> derived it before this method existed — a definition with more than one
+    /// docker-kind profile is not disambiguated further, the same minimal handling as before. The port comes
+    /// from the first <see cref="Capabilities.Network"/> entry whose <see cref="NetworkPortCapability.Purpose"/>
+    /// is <c>"game"</c> and which is <see cref="NetworkPortCapability.Published"/>, and only when it is a
+    /// literal — a port that is itself a <see cref="PortRef.SettingRef"/> has no single number to default an
+    /// input to, so the schema's own literal fallback is used instead.
+    /// </remarks>
+    private static (string? Image, string? HostPort) DeriveDockerDefaults(GameDefinition? definition)
+    {
+        if (definition is null)
+        {
+            return (null, null);
+        }
+
+        var image = definition.Deployments
+            .FirstOrDefault(deployment => deployment.Kind == DeploymentKind.Docker)
+            ?.Image?.Default;
+
+        var gamePort = definition.Capabilities.Network
+            .FirstOrDefault(port => port.Purpose == "game" && port.Published);
+        var hostPort = gamePort?.Port is PortRef.Literal literal ? literal.Port.ToString() : null;
+
+        return (image, hostPort);
     }
 
     /// <summary>The current value of <paramref name="field"/>, or empty if it has never been set.</summary>

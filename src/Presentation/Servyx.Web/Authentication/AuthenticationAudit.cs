@@ -1,3 +1,5 @@
+using Servyx.Domain.Transport;
+
 namespace Servyx.Web.Authentication;
 
 /// <summary>
@@ -49,4 +51,14 @@ public static class AuthenticationAudit
 
     /// <summary>Startup found authentication switched off, with or without provisioning.</summary>
     public static readonly EventId AuthenticationDisabled = new(6008, nameof(AuthenticationDisabled));
+
+    /// <summary>Startup found at least one server granted a non-read-only <see cref="WriteMode"/>.</summary>
+    public static readonly EventId WriteModeGranted = new(6009, nameof(WriteModeGranted));
+
+    /// <summary>
+    /// Startup found the write-mode equivalent of <see cref="UnauthenticatedProvisioning"/>: no
+    /// authentication, and at least one server granted <see cref="WriteMode.Enabled"/> — an anonymous caller
+    /// can mutate it.
+    /// </summary>
+    public static readonly EventId UnauthenticatedWriteAccess = new(6010, nameof(UnauthenticatedWriteAccess));
 }

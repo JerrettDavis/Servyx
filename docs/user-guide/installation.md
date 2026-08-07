@@ -49,7 +49,13 @@ Without that `--` separator, some `dotnet run` invocations swallow the argument 
 
 ## What you see on first load
 
-With a real Docker daemon and no adopted servers yet, the dashboard, servers list, and backups page each show an empty state explaining that adopting an existing container is the first step. Servyx does not create anything on your behalf on first run — it looks for containers matching a bundled game definition (Palworld, by default) and lists what it finds. See [Adopting servers](adopting-servers.md) for what that matching looks for.
+Before any dashboard, servers list, or backups page, there is a sign-in gate. `Servyx:Authentication:Enabled` defaults to **true** — a misconfigured or unreadable flag must never widen what an anonymous caller can do — so on a fresh install, with no operator password ever set, the very first thing Servyx shows you is a one-time "set the operator password" form, not the dashboard:
+
+![The first-run sign-in page, asking a fresh install's first visitor to set the one operator password Servyx has](../images/operator-first-run-login.png)
+
+Once you set that password you're signed in for that session, and every later visit shows the ordinary sign-in form instead of this one-time bootstrap. There is no separate user table, no roles, and no recovery flow beyond that one password — see [Secrets](secrets.md) for where it (and the rest of Servyx's own state) is stored. If you explicitly set `Servyx:Authentication:Enabled` to `false` (for local development only — never for anything reachable by anyone else), this gate is skipped entirely and every page is open.
+
+With a real Docker daemon and no adopted servers yet, the dashboard, servers list, and backups page each show an empty state explaining that adopting an existing container is the first step. Servyx does not create anything on your behalf on first run — it looks for containers matching any of the bundled game definitions (Palworld, Minecraft, ARK: Survival Ascended, and Factorio ship today — see [Supported games](../games.md)) and lists what it finds. See [Adopting servers](adopting-servers.md) for what that matching looks for.
 
 ## Where data is stored
 

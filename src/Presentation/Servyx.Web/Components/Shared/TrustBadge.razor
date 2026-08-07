@@ -1,0 +1,8 @@
+@using Servyx.Domain.Definitions
+
+<span class="svx-badge trust-badge trust-@Trust.ToString().ToLowerInvariant()">@Trust</span>
+
+@code {
+    [Parameter, EditorRequired]
+    public TrustTier Trust { get; set; }
+}

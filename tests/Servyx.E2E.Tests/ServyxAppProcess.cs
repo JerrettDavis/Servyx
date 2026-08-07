@@ -37,7 +37,18 @@ public sealed class ServyxAppProcess : IAsyncDisposable
     /// <summary>The base address of the running app once <see cref="StartAsync"/> has completed.</summary>
     public string ServerAddress { get; private set; } = string.Empty;
 
-    public async Task StartAsync(CancellationToken ct = default)
+    /// <param name="ct">Cancels the readiness wait.</param>
+    /// <param name="environmentOverrides">
+    /// Additional (or overriding) environment variables applied AFTER the documented defaults below, so a
+    /// caller can layer scenario-specific configuration (e.g. <c>Servyx__Provisioning__Enabled=true</c> plus
+    /// a per-server <c>WriteMode</c>) on top of them without duplicating them. Left <see langword="null"/>
+    /// (the default), every existing caller gets byte-identical behavior to before this parameter existed:
+    /// <c>Servyx__DataSource=Mock</c>, <c>ASPNETCORE_ENVIRONMENT=Development</c>, and
+    /// <c>Servyx__Authentication__Enabled=false</c>.
+    /// </param>
+    public async Task StartAsync(
+        CancellationToken ct = default,
+        IReadOnlyDictionary<string, string>? environmentOverrides = null)
     {
         var port = GetFreeLoopbackPort();
         ServerAddress = $"http://127.0.0.1:{port}";
@@ -70,6 +81,18 @@ public sealed class ServyxAppProcess : IAsyncDisposable
         // growing a sign-in preamble. The authentication path itself is covered directly, against a host
         // started with authentication ON, by Servyx.Web.Tests' OperatorAuthenticationEndpointTests.
         startInfo.Environment["Servyx__Authentication__Enabled"] = "false";
+
+        // Applied last so a caller can override any of the defaults above (or add entirely new keys, such
+        // as Servyx__Provisioning__Enabled and a per-server WriteMode) without this method growing a second,
+        // divergent code path. Absent entirely, this loop does nothing and every caller's environment is
+        // exactly what it was before this parameter existed.
+        if (environmentOverrides is not null)
+        {
+            foreach (var (key, value) in environmentOverrides)
+            {
+                startInfo.Environment[key] = value;
+            }
+        }
 
         _process = new Process { StartInfo = startInfo, EnableRaisingEvents = true };
         _process.OutputDataReceived += (_, e) => { if (e.Data is not null) Output.Enqueue(e.Data); };

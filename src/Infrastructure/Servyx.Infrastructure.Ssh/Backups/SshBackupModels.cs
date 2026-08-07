@@ -92,6 +92,25 @@ public sealed record SshBackupContext(
     QuiesceStep? Quiesce = null,
     IRconSession? Control = null)
 {
+    /// <summary>
+    /// Steps issued after capture finishes, on every exit path — the undo half of <see cref="Quiesce"/>.
+    /// Empty when the definition declares no <c>backup.resume</c> block.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A quiesce that disables saving is only safe if something re-enables it. These steps are what
+    /// <see cref="SshBackupProvider.CreateAsync"/> runs from its <c>finally</c>: after a successful archive,
+    /// after a failed one, after a quiesce that failed partway through its own list, and after cancellation.
+    /// They are issued on <see cref="CancellationToken.None"/>, bounded only by each step's own timeout,
+    /// because a cancelled backup must still hand the server back in a writable state.
+    /// </para>
+    /// <para>
+    /// Like <see cref="Quiesce"/>, a non-empty list requires <see cref="Control"/>, and a context that
+    /// declares one without the other is refused up front.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<QuiesceStep> Resume { get; init; } = [];
+
     /// <summary>The archiver invoked on the host. Overridable for hosts where GNU tar is not on <c>PATH</c> as <c>tar</c>.</summary>
     public string TarExecutable { get; init; } = "tar";
 

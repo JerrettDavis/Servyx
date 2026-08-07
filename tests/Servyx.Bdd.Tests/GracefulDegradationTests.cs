@@ -36,7 +36,7 @@ public class GracefulDegradationTests(ITestOutputHelper output) : TinyBddXunitBa
             Substitute.For<IMetricsSource>(),
             Substitute.For<ILogStream>(),
             transport,
-            AdoptionCriteria.PalworldDefault,
+            new AdoptionCriteria("palworld", "Palworld Dedicated Server", "thijsvanloef/palworld-server-docker", "/palworld"),
             NullLogger<ServerQueryService>.Instance);
     }
 
@@ -74,7 +74,7 @@ public class GracefulDegradationTests(ITestOutputHelper output) : TinyBddXunitBa
                     Substitute.For<IMetricsSource>(),
                     Substitute.For<ILogStream>(),
                     Substitute.For<ITransport>(),
-                    AdoptionCriteria.PalworldDefault,
+                    new AdoptionCriteria("palworld", "Palworld Dedicated Server", "thijsvanloef/palworld-server-docker", "/palworld"),
                     NullLogger<ServerQueryService>.Instance);
             })
             .When("an operation is cancelled", async Task<Exception?> (queryService) =>

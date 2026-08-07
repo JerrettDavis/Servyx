@@ -1,0 +1,64 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Servyx.Remote.Tests — the ONLY test project in this repository that talks to a REAL, LIVE,
+    PRODUCTION game server. It is deliberately isolated:
+
+      * It is NOT in Servyx.sln, exactly as tests/Servyx.E2E.Tests and tests/Servyx.E2E.Bdd.Tests
+        are not, so `dotnet build Servyx.sln` never builds it and no IDE "run all tests" reaches it.
+      * It is NOT in .github/workflows/ci.yml's run list, and the header comment there says why.
+      * Every test is [SkippableFact] and skips unless SERVYX_REMOTE_E2E=1 AND every required
+        SERVYX_REMOTE_* environment variable is present. No production endpoint, username, key path,
+        container name, or host-key fingerprint appears anywhere in this project's source.
+      * VSTestTestCaseFilter below means a bare `dotnet test` on this project runs ZERO tests: the
+        whole suite is Category=Integration and is filtered out before xunit ever constructs it.
+        Reaching these tests requires passing an explicit "Category=Integration" filter on the
+        dotnet test command line.
+
+    Everything the suite issues is a read-only docker verb (version / container ls / container
+    inspect / logs / stats). The one mutating CommandSpec it constructs — DockerCli.Stop — exists
+    solely to assert it is REFUSED by WriteGuardedExecutionTarget, which throws synchronously before
+    the inner target is touched (see WriteGuardedExecutionTarget.ExecuteAsync, which calls
+    ThrowIfMutatingCommandIsDisabled before `return _inner.ExecuteAsync(...)`).
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!--
+      Gating layer 1 of 4. Every test here carries [Trait("Category", "Integration")], so this default
+      filter means a bare `dotnet test` discovers the tests and runs none of them — no SSH socket is
+      opened, no environment variable is read, no production host is contacted. Overriding it is an
+      explicit act by whoever runs the suite.
+    -->
+    <VSTestTestCaseFilter Condition="'$(VSTestTestCaseFilter)' == ''">Category!=Integration</VSTestTestCaseFilter>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="Xunit.SkippableFact" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      The real ssh+docker transport under test. Servyx.Domain (CommandSpec, CommandIntent,
+      WriteGuardedTransport, WritesDisabledException, ISecretStore, IHostKeyVerifier) comes in
+      transitively. Nothing else is referenced: this project deliberately does not pull in
+      Servyx.Infrastructure, so DataProtectionSecretStore and FileHostKeyStore are not even in scope —
+      the secret store and host-key store used here are in-memory test doubles that never write to disk.
+    -->
+    <ProjectReference Include="..\..\src\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
+  </ItemGroup>
+
+</Project>

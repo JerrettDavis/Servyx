@@ -1,0 +1,38 @@
+.svx-theme-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border: 1px solid var(--svx-border-default);
+    border-radius: var(--svx-radius-full);
+    background: var(--svx-bg-subtle);
+}
+
+.svx-theme-option {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.75rem;
+    height: 1.75rem;
+    padding: 0;
+    border: 0;
+    border-radius: var(--svx-radius-full);
+    background: transparent;
+    color: var(--svx-text-muted);
+    cursor: pointer;
+    transition: background var(--svx-duration-fast) var(--svx-ease),
+                color var(--svx-duration-fast) var(--svx-ease);
+}
+
+.svx-theme-option:hover {
+    color: var(--svx-text-primary);
+    background: var(--svx-bg-hover);
+}
+
+:root[data-theme-choice="system"] .svx-theme-option[data-choice="system"],
+:root[data-theme-choice="light"]  .svx-theme-option[data-choice="light"],
+:root[data-theme-choice="dark"]   .svx-theme-option[data-choice="dark"] {
+    background: var(--svx-bg-surface);
+    color: var(--svx-accent);
+    box-shadow: var(--svx-shadow-xs);
+}

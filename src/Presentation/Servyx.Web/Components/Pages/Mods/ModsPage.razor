@@ -1,6 +1,6 @@
 @page "/mods"
 
-<PageTitle>Mods - Servyx</PageTitle>
+<SvxPageTitle Section="Mods" />
 
 <div class="svx-page-header">
     <h2>Mods</h2>
@@ -8,9 +8,10 @@
 </div>
 
 <div class="svx-empty-state">
-    <h3>Mods are not supported for Palworld</h3>
+    <h3>Mod management is not available yet</h3>
     <p>
-        The bundled Palworld definition declares <code>mods.supported: false</code>. The mod installation
-        pipeline itself ships in Milestone 9, for games whose definitions opt in.
+        A game definition's own <code>mods.supported</code> flag says whether a game's mods COULD be
+        managed, but this page does not read it for any definition yet — the mod installation pipeline
+        itself ships in Milestone 9, for games whose definitions opt in.
     </p>
 </div>

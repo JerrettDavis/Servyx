@@ -11,21 +11,24 @@
 @inject ProvisioningGate Gate
 @inject IServiceProvider Services
 
-<PageTitle>Backups - Servyx</PageTitle>
+<SvxPageTitle Section="Backups" />
 
 @if (!Gate.Enabled)
 {
     @* ────────────────────────────────────────────────────────────────────────────────────────────
-       The read-only view, unchanged. With Servyx:Provisioning:Enabled absent or false — the default —
-       no IBackupProvider and no IBackupDashboard exist in this process at all, so there is nothing to
-       create, restore, or prune, and this branch renders exactly what it rendered before backups
-       became actionable: a list, and no control of any kind.
+       The read-only view. With Servyx:Provisioning:Enabled absent or false — the default — no
+       IBackupProvider and no IBackupDashboard exist in this process at all, so there is nothing to
+       create, restore, or prune, and this branch renders exactly what it always has: a list, and no
+       control of any kind. What changed is honesty about *why* the list might be empty: "no backup
+       provider is configured" (this is the normal state for a read-only host), "the listing failed",
+       and "there really are no archives" are three different facts, and only the last one may render
+       as "No backups found" — see BackupsAvailability.
        ──────────────────────────────────────────────────────────────────────────────────────────── *@
     <div class="svx-page-header">
         <h2>Backups</h2>
         <p class="svx-page-description">
-            Servyx-owned backup creation, retention, and restore land in Milestone 5. Below are the archives
-            already present on disk today, discovered read-only.
+            Servyx-owned backup creation, retention, and restore require <code>Servyx:Provisioning:Enabled</code>.
+            Below are the archives already present on disk today, discovered read-only.
         </p>
     </div>
 
@@ -33,9 +36,28 @@
     {
         <p>Loading backups…</p>
     }
-    else if (_backups.Count == 0)
+    else if (_backupsResult is null || _backupsResult.Availability == BackupsAvailability.NotConfigured)
     {
-        <div class="svx-empty-state">
+        <div class="svx-empty-state" data-testid="backups-not-configured">
+            <h3>No backup provider is configured</h3>
+            <p>
+                This process has no <code>IBackupProvider</code> registered, so nothing on disk has been
+                looked at. This is expected with <code>Servyx:Provisioning:Enabled</code> off (the default);
+                it is not the same as "no backups exist".
+            </p>
+        </div>
+    }
+    else if (_backupsResult.Availability == BackupsAvailability.Failed)
+    {
+        <div class="svx-empty-state svx-empty-state-degraded" data-testid="backups-list-failed" role="alert">
+            <h3>Backups could not be listed</h3>
+            <p data-testid="backups-list-failure-detail">@_backupsResult.FailureDetail</p>
+            <p>This is not the same as "there are none" — the listing itself could not be produced.</p>
+        </div>
+    }
+    else if (_backupsResult.Backups.Count == 0)
+    {
+        <div class="svx-empty-state" data-testid="backups-empty">
             <h3>No backups found</h3>
             <p>No adopted server has an on-disk backup directory yet.</p>
         </div>
@@ -51,7 +73,7 @@
                 <span>Ownership</span>
             </div>
 
-            @foreach (var backup in _backups)
+            @foreach (var backup in _backupsResult.Backups)
             {
                 <div class="svx-row-link" role="listitem" style="grid-template-columns: 1.2fr 1.6fr 1fr 1fr 1fr;">
                     <span data-col-label="Server">@backup.ServerName</span>
@@ -59,10 +81,20 @@
                     <span data-col-label="Created">@backup.CreatedAt.ToString("yyyy-MM-dd HH:mm")</span>
                     <span data-col-label="Size">@FormatSize(backup.SizeBytes)</span>
                     <span data-col-label="Ownership">
-                        <span class="badge foreign-badge" tabindex="0"
-                              title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
-                            Foreign
-                        </span>
+                        @if (backup.Ownership == Servyx.Web.Models.BackupOwnership.Foreign)
+                        {
+                            <span class="svx-badge foreign-badge" tabindex="0"
+                                  title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
+                                Foreign
+                            </span>
+                        }
+                        else
+                        {
+                            <span class="svx-badge" tabindex="0"
+                                  title="Created by Servyx and subject to this server's retention policy.">
+                                Servyx
+                            </span>
+                        }
                     </span>
                 </div>
             }
@@ -216,14 +248,14 @@ else
                                 <span data-col-label="Ownership">
                                     @if (artifact.Ownership == BackupOwnership.Foreign)
                                     {
-                                        <span class="badge foreign-badge" tabindex="0"
+                                        <span class="svx-badge foreign-badge" tabindex="0"
                                               title="Created by the container's own cron; Servyx will never prune, move, or rename these.">
                                             Foreign
                                         </span>
                                     }
                                     else
                                     {
-                                        <span class="badge" tabindex="0"
+                                        <span class="svx-badge" tabindex="0"
                                               title="Created by Servyx and subject to this server's retention policy.">
                                             Servyx
                                         </span>
@@ -235,14 +267,14 @@ else
                                        there is no prune control anywhere on this page — see RenderPrune
                                        below, which is scoped to the server's Servyx-owned artifacts and is
                                        not reachable from a row at all. *@
-                                    <button type="button" class="btn" data-testid="inspect-backup"
+                                    <button type="button" class="svx-btn" data-testid="inspect-backup"
                                             @onclick="() => InspectAsync(artifact.Id)">
                                         Inspect
                                     </button>
 
                                     @if (_writable)
                                     {
-                                        <button type="button" class="btn" data-testid="plan-restore"
+                                        <button type="button" class="svx-btn" data-testid="plan-restore"
                                                 @onclick="() => PlanRestoreAsync(artifact)">
                                             Restore…
                                         </button>
@@ -302,7 +334,7 @@ else
 
                     @if (!_createConfirming)
                     {
-                        <button type="button" class="btn btn-primary" data-testid="create-backup"
+                        <button type="button" class="svx-btn svx-btn-primary" data-testid="create-backup"
                                 disabled="@_busy"
                                 @onclick="() => _createConfirming = true">
                             Create a backup…
@@ -316,12 +348,12 @@ else
                                 <strong>@_selectedServerName</strong> now, and may pause the running server
                                 while its state is flushed to disk.
                             </p>
-                            <button type="button" class="btn btn-primary" data-testid="create-backup-confirm"
+                            <button type="button" class="svx-btn svx-btn-primary" data-testid="create-backup-confirm"
                                     disabled="@_busy"
                                     @onclick="CreateAsync">
                                 @(_busy ? "Working…" : "Yes, create the backup")
                             </button>
-                            <button type="button" class="btn" data-testid="create-backup-cancel"
+                            <button type="button" class="svx-btn" data-testid="create-backup-cancel"
                                     disabled="@_busy"
                                     @onclick="() => _createConfirming = false">
                                 Cancel
@@ -396,7 +428,7 @@ else
                                    process issued and re-checks the path count against what was shown. *@
                                 <div class="svx-data-impact-ack" data-testid="restore-acknowledgement-step">
                                     <label>
-                                        <input type="checkbox" data-testid="restore-acknowledge"
+                                        <input type="checkbox" class="svx-checkbox" data-testid="restore-acknowledge"
                                                @bind="_restoreAcknowledged" />
                                         <span>
                                             I accept that this overwrites @planned.Plan.AffectedPaths.Count
@@ -406,12 +438,12 @@ else
                                     </label>
                                 </div>
 
-                                <button type="button" class="btn btn-primary" data-testid="apply-restore"
+                                <button type="button" class="svx-btn svx-btn-danger" data-testid="apply-restore"
                                         disabled="@(!_restoreAcknowledged || _busy)"
                                         @onclick="() => ApplyRestoreAsync(planned.Plan)">
                                     @(_busy ? "Restoring…" : "Overwrite live data with this archive")
                                 </button>
-                                <button type="button" class="btn" data-testid="restore-cancel"
+                                <button type="button" class="svx-btn" data-testid="restore-cancel"
                                         disabled="@_busy"
                                         @onclick="CancelRestore">
                                     Cancel
@@ -446,11 +478,11 @@ else
                         renamed, and not counted against these numbers, however retention is configured.
                     </p>
 
-                    <label>Keep hourly <input type="number" min="0" @bind="_keepHourly" data-testid="keep-hourly" /></label>
-                    <label>Keep daily <input type="number" min="0" @bind="_keepDaily" data-testid="keep-daily" /></label>
-                    <label>Keep weekly <input type="number" min="0" @bind="_keepWeekly" data-testid="keep-weekly" /></label>
+                    <label>Keep hourly <input type="number" min="0" class="svx-input" @bind="_keepHourly" data-testid="keep-hourly" /></label>
+                    <label>Keep daily <input type="number" min="0" class="svx-input" @bind="_keepDaily" data-testid="keep-daily" /></label>
+                    <label>Keep weekly <input type="number" min="0" class="svx-input" @bind="_keepWeekly" data-testid="keep-weekly" /></label>
 
-                    <button type="button" class="btn" data-testid="preview-prune"
+                    <button type="button" class="svx-btn" data-testid="preview-prune"
                             disabled="@_busy"
                             @onclick="PreviewPruneAsync">
                         Preview what retention would remove
@@ -481,7 +513,7 @@ else
                                 @* Only reachable after a dry run: this control does not exist until
                                    _pruneResult is a Previewed, so "apply retention" is never the first
                                    click on this page. *@
-                                <button type="button" class="btn btn-primary" data-testid="apply-prune"
+                                <button type="button" class="svx-btn svx-btn-danger" data-testid="apply-prune"
                                         disabled="@_busy"
                                         @onclick="ApplyPruneAsync">
                                     @(_busy ? "Working…" : $"Delete these {previewed.Candidates.Count} archive(s)")
@@ -510,9 +542,9 @@ else
 @code {
     private const string ArtifactColumns = "grid-template-columns: 2.2fr 1fr 0.8fr 0.8fr 1.2fr;";
 
-    // ── Closed-gate state (the unchanged read-only view) ──────────────────────────────────────────
+    // ── Closed-gate state (the read-only view) ───────────────────────────────────────────────────
     private bool _loading = true;
-    private IReadOnlyList<BackupEntry> _backups = [];
+    private BackupsListResult? _backupsResult;
 
     // ── Open-gate state ───────────────────────────────────────────────────────────────────────────
     private IBackupDashboard? _dashboard;
@@ -544,8 +576,10 @@ else
     {
         if (!Gate.Enabled)
         {
-            // Byte-for-byte the pre-existing behaviour: one read, no dashboard, no controls.
-            _backups = await Data.GetAllBackupsAsync();
+            // No dashboard, no controls — only the read-only listing changed: it now distinguishes "no
+            // provider configured" (the normal state here) from a genuine listing failure from a genuinely
+            // empty result, rather than flattening all three into the same bare list.
+            _backupsResult = await Data.GetAllBackupsWithStatusAsync();
             _loading = false;
             return;
         }

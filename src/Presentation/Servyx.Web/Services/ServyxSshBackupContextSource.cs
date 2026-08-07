@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Servyx.Domain.Backups;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Ssh.Backups;
 
@@ -35,14 +36,27 @@ namespace Servyx.Web.Services;
 /// a good one until the day someone restores it.
 /// </para>
 /// <para>
-/// <strong>No foreign directories are declared, and that is not an omission.</strong>
-/// <c>AddServyxSshBackups()</c> registers no <c>IBackupAdopter</c> because a generic SSH host ships no
-/// convention to discover; declaring a directory here would be Servyx asserting that some stranger's
-/// tarballs are backups. A host that knows its own layout registers its own adopter.
+/// <strong>A declared foreign directory names a location; it does not by itself surface anything.</strong>
+/// <see cref="SshBackupContext.Foreign"/> is populated from <see cref="SshBackupServer.ForeignDirectory"/>
+/// when the operator names one (e.g. the host's own cron writing archives into <c>backups/</c> under
+/// <see cref="SshBackupServer.Root"/>), but <c>SshBackupProvider.ListResolvedAsync</c> only ever surfaces
+/// what a registered <c>IBackupAdopter</c> discovers <em>inside</em> a declared directory, and
+/// <c>AddServyxSshBackups()</c> registers none — a generic SSH host ships no convention Servyx could adopt
+/// on its own say-so. A host that knows its own layout registers its own adopter; the directory declared
+/// here is what that adopter would be told to look inside.
 /// </para>
 /// </remarks>
 public sealed class ServyxSshBackupContextSource : ISshBackupContextSource, IAsyncDisposable
 {
+    /// <summary>
+    /// The <see cref="ForeignSshBackupDirectory.AdapterId"/> a directory declared through
+    /// <see cref="SshBackupServer.ForeignDirectory"/> is tagged with. A fixed, generic id rather than one
+    /// per host: this composition root registers no <see cref="IBackupAdopter"/> of its own (see this
+    /// class's remarks), so nothing today matches against it — it exists so a future, host-specific adopter
+    /// has a stable id to filter on.
+    /// </summary>
+    public const string ForeignAdapterId = "ssh-configured";
+
     private readonly SshBackupWiringOptions _options;
     private readonly ITransport _transport;
     private readonly ServyxRconChannels _rcon;
@@ -90,7 +104,7 @@ public sealed class ServyxSshBackupContextSource : ISshBackupContextSource, IAsy
         // Null unless the operator configured an RCON channel for this server. The pair below is all-or-
         // nothing on purpose: a context carrying a quiesce step with no channel is refused by the provider,
         // and a context carrying a channel with no step would open a control session it never used.
-        var control = _rcon.TryGetSession(server.ServerKey);
+        var control = await _rcon.GetSessionAsync(server.ServerKey, ct: ct).ConfigureAwait(false);
 
         return new SshBackupContext(
             ServerId: server.ServerKey,
@@ -100,7 +114,16 @@ public sealed class ServyxSshBackupContextSource : ISshBackupContextSource, IAsy
             Include: server.Include,
             Exclude: server.Exclude,
             StoreDirectory: server.StoreDirectory,
-            Foreign: [],
+
+            // Populated only when the operator named a directory — see SshBackupWiringOptions.SshBackupServer's
+            // ForeignDirectory remarks. Still inert on its own: SshBackupProvider only ever surfaces what a
+            // registered IBackupAdopter discovers inside a declared directory, and AddServyxSshBackups()
+            // registers none for the reason its own remarks give (a generic SSH host ships no convention to
+            // discover). Declaring the directory here is what a host-specific adopter would need to exist at
+            // all; it does not by itself make anything appear as Foreign.
+            Foreign: server.ForeignDirectory is null
+                ? []
+                : [new ForeignSshBackupDirectory(ForeignAdapterId, server.ForeignDirectory, server.ForeignPattern)],
             DefaultRetention: server.DefaultRetention,
             Quiesce: control is null
                 ? null

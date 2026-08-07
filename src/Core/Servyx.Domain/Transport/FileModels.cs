@@ -103,13 +103,119 @@ public sealed record FileStat(bool Exists, bool IsDirectory, long? SizeBytes, Da
     }
 }
 
-/// <summary>Options controlling an atomic file write.</summary>
+/// <summary>How a write is finalized onto the target path.</summary>
+/// <remarks>
+/// <para>
+/// This is a caller declaration, never a transport's runtime decision. A transport that quietly picked
+/// <see cref="DirectPlacement"/> because <see cref="AtomicRename"/> happened not to work right now would
+/// be silently downgrading a durability guarantee the caller asked for — which is exactly the failure this
+/// enum exists to make impossible to express.
+/// </para>
+/// </remarks>
+public enum FileWriteStrategy
+{
+    /// <summary>
+    /// Stage the content beside the target and rename it over it, so a concurrent reader observes either the
+    /// whole old file or the whole new one and never a half-written one. The default, and the only correct
+    /// choice against a workload that is running. On a container transport the rename is the one step that
+    /// cannot be served by the daemon's archive endpoint, so it costs an in-container process — which means
+    /// this strategy requires the container to be <em>running</em>.
+    /// </summary>
+    AtomicRename,
+
+    /// <summary>
+    /// Place the bytes straight at the target path, with no staging and no rename. Not atomic: a reader
+    /// racing this write can observe a partial file. Correct only when nothing can be reading — the case it
+    /// exists for is a container that has been created but never started, where an
+    /// <see cref="AtomicRename"/> is not merely slower but impossible, because there is no process to run
+    /// the rename in.
+    /// </summary>
+    DirectPlacement,
+}
+
+/// <summary>Options controlling a file write.</summary>
 /// <param name="ExpectedPreImageHash">
 /// SHA-256 of the content the caller last observed. If the file's current content does not match, the
 /// write is refused with <see cref="TargetDriftException"/>. Null means "no expectation" and should only
 /// be used for files known not to previously exist.
 /// </param>
-public sealed record FileWriteOptions(string? ExpectedPreImageHash);
+public sealed record FileWriteOptions(string? ExpectedPreImageHash)
+{
+    private readonly int? _mode;
+
+    /// <summary>
+    /// How the write is finalized onto the target path. Defaults to <see cref="FileWriteStrategy.AtomicRename"/>,
+    /// so every caller that does not think about this gets the durable behaviour.
+    /// </summary>
+    public FileWriteStrategy Strategy { get; init; } = FileWriteStrategy.AtomicRename;
+
+    /// <summary>
+    /// POSIX permission bits (the low 9, <c>rwxrwxrwx</c>) the file must end up with, or
+    /// <see langword="null"/> to preserve an existing file's mode and let the transport pick a default for
+    /// a file it creates.
+    /// </summary>
+    /// <remarks>
+    /// Carried on the write rather than applied afterwards on purpose. A separate "now chmod it" step is a
+    /// second operation that can be refused, skipped, or — on a container that is not running — impossible,
+    /// which would leave a file whose whole point is to be readable by exactly one identity sitting at the
+    /// transport's default until someone noticed.
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// The value is negative or sets a bit outside the low 9. Set-user-id, set-group-id and the sticky bit
+    /// are deliberately not expressible here.
+    /// </exception>
+    public int? Mode
+    {
+        get => _mode;
+        init
+        {
+            if (value is { } mode && mode is < 0 or > 0x1FF)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(value),
+                    mode,
+                    "A file mode carried on a write must be POSIX permission bits only (0 to 0777 octal). "
+                    + "Set-user-id, set-group-id and the sticky bit are not expressible through this seam.");
+            }
+
+            _mode = value;
+        }
+    }
+
+    /// <summary>
+    /// Throws when this instance asks for anything beyond a plain stage-and-rename write — the only shape a
+    /// transport calling this implements.
+    /// </summary>
+    /// <param name="transportDescription">
+    /// How the refusing transport names itself in the message, e.g. <c>"LocalExecutionTarget"</c>.
+    /// </param>
+    /// <remarks>
+    /// The alternative to calling this is ignoring <see cref="Strategy"/> and <see cref="Mode"/>, which would
+    /// hand the caller a receipt for a write that did not do what was asked. A loud refusal is the only
+    /// honest answer a transport that cannot honour them can give.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">
+    /// <see cref="Strategy"/> is not <see cref="FileWriteStrategy.AtomicRename"/>, or <see cref="Mode"/> is set.
+    /// </exception>
+    public void ThrowIfBeyondPlainAtomicRename(string transportDescription)
+    {
+        if (Strategy != FileWriteStrategy.AtomicRename)
+        {
+            throw new NotSupportedException(
+                $"{transportDescription} implements {nameof(FileWriteStrategy)}.{nameof(FileWriteStrategy.AtomicRename)} "
+                + $"only; it cannot honour {nameof(FileWriteStrategy)}.{Strategy}. Refusing rather than writing "
+                + "with a durability guarantee the caller did not ask for.");
+        }
+
+        if (Mode is not null)
+        {
+            throw new NotSupportedException(
+                $"{transportDescription} cannot apply an explicit file mode as part of a write; it preserves an "
+                + "existing file's mode and creates new files at its own default. Refusing rather than returning a "
+                + "receipt for a file whose permissions are not what the caller asked for.");
+        }
+    }
+}
 
 /// <summary>Receipt returned after a successful atomic file write.</summary>
 /// <param name="PreImageSha256">Hash of the file's content before this write, or null if it did not exist.</param>

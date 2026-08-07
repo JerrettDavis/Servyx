@@ -39,7 +39,7 @@ else
                     <div data-col-label="Desired">
                         <GatedControl Label="@($"Desired value for {row.Label}")">
                             <div style="display:flex; gap:0.4rem; align-items:center;">
-                                <input type="@(row.IsSecret ? "password" : "text")" class="form-control form-control-sm"
+                                <input type="@(row.IsSecret ? "password" : "text")" class="svx-input svx-input-sm"
                                        value="@row.Desired" aria-label="@($"Desired value for {row.Label}")" />
                                 @if (row.IsSecret)
                                 {

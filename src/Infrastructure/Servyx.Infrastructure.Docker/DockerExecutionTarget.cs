@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Formats.Tar;
 using System.Net;
 using System.Security.Cryptography;
@@ -14,10 +15,12 @@ namespace Servyx.Infrastructure.Docker;
 /// <remarks>
 /// <para>
 /// File reads are implemented via the container archive API (<c>GetArchiveFromContainerAsync</c>, the same
-/// mechanism behind <c>docker cp</c>) rather than by shelling out.
-/// <see cref="ExecuteAsync"/>/<see cref="ExecuteStreamingAsync"/> — the general-purpose
-/// <c>docker exec</c> command channel — remain out of scope until M2 and still throw
-/// <see cref="NotSupportedException"/>.
+/// mechanism behind <c>docker cp</c>) rather than by shelling out. <see cref="ExecuteAsync"/> runs a
+/// <c>docker exec</c> to completion via <c>Docker.DotNet</c>'s exec API (create, attach, drain, inspect for
+/// the exit code) with no shell involved — <see cref="CommandSpec.Arguments"/> reach the container as
+/// discrete argv elements, never joined into a shell line. <see cref="ExecuteStreamingAsync"/> — the
+/// incremental, chunk-as-it-arrives variant — is not implemented; see its own remarks for what that would
+/// take.
 /// </para>
 /// <para>
 /// <b>Writes are refused unless this instance was constructed write-capable.</b> The
@@ -27,17 +30,35 @@ namespace Servyx.Infrastructure.Docker;
 /// before any I/O occurs. Being constructed with <see cref="WriteMode.Enabled"/> only makes this instance
 /// <em>capable</em>; the structural enforcement that decides which servers get such an instance is
 /// <see cref="WriteGuardedExecutionTarget"/>, which every transport-produced session is wrapped in.
+/// <see cref="ExecuteAsync"/> itself carries no such internal check — unlike the two methods above, its
+/// mutating-ness is not inherent to the method but declared per call via <see cref="CommandSpec.Intent"/>,
+/// and gating that is <see cref="WriteGuardedExecutionTarget"/>'s job, not this class's: it never parses or
+/// guesses at argv, so it would have nothing but "assume mutating" to gate on if it tried.
 /// </para>
 /// <para>
-/// A permitted write uses the narrowest exec this type is willing to perform: content is placed as a
+/// A file write uses the narrowest exec this type issues on its own behalf: content is placed as a
 /// temporary sibling with <c>ExtractArchiveToContainerAsync</c> and then moved over the target with a
 /// single <c>mv -f</c>, because the Engine API has no rename endpoint and an in-place archive extraction is
-/// not atomic. <see cref="DeleteAsync"/> likewise runs a single <c>rm -f</c>. Neither goes through
-/// <see cref="ExecuteAsync"/>: those two argv vectors are fixed, and the general command channel staying
-/// closed until M2 is a separate promise from this one.
+/// not atomic. <see cref="DeleteAsync"/> likewise runs a single <c>rm -f</c>. Both of those now go through
+/// <see cref="ExecuteAsync"/> itself — there is one exec path, not two — but only after
+/// <see cref="WriteFileAsync"/>/<see cref="DeleteAsync"/>'s own write-mode check has already passed, so
+/// routing through the now-open general channel does not reopen the write gate they enforce.
+/// </para>
+/// <para>
+/// <b>Which of these need the container to be running.</b> The archive endpoints
+/// (<c>GetArchiveFromContainerAsync</c>, <c>ExtractArchiveToContainerAsync</c> — <c>GET</c>/<c>HEAD</c> and
+/// <c>PUT /containers/{id}/archive</c>, the pair behind <c>docker cp</c>) are served by the daemon against
+/// the container's filesystem, so stat, list, read, and archive extraction all work on a container that has
+/// been created but never started. <c>docker exec</c> does not: it starts a process <em>inside</em> a
+/// running container, so every member that reaches <see cref="ExecuteAsync"/> — including the <c>mv</c>
+/// that finalizes a <see cref="FileWriteStrategy.AtomicRename"/> write — requires a running container. That
+/// is why <see cref="FileWriteStrategy.DirectPlacement"/> exists: it is the same write with the rename
+/// removed, and it is the only shape a write into a not-yet-started container can take. The choice is the
+/// caller's, declared on <see cref="FileWriteOptions.Strategy"/>; this type never inspects the container's
+/// state and never downgrades one strategy to the other.
 /// </para>
 /// </remarks>
-public sealed class DockerExecutionTarget : IExecutionTarget
+public sealed class DockerExecutionTarget : IExecutionTarget, IContainerLifecycle
 {
     private readonly IDockerClient _client;
     private readonly string _containerRef;
@@ -79,22 +100,39 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     public WriteMode WriteMode => _writeMode;
 
     /// <inheritdoc />
-    /// <exception cref="NotSupportedException">
-    /// Always thrown: <c>docker exec</c>-based command execution is out of scope for this read-only
-    /// milestone (M1). It lands in M2, once exec-based control channels are implemented.
-    /// </exception>
-    public Task<CommandResult> ExecuteAsync(CommandSpec spec, CancellationToken ct = default) =>
-        throw new NotSupportedException(
-            "Docker exec-based command execution is out of scope for this milestone (M1), which is read-only. It arrives in M2.");
+    /// <remarks>
+    /// Runs <paramref name="spec"/> as a <c>docker exec</c>: <c>ExecCreateContainerAsync</c> to create it,
+    /// <c>StartAndAttachContainerExecAsync</c> to run it and drain stdout/stderr to completion, then
+    /// <c>InspectContainerExecAsync</c> for the exit code. <see cref="CommandSpec.Executable"/> and
+    /// <see cref="CommandSpec.Arguments"/> are passed straight through as the exec's argv — there is no
+    /// shell, so no interpolation, word-splitting, or glob expansion happens on either side.
+    /// </remarks>
+    public async Task<CommandResult> ExecuteAsync(CommandSpec spec, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(spec);
+
+        var stopwatch = Stopwatch.StartNew();
+        var (exitCode, standardOutput, standardError) = await RunExecAsync(
+            spec.Executable, spec.Arguments, spec.WorkingDirectory, spec.EnvironmentOverrides, ct).ConfigureAwait(false);
+        stopwatch.Stop();
+
+        return new CommandResult(exitCode, standardOutput, standardError, stopwatch.Elapsed);
+    }
 
     /// <inheritdoc />
     /// <exception cref="NotSupportedException">
-    /// Always thrown: <c>docker exec</c>-based command execution is out of scope for this read-only
-    /// milestone (M1). It lands in M2, once exec-based control channels are implemented.
+    /// Always thrown: streaming exec is not implemented. <see cref="ExecuteAsync"/> already drains a
+    /// <c>Docker.DotNet</c> <see cref="MultiplexedStream"/> to completion before returning; a streaming
+    /// variant would need to read that same multiplexed stream incrementally — demultiplexing stdout/stderr
+    /// frames as they arrive rather than after the process exits — and yield each as an
+    /// <see cref="OutputChunk"/>. That incremental-read/yield loop does not exist yet.
     /// </exception>
     public IAsyncEnumerable<OutputChunk> ExecuteStreamingAsync(CommandSpec spec, CancellationToken ct = default) =>
         throw new NotSupportedException(
-            "Docker exec-based command execution is out of scope for this milestone (M1), which is read-only. It arrives in M2.");
+            "Docker streaming exec is not implemented. ExecuteAsync drains the exec's multiplexed stream to " +
+            "completion before returning; a streaming variant needs to demultiplex and yield stdout/stderr " +
+            "frames incrementally as they arrive instead.");
 
     /// <inheritdoc />
     public async Task<bool> ExistsAsync(TargetPath path, CancellationToken ct = default)
@@ -291,10 +329,27 @@ public sealed class DockerExecutionTarget : IExecutionTarget
 
     /// <inheritdoc />
     /// <remarks>
-    /// The temporary sibling is written into the same directory as the target — a temp path anywhere else
-    /// would make the final <c>mv</c> a cross-device copy and therefore non-atomic — and is cleaned up if
-    /// the move fails. The pre-image is read and hashed before anything is placed, so a mismatched
+    /// <para>
+    /// Under the default <see cref="FileWriteStrategy.AtomicRename"/>, the temporary sibling is written into
+    /// the same directory as the target — a temp path anywhere else would make the final <c>mv</c> a
+    /// cross-device copy and therefore non-atomic — and is cleaned up if the move fails. The pre-image is
+    /// read and hashed before anything is placed, so a mismatched
     /// <see cref="FileWriteOptions.ExpectedPreImageHash"/> aborts with no temporary file ever created.
+    /// </para>
+    /// <para>
+    /// Under <see cref="FileWriteStrategy.DirectPlacement"/> the archive carries the target's own leaf name
+    /// and no <c>mv</c> follows, so the whole write is one <c>PUT /containers/{id}/archive</c> and the
+    /// container never has to be running. Nothing else changes: the drift check, the pre-image hash, and the
+    /// receipt are computed exactly as above, all from archive reads that are equally happy against a
+    /// created-but-not-started container.
+    /// </para>
+    /// <para>
+    /// <see cref="FileWriteOptions.Mode"/>, when set, is carried in the tar entry header of that same
+    /// archive, so the file exists with its declared permissions from the instant it exists — there is no
+    /// window in which a credential sits at a wider mode, and no separate <c>chmod</c> exec that a stopped
+    /// container could not have run anyway. When it is not set, an existing file's mode is preserved and a
+    /// new file gets <see cref="DefaultFileMode"/>, as before.
+    /// </para>
     /// </remarks>
     /// <exception cref="WritesDisabledException">
     /// This instance was not constructed with <see cref="WriteMode.Enabled"/>. Thrown synchronously, before
@@ -353,19 +408,67 @@ public sealed class DockerExecutionTarget : IExecutionTarget
                 preImageHash);
         }
 
-        var tempLeaf = $"{leaf}.servyx-tmp-{Guid.NewGuid():N}";
-        var tempPath = directory.Length == 0 ? "/" + tempLeaf : directory + "/" + tempLeaf;
+        var mode = ResolveMode(options, existing);
 
+        // DirectPlacement lands on the target's own name and stops there. AtomicRename lands on a temp
+        // sibling first and finalizes with the mv below. Which one runs is decided by what the caller
+        // declared, never by anything observed about the container.
+        var placedLeaf = options.Strategy == FileWriteStrategy.DirectPlacement
+            ? leaf
+            : $"{leaf}.servyx-tmp-{Guid.NewGuid():N}";
+
+        await ExtractOneFileAsync(directory, placedLeaf, bytes, mode, ct).ConfigureAwait(false);
+
+        if (options.Strategy == FileWriteStrategy.AtomicRename)
+        {
+            var tempPath = JoinContainerPath(directory, placedLeaf);
+            var move = await ExecuteAsync(new CommandSpec("mv", ["-f", "--", tempPath, containerPath]), ct)
+                .ConfigureAwait(false);
+            if (move.ExitCode != 0)
+            {
+                await TryRemoveQuietlyAsync(tempPath, ct).ConfigureAwait(false);
+                throw new IOException(
+                    $"Failed to move '{tempPath}' onto '{containerPath}' in container '{_containerRef}' " +
+                    $"(exit code {move.ExitCode}){FormatDetail(move.StandardError)}. The target file is unchanged.");
+            }
+        }
+
+        return new FileWriteReceipt(preImageHash, postImageHash, DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// The permission bits the written file must end up with: what the caller declared, else the mode the
+    /// file already had, else <see cref="DefaultFileMode"/>. Getting the middle case wrong is how a config
+    /// write silently makes a file the workload itself can no longer read.
+    /// </summary>
+    private static UnixFileMode ResolveMode(FileWriteOptions options, FileStat existing) => options.Mode switch
+    {
+        { } requested => (UnixFileMode)requested,
+        _ when existing.Exists && existing.Mode is { } current => (UnixFileMode)current,
+        _ => DefaultFileMode,
+    };
+
+    /// <summary>
+    /// Sends one regular-file tar entry to <c>PUT /containers/{id}/archive</c>, to be extracted into
+    /// <paramref name="directory"/> under the name <paramref name="leaf"/> with mode
+    /// <paramref name="mode"/>.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="bytes"/> is handed to the tar writer as a stream over the array and is never decoded
+    /// into text on the way. That matters because the case this path exists for is a credential seeded
+    /// before a container's first start: a <see cref="string"/> anywhere in here would be one interpolation
+    /// away from a log line, and unerasable once made.
+    /// </remarks>
+    private async Task ExtractOneFileAsync(
+        string directory, string leaf, byte[] bytes, UnixFileMode mode, CancellationToken ct)
+    {
         using var tar = new MemoryStream();
         await using (var writer = new TarWriter(tar, TarEntryFormat.Pax, leaveOpen: true))
         {
-            var entry = new PaxTarEntry(TarEntryType.RegularFile, tempLeaf)
+            var entry = new PaxTarEntry(TarEntryType.RegularFile, leaf)
             {
                 DataStream = new MemoryStream(bytes, writable: false),
-
-                // Preserve the mode the file already had; a fresh file gets rw-r--r--. Getting this wrong is
-                // how a config write silently makes a file the game server itself can no longer read.
-                Mode = existing.Exists && existing.Mode is { } mode ? (UnixFileMode)mode : DefaultFileMode,
+                Mode = mode,
             };
 
             await writer.WriteEntryAsync(entry, ct).ConfigureAwait(false);
@@ -377,18 +480,6 @@ public sealed class DockerExecutionTarget : IExecutionTarget
             new ContainerPathStatParameters { Path = directory.Length == 0 ? "/" : directory },
             tar,
             ct).ConfigureAwait(false);
-
-        var (exitCode, standardError) = await RunFixedCommandAsync(["mv", "-f", "--", tempPath, containerPath], ct)
-            .ConfigureAwait(false);
-        if (exitCode != 0)
-        {
-            await TryRemoveQuietlyAsync(tempPath, ct).ConfigureAwait(false);
-            throw new IOException(
-                $"Failed to move '{tempPath}' onto '{containerPath}' in container '{_containerRef}' " +
-                $"(exit code {exitCode}){FormatDetail(standardError)}. The target file is unchanged.");
-        }
-
-        return new FileWriteReceipt(preImageHash, postImageHash, DateTimeOffset.UtcNow);
     }
 
     private async Task DeleteCoreAsync(TargetPath path, CancellationToken ct)
@@ -410,13 +501,13 @@ public sealed class DockerExecutionTarget : IExecutionTarget
                 "not reachable through this seam.");
         }
 
-        var (exitCode, standardError) = await RunFixedCommandAsync(["rm", "-f", "--", containerPath], ct)
+        var delete = await ExecuteAsync(new CommandSpec("rm", ["-f", "--", containerPath]), ct)
             .ConfigureAwait(false);
-        if (exitCode != 0)
+        if (delete.ExitCode != 0)
         {
             throw new IOException(
                 $"Failed to delete '{containerPath}' in container '{_containerRef}' " +
-                $"(exit code {exitCode}){FormatDetail(standardError)}.");
+                $"(exit code {delete.ExitCode}){FormatDetail(delete.StandardError)}.");
         }
     }
 
@@ -441,27 +532,36 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     }
 
     /// <summary>
-    /// Runs one fixed argv vector in the container and returns its exit code and stderr.
+    /// Runs one command in the container via <c>docker exec</c> and returns its exit code, stdout, and
+    /// stderr. The one exec path in this class: <see cref="ExecuteAsync"/> calls this directly for
+    /// caller-supplied commands, and <see cref="WriteFileCoreAsync"/>/<see cref="DeleteCoreAsync"/> reach it
+    /// through <see cref="ExecuteAsync"/> rather than duplicating it, so there is exactly one place that
+    /// talks to <c>Docker.DotNet</c>'s exec API.
     /// </summary>
-    /// <remarks>
-    /// Deliberately private and deliberately not routed through <see cref="ExecuteAsync"/>. The only two
-    /// call sites pass literal argv arrays (<c>mv</c> and <c>rm</c>) whose only variable parts are paths
-    /// already normalized by <see cref="SandboxedPathResolver"/>, and each is passed as its own argv
-    /// element, so there is no shell, no word splitting, and no glob expansion. Opening the general command
-    /// channel is M2's decision to make, not a side effect of file writes landing.
-    /// </remarks>
-    private async Task<(long ExitCode, string StandardError)> RunFixedCommandAsync(IReadOnlyList<string> argv, CancellationToken ct)
+    private async Task<(int ExitCode, string StandardOutput, string StandardError)> RunExecAsync(
+        string executable,
+        IReadOnlyList<string> arguments,
+        string? workingDirectory,
+        IReadOnlyDictionary<string, string>? environmentOverrides,
+        CancellationToken ct)
     {
+        var cmd = new List<string>(arguments.Count + 1) { executable };
+        cmd.AddRange(arguments);
+
         var created = await _client.Exec.ExecCreateContainerAsync(
             _containerRef,
             new ContainerExecCreateParameters
             {
-                Cmd = argv.ToList(),
+                Cmd = cmd,
                 AttachStdin = false,
                 AttachStdout = true,
                 AttachStderr = true,
                 Detach = false,
                 Tty = false,
+                WorkingDir = workingDirectory,
+                Env = environmentOverrides is { Count: > 0 }
+                    ? environmentOverrides.Select(kv => $"{kv.Key}={kv.Value}").ToList()
+                    : null,
             },
             ct).ConfigureAwait(false);
 
@@ -471,6 +571,7 @@ public sealed class DockerExecutionTarget : IExecutionTarget
                 $"The Docker daemon did not return an exec id for container '{_containerRef}'.");
         }
 
+        var standardOutput = string.Empty;
         var standardError = string.Empty;
         using (var stream = await _client.Exec.StartAndAttachContainerExecAsync(execId, tty: false, ct).ConfigureAwait(false))
         {
@@ -478,13 +579,14 @@ public sealed class DockerExecutionTarget : IExecutionTarget
             {
                 // Draining to end is also how completion is awaited: the daemon closes the attached stream
                 // when the process exits, so the exit code inspected below is never read while still running.
-                var (_, stderr) = await stream.ReadOutputToEndAsync(ct).ConfigureAwait(false);
+                var (stdout, stderr) = await stream.ReadOutputToEndAsync(ct).ConfigureAwait(false);
+                standardOutput = stdout ?? string.Empty;
                 standardError = stderr ?? string.Empty;
             }
         }
 
         var inspect = await _client.Exec.InspectContainerExecAsync(execId, ct).ConfigureAwait(false);
-        return (inspect?.ExitCode ?? 0, standardError);
+        return ((int)(inspect?.ExitCode ?? 0), standardOutput, standardError);
     }
 
     /// <summary>
@@ -496,7 +598,7 @@ public sealed class DockerExecutionTarget : IExecutionTarget
     {
         try
         {
-            await RunFixedCommandAsync(["rm", "-f", "--", containerPath], ct).ConfigureAwait(false);
+            await ExecuteAsync(new CommandSpec("rm", ["-f", "--", containerPath]), ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -505,6 +607,122 @@ public sealed class DockerExecutionTarget : IExecutionTarget
         catch (Exception)
         {
             // Intentionally ignored — see the summary.
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// Maps each <see cref="ContainerLifecycleVerb"/> onto the matching <c>Docker.DotNet</c> container API
+    /// — <c>StartContainerAsync</c>, <c>StopContainerAsync</c>, <c>RestartContainerAsync</c>,
+    /// <c>KillContainerAsync</c> — never <c>docker exec</c>: you cannot exec into a container that is not
+    /// running, so <see cref="ContainerLifecycleVerb.Start"/> in particular could never be expressed as one.
+    /// </para>
+    /// <para>
+    /// <b>Errors are reported through the result, not thrown.</b> Unlike the file/exec surface above (which
+    /// signals failure via .NET exceptions — <see cref="FileNotFoundException"/>,
+    /// <see cref="IOException"/> — because that is what an <see cref="IExecutionTarget"/> caller expects),
+    /// <see cref="ContainerLifecycleResult"/> exists precisely to carry an operation's outcome without one. A
+    /// <see cref="DockerApiException"/> raised by the daemon (including
+    /// <see cref="DockerContainerNotFoundException"/>, which derives from it) is caught and surfaced as
+    /// <c>Success: false</c> with the exception's message in <see cref="ContainerLifecycleResult.Detail"/>,
+    /// rather than propagating or being swallowed.
+    /// </para>
+    /// <para>
+    /// On success, the container is inspected once more to populate <see cref="ContainerLifecycleResult.State"/>
+    /// (and, for <see cref="ContainerLifecycleVerb.Stop"/>/<see cref="ContainerLifecycleVerb.Kill"/>, its
+    /// <see cref="ContainerLifecycleResult.ExitCode"/>) — cheap relative to the lifecycle call itself, and a
+    /// failure there is likewise absorbed into a null state rather than turning an otherwise-successful
+    /// transition into a reported failure.
+    /// </para>
+    /// </remarks>
+    public async Task<ContainerLifecycleResult> InvokeAsync(ContainerLifecycleRequest request, CancellationToken ct = default)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(request);
+
+        try
+        {
+            switch (request.Verb)
+            {
+                case ContainerLifecycleVerb.Start:
+                    await _client.Containers.StartContainerAsync(
+                        request.ContainerRef, new ContainerStartParameters(), ct).ConfigureAwait(false);
+                    break;
+
+                case ContainerLifecycleVerb.Stop:
+                    await _client.Containers.StopContainerAsync(
+                        request.ContainerRef,
+                        new ContainerStopParameters { WaitBeforeKillSeconds = ToWaitBeforeKillSeconds(request.GracePeriod) },
+                        ct).ConfigureAwait(false);
+                    break;
+
+                case ContainerLifecycleVerb.Restart:
+                    await _client.Containers.RestartContainerAsync(
+                        request.ContainerRef,
+                        new ContainerRestartParameters { WaitBeforeKillSeconds = ToWaitBeforeKillSeconds(request.GracePeriod) },
+                        ct).ConfigureAwait(false);
+                    break;
+
+                case ContainerLifecycleVerb.Kill:
+                    await _client.Containers.KillContainerAsync(
+                        request.ContainerRef,
+                        new ContainerKillParameters { Signal = request.Signal },
+                        ct).ConfigureAwait(false);
+                    break;
+
+                default:
+                    throw new ArgumentOutOfRangeException(
+                        nameof(request), request.Verb, "Unknown container lifecycle verb.");
+            }
+        }
+        catch (DockerApiException ex)
+        {
+            return new ContainerLifecycleResult(
+                false,
+                $"Docker refused to {request.Verb.ToString().ToLowerInvariant()} container '{request.ContainerRef}': {ex.Message}");
+        }
+
+        var (state, exitCode) = await TryInspectAfterLifecycleAsync(request.ContainerRef, request.Verb, ct).ConfigureAwait(false);
+        return new ContainerLifecycleResult(
+            true, $"Container '{request.ContainerRef}' {PastTense(request.Verb)}.", exitCode, state);
+    }
+
+    /// <summary>Converts a grace period into the whole-seconds shape Docker.DotNet's lifecycle parameters take.</summary>
+    private static uint? ToWaitBeforeKillSeconds(TimeSpan? gracePeriod) =>
+        gracePeriod is { } grace ? (uint)Math.Max(0, Math.Round(grace.TotalSeconds)) : null;
+
+    private static string PastTense(ContainerLifecycleVerb verb) => verb switch
+    {
+        ContainerLifecycleVerb.Start => "started",
+        ContainerLifecycleVerb.Stop => "stopped",
+        ContainerLifecycleVerb.Restart => "restarted",
+        ContainerLifecycleVerb.Kill => "killed",
+        _ => verb.ToString(),
+    };
+
+    /// <summary>
+    /// Inspects the container after a successful lifecycle transition to report its resulting state (and,
+    /// for verbs that terminate the container, its exit code). Best-effort: an inspection failure here does
+    /// not turn an otherwise-successful lifecycle call into a reported failure, it just leaves the extra
+    /// detail unpopulated.
+    /// </summary>
+    private async Task<(string? State, int? ExitCode)> TryInspectAfterLifecycleAsync(
+        string containerRef, ContainerLifecycleVerb verb, CancellationToken ct)
+    {
+        try
+        {
+            var inspect = await _client.Containers.InspectContainerAsync(containerRef, ct).ConfigureAwait(false);
+            var state = inspect?.State?.Status;
+            int? exitCode = verb is ContainerLifecycleVerb.Stop or ContainerLifecycleVerb.Kill
+                ? (int)(inspect?.State?.ExitCode ?? 0)
+                : null;
+
+            return (state, exitCode);
+        }
+        catch (DockerApiException)
+        {
+            return (null, null);
         }
     }
 
@@ -526,6 +744,10 @@ public sealed class DockerExecutionTarget : IExecutionTarget
 
     private static string FormatDetail(string standardError) =>
         string.IsNullOrWhiteSpace(standardError) ? string.Empty : $": {standardError.Trim()}";
+
+    /// <summary>Rejoins a parent directory and a leaf name into an absolute container path.</summary>
+    private static string JoinContainerPath(string directory, string leaf) =>
+        directory.Length == 0 ? "/" + leaf : directory + "/" + leaf;
 
     /// <summary>Splits an absolute container path into its parent directory and leaf name.</summary>
     private static (string Directory, string Leaf) SplitContainerPath(string containerPath)

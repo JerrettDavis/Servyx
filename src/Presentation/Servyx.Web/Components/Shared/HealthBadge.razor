@@ -2,8 +2,8 @@
 @* Docker container health, rendered as a badge that is always visually and semantically separate from
    the server's lifecycle state badge — see docs/architecture.md, "Readiness vs. Container Health". *@
 
-<span class="badge health-badge health-@Health.ToString().ToLowerInvariant()" title="@Tooltip" tabindex="0">
-    <span class="health-dot" aria-hidden="true"></span>
+<span class="svx-badge health-badge health-@Health.ToString().ToLowerInvariant()" title="@Tooltip" tabindex="0">
+    <span class="svx-dot" aria-hidden="true"></span>
     @Health
 </span>
 

@@ -486,3 +486,11 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+# Local overrides carrying real production coordinates (see scripts/cloudnium.example.ps1).
+# Never commit the real host, user, key filename, fingerprint, or local mirror path.
+scripts/*.local.ps1
+
+# Playwright MCP browser-automation scratch output (console/page captures used while taking
+# documentation screenshots). Tooling session debris, not project content.
+.playwright-mcp/

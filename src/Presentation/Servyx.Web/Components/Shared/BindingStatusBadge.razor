@@ -1,0 +1,47 @@
+@using Servyx.Application.Servers
+@* A fifth badge in the StateBadge/HealthBadge/DriftBadge/TrustBadge family, mirroring their shape exactly
+   rather than sharing a base — that consolidation was deliberately deferred. Unlike the others, this one
+   renders nothing at all for ServerBindingStatus.Bound: that is the overwhelmingly common case, and a
+   server list/detail page that shows it must look byte-for-byte like it did before this badge existed —
+   no badge, no layout shift, no visual change. *@
+
+@if (Status != ServerBindingStatus.Bound)
+{
+    <span class="svx-badge binding-status-badge binding-status-@Status.ToString().ToLowerInvariant()"
+          title="@Tooltip" tabindex="0" data-testid="binding-status-badge">
+        <span class="svx-dot" aria-hidden="true"></span>
+        @Label
+    </span>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public ServerBindingStatus Status { get; set; }
+
+    /// <summary>
+    /// For <see cref="ServerBindingStatus.Ambiguous"/>, every tied definition's <c>metadata.id</c>. For
+    /// <see cref="ServerBindingStatus.NeedsRebind"/>, the single definition id this server was previously
+    /// bound to — see <c>ServerQueryService.BuildNeedsRebindContext</c>, which repurposes the same field for
+    /// that one id rather than adding a second property only one state would ever populate.
+    /// </summary>
+    [Parameter]
+    public IReadOnlyList<string>? CandidateGameIds { get; set; }
+
+    private string Label => Status switch
+    {
+        ServerBindingStatus.Ambiguous => "Ambiguous binding",
+        ServerBindingStatus.NeedsRebind => "Needs rebind",
+        _ => string.Empty,
+    };
+
+    private string Tooltip => Status switch
+    {
+        ServerBindingStatus.Ambiguous => CandidateGameIds is { Count: > 0 }
+            ? $"Matched more than one loaded game definition with equal specificity ({string.Join(", ", CandidateGameIds)}). Servyx deliberately did not guess which one governs this server."
+            : "Matched more than one loaded game definition with equal specificity. Servyx deliberately did not guess which one governs this server.",
+        ServerBindingStatus.NeedsRebind => CandidateGameIds is { Count: > 0 }
+            ? $"Previously bound to '{CandidateGameIds[0]}', which no longer resolves in the loaded catalog (the definition was edited or removed). Servyx will not silently substitute a different version. There is currently no action in Servyx to resolve this."
+            : "Previously bound to a definition that no longer resolves in the loaded catalog. Servyx will not silently substitute a different version. There is currently no action in Servyx to resolve this.",
+        _ => string.Empty,
+    };
+}

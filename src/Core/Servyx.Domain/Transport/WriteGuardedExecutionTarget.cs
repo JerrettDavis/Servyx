@@ -44,8 +44,17 @@ namespace Servyx.Domain.Transport;
 /// Disposal delegates to the inner target: the guard owns no resources of its own, and swallowing the
 /// inner disposal would leak whatever the transport opened.
 /// </para>
+/// <para>
+/// <b><see cref="IContainerLifecycle"/> is guarded the same way, through the same door.</b> Container
+/// lifecycle on the local Docker path (start/stop/restart/kill) goes through Docker.DotNet's container
+/// APIs rather than <see cref="CommandSpec"/>-shaped exec calls, so it has no spec for
+/// <see cref="ExecuteAsync"/>'s gate to inspect. <see cref="InvokeAsync"/> closes that gap by converting
+/// the request to a <see cref="CommandSpec"/> via <see cref="ContainerLifecycleRequest.AsGuardedSpec"/> and
+/// running it through <see cref="ThrowIfMutatingCommandIsDisabled"/> — the exact same private method the
+/// command path uses, not a second policy that happens to agree with it today.
+/// </para>
 /// </remarks>
-public sealed class WriteGuardedExecutionTarget : IExecutionTarget
+public sealed class WriteGuardedExecutionTarget : IExecutionTarget, IContainerLifecycle
 {
     private readonly IExecutionTarget _inner;
 
@@ -138,6 +147,27 @@ public sealed class WriteGuardedExecutionTarget : IExecutionTarget
 
     /// <inheritdoc />
     public ValueTask DisposeAsync() => _inner.DisposeAsync();
+
+    /// <inheritdoc />
+    /// <exception cref="WritesDisabledException">
+    /// <see cref="Mode"/> is not <see cref="WriteMode.Enabled"/>. Thrown synchronously, before the inner
+    /// target is touched at all — the guard check runs before the <see cref="NotSupportedException"/> below
+    /// is even considered, so a refusal on a read-only server never depends on whether the inner target
+    /// implements <see cref="IContainerLifecycle"/>.
+    /// </exception>
+    /// <exception cref="NotSupportedException">
+    /// Writes are permitted, but the inner target does not implement <see cref="IContainerLifecycle"/>.
+    /// </exception>
+    public Task<ContainerLifecycleResult> InvokeAsync(ContainerLifecycleRequest request, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+        ThrowIfMutatingCommandIsDisabled(request.AsGuardedSpec());
+
+        return _inner is IContainerLifecycle inner
+            ? inner.InvokeAsync(request, ct)
+            : throw new NotSupportedException(
+                $"The underlying transport does not implement {nameof(IContainerLifecycle)}.");
+    }
 
     private void ThrowIfMutatingCommandIsDisabled(CommandSpec spec)
     {

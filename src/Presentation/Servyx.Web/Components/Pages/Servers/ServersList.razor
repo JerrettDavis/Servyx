@@ -1,9 +1,10 @@
 @page "/servers"
 @implements IDisposable
+@using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus
 @inject IDashboardDataService Data
 @inject PersistentComponentState ApplicationState
 
-<PageTitle>Servers - Servyx</PageTitle>
+<SvxPageTitle Section="Servers" />
 
 <div class="svx-page-header">
     <h2>Servers</h2>
@@ -12,13 +13,24 @@
 
 @if (_loading)
 {
-    <p>Loading servers…</p>
+    <Skeleton Rows="6" Label="Loading servers" />
 }
 else if (_servers.Count == 0)
 {
-    <div class="svx-empty-state">
+    <div class="svx-empty-state @(_discoveryFailed ? "svx-empty-state-degraded" : "")" data-testid="servers-empty-state">
         <h3>No servers adopted yet</h3>
-        <p>Adopting an existing container is the first step in Milestone 1.</p>
+        @if (_discoveryFailed)
+        {
+            <p class="svx-discovery-failed-banner" data-testid="servers-discovery-failed">
+                <strong>This may not be accurate.</strong> Servyx could not read the server list from the
+                Docker host@(string.IsNullOrWhiteSpace(_discoveryFailureDetail) ? "." : $": {_discoveryFailureDetail}")
+                There may be adopted servers Servyx cannot currently see.
+            </p>
+        }
+        else
+        {
+            <p>Adopting an existing container is the first step in Milestone 1.</p>
+        }
     </div>
 }
 else
@@ -40,7 +52,16 @@ else
             <a class="svx-row-link" role="listitem" href="@($"servers/{server.Id}")"
                style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;">
                 <span data-col-label="Name"><strong>@server.Name</strong></span>
-                <span data-col-label="Game">@server.Game</span>
+                <span data-col-label="Game">
+                    @if (server.BindingStatus == ServerBindingStatus.Bound)
+                    {
+                        @server.Game
+                    }
+                    else
+                    {
+                        <BindingStatusBadge Status="@server.BindingStatus" CandidateGameIds="@server.AmbiguousCandidateGameIds" />
+                    }
+                </span>
                 <span data-col-label="State"><StateBadge State="@server.State" /></span>
                 <span data-col-label="Health"><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
                 <span data-col-label="Players">@FormatPlayers(server.PlayersOnline, server.PlayersMax)</span>
@@ -59,9 +80,16 @@ else
 
 @code {
     private const string ServersStateKey = "ServersList.Servers";
+    private const string DiscoveryFailedStateKey = "ServersList.DiscoveryFailed";
+    private const string DiscoveryFailureDetailStateKey = "ServersList.DiscoveryFailureDetail";
 
     private bool _loading = true;
     private IReadOnlyList<ServerSummary> _servers = [];
+
+    /// <summary>See <c>Home.razor</c>'s identical field for why an empty <see cref="_servers"/> alone
+    /// cannot honestly answer "were there really zero servers, or did discovery fail".</summary>
+    private bool _discoveryFailed;
+    private string? _discoveryFailureDetail;
     private PersistingComponentStateSubscription _persistingSubscription;
 
     /// <summary>See <c>Home.razor</c>'s identical pattern for why this avoids a duplicate Docker query
@@ -73,10 +101,15 @@ else
         if (ApplicationState.TryTakeFromJson<IReadOnlyList<ServerSummary>>(ServersStateKey, out var restoredServers))
         {
             _servers = restoredServers ?? [];
+            ApplicationState.TryTakeFromJson<bool>(DiscoveryFailedStateKey, out _discoveryFailed);
+            ApplicationState.TryTakeFromJson<string?>(DiscoveryFailureDetailStateKey, out _discoveryFailureDetail);
         }
         else
         {
-            _servers = await Data.GetServersAsync();
+            var serverList = await Data.GetServersWithStatusAsync();
+            _servers = serverList.Servers;
+            _discoveryFailed = serverList.DiscoveryFailed;
+            _discoveryFailureDetail = serverList.FailureDetail;
         }
 
         _loading = false;
@@ -85,6 +118,8 @@ else
     private Task PersistData()
     {
         ApplicationState.PersistAsJson(ServersStateKey, _servers);
+        ApplicationState.PersistAsJson(DiscoveryFailedStateKey, _discoveryFailed);
+        ApplicationState.PersistAsJson(DiscoveryFailureDetailStateKey, _discoveryFailureDetail);
         return Task.CompletedTask;
     }
 

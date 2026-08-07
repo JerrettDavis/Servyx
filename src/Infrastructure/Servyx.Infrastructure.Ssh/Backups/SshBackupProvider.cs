@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Globalization;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Domain.Backups;
 using Servyx.Domain.Transport;
 
@@ -123,6 +125,7 @@ public sealed class SshBackupProvider : IBackupProvider
     private readonly ISshBackupContextSource _contexts;
     private readonly IReadOnlyList<IBackupAdopter> _adopters;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger _logger;
     private readonly TimeSpan _restorePlanTtl;
     private readonly ConcurrentDictionary<string, PendingRestore> _plans = new(StringComparer.Ordinal);
 
@@ -135,11 +138,17 @@ public sealed class SshBackupProvider : IBackupProvider
     /// </param>
     /// <param name="timeProvider">Clock used for archive naming and restore-plan expiry.</param>
     /// <param name="restorePlanTtl">How long a restore plan stays applicable. Defaults to <see cref="DefaultRestorePlanTtl"/>.</param>
+    /// <param name="logger">
+    /// Where a failed <see cref="SshBackupContext.Resume"/> step is reported. Optional only so existing call
+    /// sites keep compiling; a resume failure is never silent regardless, because it is also thrown (see
+    /// <see cref="BackupResumeFailedException"/>) whenever there is no more important exception in flight.
+    /// </param>
     public SshBackupProvider(
         ISshBackupContextSource contexts,
         IEnumerable<IBackupAdopter>? adopters = null,
         TimeProvider? timeProvider = null,
-        TimeSpan? restorePlanTtl = null)
+        TimeSpan? restorePlanTtl = null,
+        ILogger<SshBackupProvider>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(contexts);
 
@@ -147,6 +156,7 @@ public sealed class SshBackupProvider : IBackupProvider
         _adopters = adopters?.ToList() ?? [];
         _timeProvider = timeProvider ?? TimeProvider.System;
         _restorePlanTtl = restorePlanTtl ?? DefaultRestorePlanTtl;
+        _logger = logger ?? NullLogger<SshBackupProvider>.Instance;
     }
 
     /// <inheritdoc />
@@ -171,16 +181,45 @@ public sealed class SshBackupProvider : IBackupProvider
         // once the quiesce had already run. Refuse the operation here instead, ahead of every step.
         RequireWritesEnabled(context, "create a backup");
 
-        var members = EffectiveIncludes(context);
-        var excludes = EffectiveExcludes(context);
-        var root = Absolute(context.Root);
-        var storeDirectory = StoreDirectoryOf(context);
+        // Deliberately still ahead of the quiesce, and therefore ahead of the try: there is no point asking a
+        // live server to stall for a backup whose include set was going to be rejected anyway, and a plan
+        // rejected here has quiesced nothing, so it has nothing to resume.
+        var plan = new CapturePlan(
+            EffectiveIncludes(context),
+            EffectiveExcludes(context),
+            Absolute(context.Root),
+            StoreDirectoryOf(context));
 
-        // Flush the server's in-memory state to disk before the host reads a byte of it. This sits after the
-        // cheap, purely-local validation above — there is no point asking a live server to stall for a backup
-        // whose include set was going to be rejected anyway — and before every command below, so a quiesce
-        // that fails leaves not even the artifact directory behind.
-        await QuiesceAsync(context, ct).ConfigureAwait(false);
+        var captureSucceeded = false;
+        try
+        {
+            // Flush the server's in-memory state to disk before the host reads a byte of it. This sits after
+            // the cheap, purely-local validation above — there is no point asking a live server to stall for
+            // a backup whose include set was going to be rejected anyway — and before every command below, so
+            // a quiesce that fails leaves not even the artifact directory behind.
+            await QuiesceAsync(context, ct).ConfigureAwait(false);
+            var artifact = await CaptureAsync(context, plan, ct).ConfigureAwait(false);
+            captureSucceeded = true;
+            return artifact;
+        }
+        finally
+        {
+            // Guaranteed-execution point, matching DockerBackupProvider.CreateAsync exactly. The resume runs
+            // on every exit path — success, a quiesce that failed partway through its own list, a failed
+            // archive, cancellation. 'captureSucceeded' governs only whether a resume failure may throw from
+            // here; throwing during unwinding would replace the reason the backup failed with a symptom.
+            await ResumeAsync(context, throwOnFailure: captureSucceeded).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>
+    /// The capture itself: run the host's <c>tar</c>, read back its entries and hash, write the sidecar
+    /// manifest. Split out of <see cref="CreateAsync"/> so the quiesce and everything it protects sit inside
+    /// one <c>try</c> whose <c>finally</c> owns the resume.
+    /// </summary>
+    private async Task<BackupArtifact> CaptureAsync(SshBackupContext context, CapturePlan plan, CancellationToken ct)
+    {
+        var (members, excludes, root, storeDirectory) = plan;
 
         await RunAsync(context, "mkdir", ["-p", storeDirectory], CommandIntent.Mutating, ct).ConfigureAwait(false);
 
@@ -492,7 +531,116 @@ public sealed class SshBackupProvider : IBackupProvider
                 context.Quiesce.CommandId);
         }
 
+        // Checked here, before a single command is issued, for the same reason the quiesce check is: a resume
+        // that could never be delivered must be refused while the server is still writing normally, not
+        // discovered in the finally block after the quiesce has already stopped it.
+        if (context.Resume.Count > 0 && context.Control is null)
+        {
+            throw new BackupResumeFailedException(
+                $"Server '{serverId}' declares a '{context.Resume[0].CommandId}' resume step but has no control channel to issue it on.",
+                serverId,
+                context.Resume[0].CommandId);
+        }
+
         return context;
+    }
+
+    /// <summary>
+    /// Issues every declared <see cref="SshBackupContext.Resume"/> step, in order, after capture has
+    /// finished — however it finished. The SSH counterpart of
+    /// <c>DockerBackupProvider.ResumeAsync</c>, with the same guarantees.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>No cancellation token is threaded in, and that is the point.</strong> Each step is bounded
+    /// only by its own declared timeout. An operator who cancels a backup is asking Servyx to stop archiving
+    /// files; they are never asking it to leave the game server unable to write to disk.
+    /// </para>
+    /// <para>
+    /// <strong>One failing step does not skip the rest.</strong> A resume list is a sequence of undos and a
+    /// later one may be the one that re-enables saving, so every step is attempted, every failure is logged
+    /// as an error, and the failures are reported together.
+    /// </para>
+    /// </remarks>
+    /// <param name="context">The context whose resume steps to issue.</param>
+    /// <param name="throwOnFailure">
+    /// Whether a failure may throw. False while an earlier exception is unwinding out of
+    /// <see cref="CreateAsync"/>, where throwing would hide the original failure.
+    /// </param>
+    private async Task ResumeAsync(SshBackupContext context, bool throwOnFailure)
+    {
+        if (context.Resume.Count == 0)
+        {
+            return;
+        }
+
+        // GetContextAsync already refused a context that declares a resume with no channel.
+        var control = context.Control!;
+        var failures = new List<Exception>();
+
+        foreach (var step in context.Resume)
+        {
+            try
+            {
+                using var timeout = new CancellationTokenSource(step.Timeout, _timeProvider);
+
+                var response = await control.InvokeAsync(step.CommandId, step.Arguments, timeout.Token).ConfigureAwait(false);
+                if (!response.Success)
+                {
+                    throw new BackupResumeFailedException(
+                        $"Resume command '{step.CommandId}' on server '{context.ServerId}' reported failure: {response.Text}",
+                        context.ServerId,
+                        step.CommandId);
+                }
+            }
+            catch (OperationCanceledException ex)
+            {
+                failures.Add(new BackupResumeFailedException(
+                    $"Resume command '{step.CommandId}' on server '{context.ServerId}' did not complete within {step.Timeout}.",
+                    context.ServerId,
+                    step.CommandId,
+                    ex));
+            }
+            catch (BackupResumeFailedException ex)
+            {
+                failures.Add(ex);
+            }
+            catch (Exception ex)
+            {
+                failures.Add(new BackupResumeFailedException(
+                    $"Resume command '{step.CommandId}' on server '{context.ServerId}' failed: {ex.Message}",
+                    context.ServerId,
+                    step.CommandId,
+                    ex));
+            }
+        }
+
+        if (failures.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var failure in failures)
+        {
+            // Logged unconditionally, on both the throwing and the non-throwing path: when an earlier failure
+            // is already unwinding, this line is the only report the operator gets that the server may still
+            // be quiesced.
+            _logger.LogError(
+                failure,
+                "Backup resume step failed for server {ServerId}; the server may still be quiesced and unable to write to disk.",
+                context.ServerId);
+        }
+
+        if (!throwOnFailure)
+        {
+            return;
+        }
+
+        throw failures.Count == 1
+            ? failures[0]
+            : new BackupResumeFailedException(
+                $"{failures.Count} resume steps failed for server '{context.ServerId}'; it may still be quiesced.",
+                new AggregateException(failures));
     }
 
     /// <summary>
@@ -940,6 +1088,16 @@ public sealed class SshBackupProvider : IBackupProvider
     }
 
     private sealed record ResolvedArtifact(BackupArtifact Artifact, string? ManifestPath);
+
+    /// <summary>
+    /// The purely-local part of a capture, computed and validated before the quiesce runs so a rejected
+    /// include set never stalls a live server.
+    /// </summary>
+    private sealed record CapturePlan(
+        IReadOnlyList<string> Members,
+        IReadOnlyList<string> Excludes,
+        string Root,
+        string StoreDirectory);
 
     private sealed record PendingRestore(
         RestorePlan Plan,

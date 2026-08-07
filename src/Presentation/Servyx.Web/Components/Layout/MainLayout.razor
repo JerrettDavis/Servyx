@@ -22,11 +22,24 @@
             <h1 class="svx-page-title">@_pageTitle</h1>
 
             <div class="svx-topbar-right">
-                <span class="svx-readonly-badge" tabindex="0"
-                      title="Milestone 1 is strictly read-only against live servers. No write reaches a managed workload until Milestone 4 enables it explicitly.">
-                    <Icon Name="lock" Size="14" />
-                    READ-ONLY MODE
-                </span>
+                <ThemeToggle />
+                <span class="svx-topbar-divider"></span>
+
+                @if (_writableServers.Any)
+                {
+                    <span class="svx-writable-badge" tabindex="0" title="@_writableTooltip">
+                        <Icon Name="power" Size="14" />
+                        WRITES ENABLED
+                    </span>
+                }
+                else
+                {
+                    <span class="svx-readonly-badge" tabindex="0"
+                          title="No server currently has write access granted. Every server stays read-only until an operator explicitly enables writes for it — see the Enabling writes guide.">
+                        <Icon Name="lock" Size="14" />
+                        READ-ONLY MODE
+                    </span>
+                }
 
                 <span class="svx-connection svx-connection-@_connectionCss" tabindex="0" title="@_connectionTooltip">
                     <span class="svx-connection-dot" aria-hidden="true"></span>
@@ -62,6 +75,8 @@
 @code {
     private string _pageTitle = "Servyx";
     private ConnectionStatus _status = ConnectionStatus.Connected;
+    private string _transportId = "docker";
+    private string? _connectionDetail;
 
     /// <summary>
     /// Whether this process requires a login, and therefore whether there is a session to end. Resolved
@@ -69,6 +84,24 @@
     /// unlike the provisioning lookup in <c>NavMenu</c>, defaults to enforced when absent.
     /// </summary>
     private bool _authenticationEnabled = true;
+
+    /// <summary>
+    /// The servers this process currently holds a write grant for. Resolved through
+    /// <see cref="IServiceProvider"/> for the same reason <see cref="_authenticationEnabled"/> is: a host
+    /// that never registered it still renders, and — mirroring <see cref="WritableServers.None"/> being the
+    /// safe state for a closed <see cref="ProvisioningGate"/> — defaults to "nothing is writable" when
+    /// absent, never the reverse.
+    /// </summary>
+    private WritableServers _writableServers = WritableServers.None;
+
+    /// <summary>
+    /// The writable badge's tooltip. Deliberately reports only a count, not which servers — the grant set
+    /// can change per deploy and this badge is not the place an operator audits it (see the Enabling writes
+    /// guide for the full per-server picture); a stale or partial name list would be worse than a count.
+    /// </summary>
+    private string _writableTooltip => _writableServers.Keys.Count == 1
+        ? "Write access is enabled for 1 server. Every other server remains read-only until an operator grants it."
+        : $"Write access is enabled for {_writableServers.Keys.Count} servers. Every other server remains read-only until an operator grants it.";
 
     private string _connectionCss => _status switch
     {
@@ -84,9 +117,22 @@
         _ => "Disconnected",
     };
 
-    private string _connectionTooltip => _status switch
+    /// <summary>
+    /// The connection tooltip's text. Prefers the real, transport-reported <see cref="_connectionDetail"/>
+    /// (e.g. "Docker 27.3.1 (API 1.47) on linux/amd64..." for local Docker, or "docker CLI found but could
+    /// not be invoked — permission denied (exit 126): the SSH user is likely not a member of the \"docker\"
+    /// group." for ssh+docker) over a generic, per-status fallback — never a hardcoded claim about a
+    /// specific transport that may not be the one actually in play. See
+    /// <c>SshDockerTransport.ProbeAsync</c> and <c>DockerTransport.ProbeAsync</c> for where this text is
+    /// computed.
+    /// </summary>
+    private string _connectionTooltip => !string.IsNullOrWhiteSpace(_connectionDetail)
+        ? _connectionDetail
+        : _fallbackConnectionTooltip;
+
+    private string _fallbackConnectionTooltip => _status switch
     {
-        ConnectionStatus.Connected => "Reachable over the npipe transport using the desktop-linux Docker context.",
+        ConnectionStatus.Connected => $"Reachable over the {_transportId} transport.",
         ConnectionStatus.Degraded => "The Docker host is reachable but responding slowly or with partial data.",
         _ => "The Docker host is not reachable. Server data shown may be stale.",
     };
@@ -97,7 +143,13 @@
             (Services.GetService(typeof(AuthenticationGate)) as AuthenticationGate
                 ?? AuthenticationGate.Enforced).Enabled;
 
-        _status = await Data.GetDockerConnectionStatusAsync();
+        _writableServers = Services.GetService(typeof(WritableServers)) as WritableServers
+            ?? WritableServers.None;
+
+        var connection = await Data.GetDockerConnectionInfoAsync();
+        _status = connection.Status;
+        _transportId = connection.TransportId;
+        _connectionDetail = connection.Detail;
         UpdateTitle();
         Nav.LocationChanged += OnLocationChanged;
     }

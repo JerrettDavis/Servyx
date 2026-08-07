@@ -43,11 +43,22 @@ public sealed class StubDashboardDataService : IDashboardDataService
         Task.FromResult(_servers);
 
     /// <inheritdoc />
+    public Task<ServerListResult> GetServersWithStatusAsync(CancellationToken ct = default) =>
+        Task.FromResult(new ServerListResult(_servers, DiscoveryFailed: false, FailureDetail: null));
+
+    /// <inheritdoc />
     public Task<IReadOnlyList<BackupEntry>> GetAllBackupsAsync(CancellationToken ct = default) =>
         Task.FromResult<IReadOnlyList<BackupEntry>>([]);
 
     /// <inheritdoc />
+    public Task<BackupsListResult> GetAllBackupsWithStatusAsync(CancellationToken ct = default) =>
+        Task.FromResult(new BackupsListResult([], BackupsAvailability.Listed, null));
+
+    /// <inheritdoc />
     public Task<ConnectionStatus> GetDockerConnectionStatusAsync(CancellationToken ct = default) => throw Unused();
+
+    /// <inheritdoc />
+    public Task<DockerConnectionInfo> GetDockerConnectionInfoAsync(CancellationToken ct = default) => throw Unused();
 
     /// <inheritdoc />
     public Task<DashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default) => throw Unused();

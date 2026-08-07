@@ -159,6 +159,7 @@ public sealed class ShellFileChannel : IExecutionTarget
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(content);
         ArgumentNullException.ThrowIfNull(options);
+        options.ThrowIfBeyondPlainAtomicRename(nameof(ShellFileChannel));
 
         var remotePath = ToRemotePath(path);
 

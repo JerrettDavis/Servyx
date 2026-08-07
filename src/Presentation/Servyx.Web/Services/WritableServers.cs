@@ -26,34 +26,75 @@ namespace Servyx.Web.Services;
 public sealed class WritableServers
 {
     /// <summary>No server is writable. The state of a read-only host, and the safe default.</summary>
-    public static readonly WritableServers None = new([]);
+    public static readonly WritableServers None = new(Array.Empty<string>());
 
-    private readonly HashSet<string> _keys;
-
-    /// <summary>Creates a set over the given configuration keys (container names).</summary>
-    /// <param name="serverKeys">The <c>Servyx:Servers:&lt;key&gt;</c> keys granted a non-read-only write mode.</param>
-    public WritableServers(IEnumerable<string> serverKeys)
-    {
-        ArgumentNullException.ThrowIfNull(serverKeys);
-        _keys = new HashSet<string>(serverKeys, StringComparer.OrdinalIgnoreCase);
-    }
-
-    /// <summary>The configuration keys that carry a write grant.</summary>
-    public IReadOnlyCollection<string> Keys => _keys;
-
-    /// <summary>Whether any server at all is writable in this process.</summary>
-    public bool Any => _keys.Count > 0;
+    private readonly Dictionary<string, WriteMode> _modes;
 
     /// <summary>
-    /// Whether the named server may be written to. Both the discovery id and the container name are
-    /// checked, because <c>IServerQueryService</c> itself resolves a server by either and an operator
-    /// writes whichever one they see in the UI into configuration.
+    /// Creates a set over the given configuration keys (container names), each granted
+    /// <see cref="WriteMode.Enabled"/>.
+    /// </summary>
+    /// <param name="serverKeys">The <c>Servyx:Servers:&lt;key&gt;</c> keys granted <see cref="WriteMode.Enabled"/>.</param>
+    public WritableServers(IEnumerable<string> serverKeys)
+        : this((serverKeys ?? throw new ArgumentNullException(nameof(serverKeys)))
+            .Select(key => new KeyValuePair<string, WriteMode>(key, WriteMode.Enabled)))
+    {
+    }
+
+    /// <summary>Creates a set over the given configuration keys, each holding its own <see cref="WriteMode"/>.</summary>
+    /// <param name="serverModes">
+    /// The <c>Servyx:Servers:&lt;key&gt;</c> keys granted a non-<see cref="WriteMode.ReadOnly"/> write mode.
+    /// </param>
+    public WritableServers(IEnumerable<KeyValuePair<string, WriteMode>> serverModes)
+    {
+        ArgumentNullException.ThrowIfNull(serverModes);
+        _modes = new Dictionary<string, WriteMode>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, mode) in serverModes)
+        {
+            _modes[key] = mode;
+        }
+    }
+
+    /// <summary>The configuration keys that carry a non-read-only write grant.</summary>
+    public IReadOnlyCollection<string> Keys => _modes.Keys;
+
+    /// <summary>Whether any server at all carries a non-read-only write grant in this process.</summary>
+    public bool Any => _modes.Count > 0;
+
+    /// <summary>
+    /// Whether the named server may actually be written to right now — i.e. its <see cref="Mode"/> is
+    /// <see cref="WriteMode.Enabled"/>. A <see cref="WriteMode.PreviewOnly"/> server is deliberately NOT
+    /// writable: it may plan, but every apply still throws <see cref="WritesDisabledException"/> at the
+    /// transport, so a page offering a live write control for it would be lying. Both the discovery id and
+    /// the container name are checked, because <c>IServerQueryService</c> itself resolves a server by either
+    /// and an operator writes whichever one they see in the UI into configuration.
     /// </summary>
     /// <param name="serverId">The server's discovery id.</param>
     /// <param name="serverName">The server's container name, if known.</param>
     public bool IsWritable(string? serverId, string? serverName = null) =>
-        (!string.IsNullOrWhiteSpace(serverId) && _keys.Contains(serverId))
-        || (!string.IsNullOrWhiteSpace(serverName) && _keys.Contains(serverName));
+        Mode(serverId, serverName) == WriteMode.Enabled;
+
+    /// <summary>
+    /// The write posture granted to the named server, or <see cref="WriteMode.ReadOnly"/> when neither the
+    /// discovery id nor the container name carries a grant. Lets a page distinguish "fully writable" from
+    /// "preview only" instead of collapsing both into a single boolean, the way <see cref="IsWritable"/> must.
+    /// </summary>
+    /// <param name="serverId">The server's discovery id.</param>
+    /// <param name="serverName">The server's container name, if known.</param>
+    public WriteMode Mode(string? serverId, string? serverName = null)
+    {
+        if (!string.IsNullOrWhiteSpace(serverId) && _modes.TryGetValue(serverId, out var byId))
+        {
+            return byId;
+        }
+
+        if (!string.IsNullOrWhiteSpace(serverName) && _modes.TryGetValue(serverName, out var byName))
+        {
+            return byName;
+        }
+
+        return WriteMode.ReadOnly;
+    }
 
     /// <summary>
     /// Reads the writable set from configuration, or returns <see cref="None"/> when
@@ -71,7 +112,7 @@ public sealed class WritableServers
             return None;
         }
 
-        var keys = new List<string>();
+        var modes = new List<KeyValuePair<string, WriteMode>>();
         foreach (var server in configuration.GetSection(ServerWriteModes.SectionKey).GetChildren())
         {
             if (string.IsNullOrWhiteSpace(server.Key))
@@ -84,10 +125,10 @@ public sealed class WritableServers
             if (Enum.TryParse<WriteMode>(server[ServerWriteModes.WriteModeKey], ignoreCase: true, out var mode) &&
                 mode != WriteMode.ReadOnly)
             {
-                keys.Add(server.Key);
+                modes.Add(new KeyValuePair<string, WriteMode>(server.Key, mode));
             }
         }
 
-        return new WritableServers(keys);
+        return modes.Count == 0 ? None : new WritableServers(modes);
     }
 }

@@ -98,21 +98,21 @@ public class ReadOnlySafetyTests(ITestOutputHelper output) : TinyBddXunitBase(ou
             .And("SupportsInput honestly reports false", _ => Task.FromResult(!CreateLogStream().SupportsInput))
             .AssertPassed();
 
-    [Scenario("Command execution reports exec is not supported at this milestone", "unit")]
+    [Scenario("Streaming command execution reports it is not implemented", "unit")]
     [Fact]
     [DisableOptimization]
-    public async Task CommandExecution_ReportsExecNotSupported_AtThisMilestone()
+    public async Task StreamingCommandExecution_ReportsNotImplemented()
         => await Given("a Docker execution target", () => CreateTarget())
-            .When("command execution is attempted", async Task<Exception?> (target) =>
+            .When("streaming command execution is attempted", Task<Exception?> (target) =>
             {
                 try
                 {
-                    await target.ExecuteAsync(new CommandSpec("echo", ["hello"]));
-                    return null;
+                    _ = target.ExecuteStreamingAsync(new CommandSpec("echo", ["hello"]));
+                    return Task.FromResult<Exception?>(null);
                 }
                 catch (Exception ex)
                 {
-                    return ex;
+                    return Task.FromResult<Exception?>(ex);
                 }
             })
             .Then("it reports NotSupportedException rather than a fake success", ex => Task.FromResult(ex is NotSupportedException))

@@ -11,25 +11,19 @@
     flex-direction: column;
     gap: 0.25rem;
     font-size: 0.8rem;
-    opacity: 0.85;
+    color: var(--svx-text-muted);
 }
 
-.svx-deploy-form input,
-.svx-deploy-form select,
-.svx-deploy-form textarea {
+/* Colour, border, padding, and radius now come from .svx-input/.svx-select/.svx-textarea in app.css
+   (see markup) — this scoped sheet only owns the layout sizing those shared primitives don't know about. */
+.svx-deploy-form .svx-input,
+.svx-deploy-form .svx-select,
+.svx-deploy-form .svx-textarea {
     min-width: 12rem;
-    padding: 0.35rem 0.5rem;
-    border-radius: 0.35rem;
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    background: rgba(255, 255, 255, 0.04);
-    color: inherit;
-    font-size: 0.85rem;
 }
 
-.svx-deploy-form textarea {
+.svx-deploy-form .svx-textarea {
     min-width: 22rem;
-    font-family: inherit;
-    resize: vertical;
 }
 
 /* The free-form editor an undescribed provisioner gets is the whole form, so it takes the whole row. */
@@ -37,7 +31,7 @@
     flex-basis: 100%;
 }
 
-.svx-deploy-form-wide textarea {
+.svx-deploy-form-wide .svx-textarea {
     width: 100%;
 }
 
@@ -45,13 +39,13 @@
 .svx-field-hint {
     max-width: 22rem;
     font-size: 0.72rem;
-    opacity: 0.65;
+    color: var(--svx-text-muted);
 }
 
 .svx-deploy-error {
     margin-top: 0.75rem;
     font-size: 0.85rem;
-    color: #ff8f8f;
+    color: var(--svx-danger-fg);
 }
 
 .svx-deploy-facts {
@@ -63,7 +57,7 @@
 }
 
 .svx-deploy-facts dt {
-    opacity: 0.7;
+    color: var(--svx-text-muted);
     font-weight: 500;
 }
 
@@ -82,13 +76,13 @@
 .svx-deploy-stages li p {
     margin: 0.2rem 0 0;
     font-size: 0.85rem;
-    opacity: 0.85;
+    color: var(--svx-text-muted);
 }
 
 .svx-deploy-confirm {
     margin-top: 1.25rem;
     padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    border-top: 1px solid var(--svx-border-subtle);
 }
 
 .svx-deploy-confirm p {
@@ -100,8 +94,8 @@
     margin-top: 1rem;
     padding: 0.75rem 1rem;
     border-radius: 0.5rem;
-    border: 1px solid rgba(120, 220, 160, 0.35);
-    background: rgba(120, 220, 160, 0.08);
+    border: 1px solid var(--svx-success-border);
+    background: var(--svx-success-bg);
 }
 
 .svx-deploy-applied h4 {
@@ -115,7 +109,7 @@
 
 .svx-deploy-progress {
     font-size: 0.85rem;
-    opacity: 0.85;
+    color: var(--svx-text-muted);
 }
 
 .svx-ledger-entry {
@@ -124,41 +118,52 @@
 
 .svx-ledger-maintenance {
     padding: 0.5rem 0.75rem 0.85rem;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    border-bottom: 1px solid var(--svx-border-subtle);
+}
+
+/* F4: the base rule now declares border-style and border-width (via the shorthand), not just colour — the
+   modifier rules below only ever overrode border-color, so without this the border never rendered at all. */
+.svx-drift-badge {
+    border: 1px solid var(--svx-neutral-border);
 }
 
 .svx-drift-badge.svx-drift-matches {
-    border-color: rgba(120, 220, 160, 0.45);
-    color: #7fdca6;
+    border-color: var(--svx-success-border);
+    background: var(--svx-success-bg);
+    color: var(--svx-success-fg);
 }
 
 .svx-drift-badge.svx-drift-diverged {
-    border-color: rgba(255, 178, 92, 0.55);
-    color: #ffb25c;
+    border-color: var(--svx-warning-border);
+    background: var(--svx-warning-bg);
+    color: var(--svx-warning-fg);
 }
 
 /* Every "not an answer" badge, muted the same amount. They are deliberately not styled like a match:
-   "could not be checked" must never read as "checked and clean". */
+   "could not be checked" must never read as "checked and clean". A dashed border carries that distinction
+   through both themes — opacity does not, since it reads as merely faint rather than as unknown. */
 .svx-drift-badge.svx-drift-unsupported,
 .svx-drift-badge.svx-drift-not-created,
 .svx-drift-badge.svx-drift-unchecked,
 .svx-drift-badge.svx-drift-error {
-    opacity: 0.75;
+    background: var(--svx-neutral-bg);
+    color: var(--svx-neutral-fg);
+    border-style: dashed;
 }
 
 .svx-drift-divergences {
     margin: 0 0 0.6rem;
     padding-left: 1.1rem;
     font-size: 0.82rem;
-    opacity: 0.9;
+    color: var(--svx-text-muted);
 }
 
 .svx-update-panel {
     margin-top: 0.75rem;
     padding: 0.75rem 1rem;
     border-radius: 0.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--svx-border-default);
+    background: var(--svx-bg-subtle);
 }
 
 .svx-update-changes {
@@ -172,7 +177,7 @@
 
 .svx-update-arrow {
     margin: 0 0.35rem;
-    opacity: 0.7;
+    color: var(--svx-text-subtle);
 }
 
 /* The acknowledgement is a visibly separate block from the confirmation button below it — the two-step
@@ -181,8 +186,8 @@
     margin: 0.75rem 0;
     padding: 0.6rem 0.75rem;
     border-radius: 0.4rem;
-    border: 2px dashed rgba(255, 92, 92, 0.65);
-    background: rgba(255, 92, 92, 0.08);
+    border: 2px dashed var(--svx-danger-strong);
+    background: var(--svx-danger-wash);
     font-size: 0.85rem;
 }
 

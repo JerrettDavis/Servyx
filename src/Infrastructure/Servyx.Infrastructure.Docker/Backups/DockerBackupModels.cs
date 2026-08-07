@@ -97,7 +97,28 @@ public sealed record DockerBackupContext(
     IReadOnlyList<ForeignBackupSource> Foreign,
     RetentionPolicy DefaultRetention,
     QuiesceStep? Quiesce = null,
-    IRconSession? Control = null);
+    IRconSession? Control = null)
+{
+    /// <summary>
+    /// Steps issued after capture finishes, on every exit path — the undo half of <see cref="Quiesce"/>.
+    /// Empty when the definition declares no <c>backup.resume</c> block.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A quiesce that disables saving is only safe if something re-enables it. These steps are what
+    /// <see cref="DockerBackupProvider.CreateAsync"/> runs from its <c>finally</c>: after a successful
+    /// archive, after a capture failure, after a quiesce that failed partway through its own list, and
+    /// after cancellation. They are issued on <see cref="CancellationToken.None"/>, bounded only by each
+    /// step's own timeout, because a cancelled backup must still hand the server back in a writable state.
+    /// </para>
+    /// <para>
+    /// Like <see cref="Quiesce"/>, a non-empty list requires <see cref="Control"/>: a context that asks for
+    /// a resume it has no channel to issue is refused up front rather than discovered after the quiesce has
+    /// already stopped the server writing.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<QuiesceStep> Resume { get; init; } = [];
+}
 
 /// <summary>
 /// Supplies the <see cref="DockerBackupContext"/> for a server. Implemented by the composition root,

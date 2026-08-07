@@ -350,6 +350,13 @@ public sealed class ProvisionerFormCatalog
     public const string FallbackContainerImage = "ghcr.io/thijsvanloef/palworld-server-docker:latest";
 
     /// <summary>
+    /// The host port Docker's <c>host-port</c> field starts at when no selected game declares a published
+    /// <c>purpose: game</c> network port with a literal value. The same literal <c>DeployPage</c> and this
+    /// catalog carried before a game's own capabilities could drive it.
+    /// </summary>
+    public const string FallbackHostPort = "8211";
+
+    /// <summary>
     /// How the SSH adapter spells an "install a Steam app" step. Taken from that adapter's own constant
     /// rather than written out here, so renaming the verb breaks this file at compile time instead of
     /// producing a form that silently emits a verb the provisioner will refuse.
@@ -418,17 +425,24 @@ public sealed class ProvisionerFormCatalog
     /// <c>BuildSpec</c>.
     /// </summary>
     /// <param name="containerImage">
-    /// The image Docker's <c>image</c> field defaults to — the bundled game definition's, when one loaded.
-    /// Passed in rather than read here so this type stays free of game-definition loading, and so the
-    /// default the page shows is the same one it showed before this catalog existed.
+    /// The image Docker's <c>image</c> field defaults to — the selected game definition's, when one is
+    /// selected. Passed in rather than read here so this type stays free of game-definition loading, and so
+    /// the default the page shows is the same one it showed before this catalog existed.
     /// </param>
-    public static ProvisionerFormCatalog CreateDefault(string? containerImage = null)
+    /// <param name="hostPort">
+    /// The port Docker's <c>host-port</c> field defaults to — the selected game definition's own published
+    /// <c>purpose: game</c> network port, when one is declared as a literal. Passed in for the same reason
+    /// <paramref name="containerImage"/> is: this type stays free of game-definition loading, and callers
+    /// that never had a game to ask keep the literal this catalog always defaulted to.
+    /// </param>
+    public static ProvisionerFormCatalog CreateDefault(string? containerImage = null, string? hostPort = null)
     {
         var image = string.IsNullOrWhiteSpace(containerImage) ? FallbackContainerImage : containerImage;
+        var port = string.IsNullOrWhiteSpace(hostPort) ? FallbackHostPort : hostPort;
 
         return new ProvisionerFormCatalog(
         [
-            Docker(image),
+            Docker(image, port),
             SshProcess(),
             LocalProcess(),
             DigitalOcean(),
@@ -449,7 +463,7 @@ public sealed class ProvisionerFormCatalog
     /// including <c>restartPolicy=unless-stopped</c> and the <c>port:&lt;n&gt;/tcp</c> key whose value is
     /// the port again. <c>DeployPageDockerRequestTests</c> pins all of it.
     /// </remarks>
-    private static ProvisionerFormSchema Docker(string image) => new()
+    private static ProvisionerFormSchema Docker(string image, string hostPort) => new()
     {
         ProvisionerId = DockerContainerProvisioner.Id,
         DeploymentProfileId = "docker",
@@ -475,7 +489,7 @@ public sealed class ProvisionerFormCatalog
                 Id = "host-port",
                 Label = "Port (host → container, tcp)",
                 ParameterKey = "port:{0}/tcp",
-                DefaultValue = "8211",
+                DefaultValue = hostPort,
                 Kind = ProvisionerFieldKind.Number,
             },
         ],

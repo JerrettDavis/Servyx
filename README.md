@@ -14,7 +14,7 @@ Servyx is a self-hosted control panel that adopts your existing game servers and
 
 ## Who it's for
 
-Anyone running a self-hosted game server (Palworld today, Minecraft next) who wants a single dashboard to see its state, configuration, and backups — without handing over destructive control before they're ready to grant it.
+Anyone running a self-hosted game server — Palworld, Minecraft, ARK: Survival Ascended, and Factorio ship today, with more definitions added over time — who wants a single dashboard to see its state, configuration, and backups — without handing over destructive control before they're ready to grant it. See [Supported games](docs/games.md) for the full list and what's verified vs. still unconfirmed per game.
 
 ## Quickstart
 
@@ -47,9 +47,10 @@ This launches the Aspire app host, which orchestrates the Servyx.Web dashboard a
 - [The control plane](docs/control-plane.md)
 - [Connectors](docs/connectors.md)
 - [Game definition schema reference](docs/schema.md)
+- [Supported games](docs/games.md)
 - [Roadmap](docs/roadmap.md)
 - [Testing](docs/testing.md)
-- [Example game definition: Palworld](definitions/palworld-docker.yaml)
+- [Example game definitions](definitions/) — Palworld, Minecraft, ARK: Survival Ascended, Factorio
 
 ## Solution layout
 

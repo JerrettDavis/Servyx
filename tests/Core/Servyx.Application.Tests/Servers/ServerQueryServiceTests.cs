@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Lifecycle;
 using Servyx.Domain.Observability;
@@ -12,7 +13,41 @@ namespace Servyx.Application.Tests.Servers;
 
 public class ServerQueryServiceTests
 {
-    private static readonly AdoptionCriteria Criteria = AdoptionCriteria.PalworldDefault;
+    private static readonly AdoptionCriteria Criteria = new(
+        GameId: "palworld",
+        GameName: "Palworld Dedicated Server",
+        ImageRepository: "thijsvanloef/palworld-server-docker",
+        RequiredMountContainerPath: "/palworld");
+
+    private static readonly SettingConstraints NoConstraints = new(
+        MinLength: null, MaxLength: null, Min: null, Max: null, Step: null,
+        Values: null, Pattern: null, TrueValue: null, FalseValue: null);
+
+    private static SettingBinding EnvWrite(string key) => new SettingBinding.ByKey("env", BindingDirection.Write, Sensitive: false, key);
+
+    /// <summary>
+    /// A minimal stand-in for what <c>GameDefinitionYamlParser</c> would produce from
+    /// <c>definitions/palworld-docker.yaml</c>'s <c>settings</c> block — just the rows this file's tests
+    /// actually exercise (see <see cref="ServerQueryServiceCharacterizationTests"/> for the full 10-row
+    /// mirror). Deliberately includes the schema-key/env-key divergence on the two secrets
+    /// ("admin-password" vs. "ADMIN_PASSWORD", "server-password" vs. "SERVER_PASSWORD") for fidelity.
+    /// </summary>
+    private static readonly IReadOnlyList<SettingGroup> SettingGroups =
+    [
+        new("Identity",
+        [
+            new("SERVER_NAME", "Server name", "Identity", SettingType.String, false, null, null, false, null, NoConstraints, [EnvWrite("SERVER_NAME")]),
+        ]),
+        new("Gameplay",
+        [
+            new("PLAYERS", "Max players", "Gameplay", SettingType.Int, false, null, null, false, null, NoConstraints, [EnvWrite("PLAYERS")]),
+        ]),
+        new("Security",
+        [
+            new("admin-password", "Admin / RCON password", "Security", SettingType.Secret, true, null, null, false, null, NoConstraints, [EnvWrite("ADMIN_PASSWORD")]),
+            new("server-password", "Join password", "Security", SettingType.Secret, false, null, null, false, null, NoConstraints, [EnvWrite("SERVER_PASSWORD")]),
+        ]),
+    ];
 
     private static DiscoveredServer BuildDiscoveredServer(
         string id = "container-1",
@@ -29,7 +64,7 @@ public class ServerQueryServiceTests
         CreatedAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
         StartedAt: new DateTimeOffset(2026, 7, 21, 0, 0, 0, TimeSpan.Zero),
         Ports: [new DiscoveredPort(8211, 8211, "udp"), new DiscoveredPort(null, 25575, "tcp")],
-        Mounts: [new DiscoveredMount(@"D:\Games\Palworld\data", "/palworld", true)],
+        Mounts: [new DiscoveredMount("/srv/palworld/data", "/palworld", true)],
         NetworkName: "palworld_default",
         ContainerIp: "172.19.0.2",
         MemoryLimitBytes: 8_000_000_000,
@@ -38,19 +73,41 @@ public class ServerQueryServiceTests
         ComposeLabels: new Dictionary<string, string>(),
         EnvironmentVariables: env ?? new Dictionary<string, string>());
 
+    /// <summary>
+    /// Mirrors <c>definitions/palworld-docker.yaml</c>'s <c>lifecycle.healthSignal</c> block — a real,
+    /// successfully-loaded Palworld definition's own explanation for its known-unreliable HEALTHCHECK, not a
+    /// hardcoded constant in <see cref="ServerQueryService"/> itself. <see cref="CreateService"/> passes it
+    /// by default so <see cref="GetAdoptedServersAsync_reports_Running_state_and_Unhealthy_health_as_distinct_signals"/>
+    /// keeps observing the same explanation text unchanged.
+    /// </summary>
+    private static readonly LifecycleDefinition PalworldLifecycleDefinition = new(
+        Ready: [],
+        Stop: new StopPlan([]),
+        CrashDetection: [],
+        HealthSignal: new HealthSignalDefinition(
+            HealthSignalTrust.Ignore,
+            "The container's own HEALTHCHECK calls http://localhost:8212/v1/api/info without admin " +
+            "credentials and receives 401 Unauthorized on every probe. The Palworld server itself is " +
+            "healthy — /v1/api/players returns OK on the same polling cycle. Servyx derives readiness " +
+            "from its own authenticated detectors, never from this signal."));
+
     private static ServerQueryService CreateService(
         IServerDiscovery? discovery = null,
         IMetricsSource? metrics = null,
         ILogStream? logs = null,
         ITransport? transport = null,
         AdoptionCriteria? criteria = null,
-        ILogger<ServerQueryService>? logger = null) => new(
+        ILogger<ServerQueryService>? logger = null,
+        IReadOnlyList<SettingGroup>? settingGroups = null,
+        LifecycleDefinition? lifecycle = null) => new(
         discovery ?? Substitute.For<IServerDiscovery>(),
         metrics ?? Substitute.For<IMetricsSource>(),
         logs ?? Substitute.For<ILogStream>(),
         transport ?? Substitute.For<ITransport>(),
         criteria ?? Criteria,
-        logger ?? NullLogger<ServerQueryService>.Instance);
+        logger ?? NullLogger<ServerQueryService>.Instance,
+        settingGroups ?? SettingGroups,
+        lifecycle ?? PalworldLifecycleDefinition);
 
     [Fact]
     public async Task GetAdoptedServersAsync_maps_discovered_containers_to_summaries()
@@ -101,6 +158,45 @@ public class ServerQueryServiceTests
         result.Should().BeEmpty();
     }
 
+    /// <summary>
+    /// The bug this regression-guards: a discovery failure and a genuinely empty adopted-server list must
+    /// not collapse into the same, indistinguishable result. <see cref="ServerQueryService.GetAdoptedServersAsync"/>
+    /// is allowed to flatten both to an empty list (existing, unchanged contract — see the test above), but
+    /// <see cref="ServerQueryService.GetAdoptedServersWithStatusAsync"/> must not.
+    /// </summary>
+    [Fact]
+    public async Task GetAdoptedServersWithStatusAsync_ReportsDiscoveryFailed_WhenDiscoveryThrows_InsteadOfLookingEmpty()
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<DiscoveredServer>>>(_ => throw new InvalidOperationException("stale cached session"));
+
+        var sut = CreateService(discovery: discovery);
+
+        var result = await sut.GetAdoptedServersWithStatusAsync();
+
+        result.Servers.Should().BeEmpty();
+        result.DiscoveryFailed.Should().BeTrue();
+        result.FailureDetail.Should().Be("stale cached session");
+    }
+
+    /// <summary>Twin of the test above: a genuine "zero servers adopted" result must still report success, not failure.</summary>
+    [Fact]
+    public async Task GetAdoptedServersWithStatusAsync_ReportsDiscoverySucceeded_WhenDiscoveryReturnsGenuinelyEmpty()
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<DiscoveredServer>>([]));
+
+        var sut = CreateService(discovery: discovery);
+
+        var result = await sut.GetAdoptedServersWithStatusAsync();
+
+        result.Servers.Should().BeEmpty();
+        result.DiscoveryFailed.Should().BeFalse();
+        result.FailureDetail.Should().BeNull();
+    }
+
     [Fact]
     public async Task GetServerDetailAsync_returns_null_when_no_container_matches()
     {
@@ -149,7 +245,7 @@ public class ServerQueryServiceTests
         detail.Should().NotBeNull();
         detail!.Settings.Single(s => s.Key == "SERVER_NAME").Authoritative.Should().Be("Palygondwanaland");
         detail.Settings.Single(s => s.Key == "PLAYERS").Authoritative.Should().Be("32");
-        detail.MountHostPath.Should().Be(@"D:\Games\Palworld\data");
+        detail.MountHostPath.Should().Be("/srv/palworld/data");
     }
 
     /// <summary>
@@ -180,11 +276,11 @@ public class ServerQueryServiceTests
 
         detail.Should().NotBeNull();
 
-        var adminRow = detail!.Settings.Single(s => s.Key == "ADMIN_PASSWORD");
+        var adminRow = detail!.Settings.Single(s => s.Key == "admin-password");
         adminRow.IsSecret.Should().BeTrue();
         adminRow.Authoritative.Should().Be("********");
 
-        var serverPasswordRow = detail.Settings.Single(s => s.Key == "SERVER_PASSWORD");
+        var serverPasswordRow = detail.Settings.Single(s => s.Key == "server-password");
         serverPasswordRow.Authoritative.Should().Be("********");
 
         // Brute-force sweep: the real secret must not appear anywhere in the mapped model, including

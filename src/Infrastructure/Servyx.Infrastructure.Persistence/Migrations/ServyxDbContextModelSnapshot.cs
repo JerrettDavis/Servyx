@@ -199,6 +199,48 @@ namespace Servyx.Infrastructure.Persistence.Migrations
 
                     b.ToTable("ProvisionedResources", (string)null);
                 });
+
+            modelBuilder.Entity("Servyx.Infrastructure.Persistence.Entities.ServerDefinitionBindingRecord", b =>
+                {
+                    b.Property<string>("ServerId")
+                        .HasMaxLength(256)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("CandidateDefinitionIds")
+                        .IsRequired()
+                        .HasColumnType("TEXT")
+                        .HasColumnName("CandidateDefinitionIdsJson");
+
+                    b.Property<string>("DefinitionContentHash")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DefinitionId")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DefinitionSourceId")
+                        .HasMaxLength(128)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("DefinitionSourcePath")
+                        .HasMaxLength(1024)
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("TEXT");
+
+                    b.Property<DateTimeOffset>("UpdatedAt")
+                        .HasColumnType("TEXT");
+
+                    b.HasKey("ServerId");
+
+                    b.HasIndex("State");
+
+                    b.ToTable("ServerDefinitionBindings", (string)null);
+                });
 #pragma warning restore 612, 618
         }
     }

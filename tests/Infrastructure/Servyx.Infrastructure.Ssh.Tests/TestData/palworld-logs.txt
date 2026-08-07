@@ -1,0 +1,40 @@
+2026-08-05T18:16:02.921833118Z [2026-08-05 13:15:33] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:16:03.737829544Z [2026-08-05 13:16:02] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:16:33.076371684Z [2026-08-05 13:16:03] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:16:34.326736954Z [2026-08-05 13:16:33] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:17:03.239817991Z [2026-08-05 13:16:34] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:17:04.967264421Z [2026-08-05 13:17:03] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:17:33.398156179Z [2026-08-05 13:17:04] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:17:35.581207357Z [2026-08-05 13:17:33] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:18:03.553791240Z [2026-08-05 13:17:35] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:18:06.206140885Z [2026-08-05 13:18:03] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:18:17.137663691Z [2026-08-05 13:18:06] [LOG] REST accessed endpoint /v1/api/players OK (x2)
+2026-08-05T18:18:17.180217094Z [2026-08-05 13:18:17] [LOG] REST accessed endpoint /v1/api/save OK
+2026-08-05T18:18:18.145104163Z [0;37m[AUTO PAUSE] Paused. (PID:399)[0m
+2026-08-05T18:18:28.157223703Z [0;37m[AUTO PAUSE] Community server registered ID: 354547a8-597e-4083-b3f5-6becd5ca2232[0m
+2026-08-05T18:18:33.820587269Z [0;37m[AUTO PAUSE] Resumed by REST_API from 127.0.0.1.[0m
+2026-08-05T18:18:33.825962204Z [0;37m[AUTO PAUSE] Wakeup!!! (PID:399)[0m
+2026-08-05T18:18:38.927194385Z [2026-08-05 13:18:33] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:19:03.929070485Z [2026-08-05 13:18:38] [LOG] REST accessed endpoint /v1/api/players OK (x5)
+2026-08-05T18:19:04.454296805Z [2026-08-05 13:19:03] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:19:34.084128490Z [2026-08-05 13:19:04] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:19:35.038707453Z [2026-08-05 13:19:34] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:20:04.236121250Z [2026-08-05 13:19:35] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:20:05.633019866Z [2026-08-05 13:20:04] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:20:34.410894530Z [2026-08-05 13:20:05] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:20:36.267351860Z [2026-08-05 13:20:34] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:21:04.507783127Z [2026-08-05 13:20:36] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:21:06.883574724Z [2026-08-05 13:21:04] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:21:34.664186187Z [2026-08-05 13:21:06] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:21:37.491490907Z [2026-08-05 13:21:34] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:21:46.380868471Z [2026-08-05 13:21:37] [LOG] REST accessed endpoint /v1/api/players OK (x2)
+2026-08-05T18:21:46.421172270Z [2026-08-05 13:21:46] [LOG] REST accessed endpoint /v1/api/save OK
+2026-08-05T18:21:47.389810310Z [0;37m[AUTO PAUSE] Paused. (PID:399)[0m
+2026-08-05T18:21:57.402245186Z [0;37m[AUTO PAUSE] Community server registered ID: 848ea44f-3bcf-4f94-8b3f-21ad6c842ded[0m
+2026-08-05T18:22:05.198715300Z [0;37m[AUTO PAUSE] Resumed by REST_API from 127.0.0.1.[0m
+2026-08-05T18:22:05.200758655Z [0;37m[AUTO PAUSE] Wakeup!!! (PID:399)[0m
+2026-08-05T18:22:10.307196432Z [2026-08-05 13:22:05] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:22:35.369072097Z [2026-08-05 13:22:10] [LOG] REST accessed endpoint /v1/api/players OK (x5)
+2026-08-05T18:22:35.823229351Z [2026-08-05 13:22:35] [LOG] REST accessed endpoint / Unauthorized
+2026-08-05T18:23:05.537678865Z [2026-08-05 13:22:35] [LOG] REST accessed endpoint /v1/api/players OK (x6)
+2026-08-05T18:23:06.429312988Z [2026-08-05 13:23:05] [LOG] REST accessed endpoint / Unauthorized

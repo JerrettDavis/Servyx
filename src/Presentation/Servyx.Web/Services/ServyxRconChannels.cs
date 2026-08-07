@@ -27,9 +27,13 @@ namespace Servyx.Web.Services;
 /// backup rather than as a silently un-flushed archive.
 /// </para>
 /// <para>
-/// <strong>Sessions are cheap and cached only for identity.</strong> <see cref="RconSession"/> holds no
-/// socket: <see cref="SourceRconClient"/> connects, authenticates, sends and closes per command. Caching
-/// here avoids re-deriving the guard on every call, not a connection.
+/// <strong>Sessions are memoized per channel, once acquisition succeeds.</strong> Acquiring one means running
+/// the composition root's <see cref="RconReachabilityChain"/> — probing <c>direct-tcp</c>, then (when a
+/// remote host is configured) actually reaching the adopted Palworld container's unpublished RCON port via
+/// <c>docker exec rcon-cli</c> — so, unlike the pre-reachability-chain shape, the first call per channel does
+/// real I/O. <see cref="GetSessionAsync"/> caches the resulting <see cref="Task{TResult}"/> so repeated calls
+/// do not re-run the chain, and evicts a failed attempt instead of caching it forever, so the next call
+/// retries rather than replaying a stale failure.
 /// </para>
 /// </remarks>
 public sealed class ServyxRconChannels
@@ -47,8 +51,8 @@ public sealed class ServyxRconChannels
     private readonly IRconClient? _client;
     private readonly ISecretStore? _secrets;
     private readonly WritableServers _writable;
-    private readonly IRconAuditSink? _audit;
-    private readonly ConcurrentDictionary<string, IRconSession> _sessions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Func<RconChannel, RconReachabilityChain>? _chainFactory;
+    private readonly ConcurrentDictionary<string, Lazy<Task<IRconSession>>> _sessions = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Creates the channel set.</summary>
     /// <param name="options">The configured channels.</param>
@@ -56,11 +60,24 @@ public sealed class ServyxRconChannels
     /// <param name="client">The protocol client, or null when no channel is configured.</param>
     /// <param name="secrets">The secret store credentials are resolved through, or null when no channel is configured.</param>
     /// <param name="writable">The operator's per-server write grants, which gate mutating control commands.</param>
-    /// <param name="audit">The sink raw, catalogue-bypassing commands are recorded to.</param>
+    /// <param name="chainFactory">
+    /// Builds the ordered <see cref="RconReachabilityChain"/> a channel's session is acquired through, given
+    /// that channel. Supplied by the composition root — see <c>Program.cs</c>'s RCON block — because it is
+    /// the only layer that knows the definition's declared strategy order and, for
+    /// <c>docker-exec-tool</c>, which <see cref="Servyx.Domain.Transport.IExecutionTarget"/> and container
+    /// name to run it against. Required whenever <paramref name="options"/> configures at least one channel.
+    /// </param>
+    /// <param name="audit">
+    /// Unused by this type since <paramref name="chainFactory"/> took over session construction: each
+    /// reachability strategy's own <see cref="RconSession"/> (or equivalent) now carries its own audit sink,
+    /// supplied by the composition root at the point it builds the chain. Kept as a constructor parameter
+    /// only for call-site source compatibility with the composition root's existing <c>audit: null</c> call.
+    /// </param>
     /// <exception cref="ArgumentException">
     /// A channel is configured but <paramref name="catalog"/> does not declare the definition's quiesce
-    /// command. Loud at composition time, because the alternative is discovering it during the first backup
-    /// of a running server — which is precisely the moment a quiesce matters.
+    /// command, or no <paramref name="chainFactory"/> was supplied. Loud at composition time, because the
+    /// alternative is discovering it during the first backup of a running server — which is precisely the
+    /// moment a quiesce matters.
     /// </exception>
     public ServyxRconChannels(
         RconWiringOptions options,
@@ -68,6 +85,7 @@ public sealed class ServyxRconChannels
         IRconClient? client,
         ISecretStore? secrets,
         WritableServers writable,
+        Func<RconChannel, RconReachabilityChain>? chainFactory = null,
         IRconAuditSink? audit = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -93,6 +111,14 @@ public sealed class ServyxRconChannels
                     + "issued. Refusing at startup rather than at the first backup of a running server.",
                     nameof(catalog));
             }
+
+            if (chainFactory is null)
+            {
+                throw new ArgumentException(
+                    "An RCON control channel is configured, so a reachability chain factory is required. A "
+                    + "channel with no way to compose a reachability chain would fail on first use.",
+                    nameof(chainFactory));
+            }
         }
 
         _options = options;
@@ -100,7 +126,7 @@ public sealed class ServyxRconChannels
         _client = client;
         _secrets = secrets;
         _writable = writable;
-        _audit = audit;
+        _chainFactory = chainFactory;
     }
 
     /// <summary>The configured channels.</summary>
@@ -113,27 +139,51 @@ public sealed class ServyxRconChannels
     /// Returns the write-guarded control session for a server, or <see langword="null"/> when the operator
     /// configured no RCON channel for it.
     /// </summary>
+    /// <remarks>
+    /// Async because acquiring a session now means running <see cref="RconReachabilityChain.AcquireAsync"/>
+    /// — direct TCP is tried first, then (when a remote host is configured) <c>docker exec rcon-cli</c>,
+    /// which really does reach the adopted Palworld container's unpublished RCON port. See
+    /// <c>Program.cs</c>'s RCON block for how the chain is composed.
+    /// </remarks>
     /// <param name="serverId">The server's discovery id.</param>
     /// <param name="serverName">The server's container name, if known.</param>
-    public IRconSession? TryGetSession(string? serverId, string? serverName = null)
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="RconUnreachableException">
+    /// No strategy in the chain could reach the endpoint. The message names every strategy tried and why.
+    /// </exception>
+    public async Task<IRconSession?> GetSessionAsync(string? serverId, string? serverName = null, CancellationToken ct = default)
     {
-        if (_options.Find(serverId, serverName) is not { } channel || _client is null || _secrets is null)
+        if (_options.Find(serverId, serverName) is not { } channel || _client is null || _secrets is null || _chainFactory is null)
         {
             return null;
         }
 
-        return _sessions.GetOrAdd(channel.ServerKey, _ => Build(channel));
+        var lazy = _sessions.GetOrAdd(channel.ServerKey, _ => new Lazy<Task<IRconSession>>(() => BuildAsync(channel, ct)));
+
+        try
+        {
+            return await lazy.Value.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Improves on ServyxBackupContextSource.SessionAsync's Lazy<Task<T>> memoization, which caches a
+            // faulted task forever once the factory has run once: a Lazy<T> only re-invokes its factory when
+            // the factory delegate itself throws synchronously, and here the factory returns a Task rather
+            // than throwing, so the faulted Task would otherwise be replayed to every future caller even
+            // after e.g. the container starts or the network heals. Evicting exactly the failed entry — never
+            // a fresher, successful one a concurrent caller may have already installed, hence the atomic
+            // key+value removal — means a failed acquisition is retried on the next call instead of
+            // permanently poisoning the channel.
+            ((ICollection<KeyValuePair<string, Lazy<Task<IRconSession>>>>)_sessions).Remove(
+                new KeyValuePair<string, Lazy<Task<IRconSession>>>(channel.ServerKey, lazy));
+            throw;
+        }
     }
 
-    private IRconSession Build(RconChannel channel)
+    private async Task<IRconSession> BuildAsync(RconChannel channel, CancellationToken ct)
     {
-        var inner = new RconSession(
-            _client!,
-            channel.Endpoint,
-            _catalog,
-            _secrets!,
-            channel.PasswordUrn,
-            _audit);
+        var chain = _chainFactory!(channel);
+        var inner = await chain.AcquireAsync(channel.Endpoint, ct).ConfigureAwait(false);
 
         // Derived from the same Servyx:Servers:<name>:WriteMode configuration the transport's write grants
         // are, so the control channel and the filesystem cannot disagree about whether a server is writable.

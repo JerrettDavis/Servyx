@@ -61,16 +61,60 @@ public sealed partial class ScreenshotRecorder
         }
         else
         {
-            await scope.ScreenshotAsync(new LocatorScreenshotOptions
-            {
-                Path = stagedPath,
-                Type = ScreenshotType.Png,
-                Animations = ScreenshotAnimations.Disabled,
-                Caret = ScreenshotCaret.Hide,
-            });
+            await CaptureElementScopedScreenshotAsync(scope, stagedPath);
         }
 
         _staged.Add((name, stagedPath));
+    }
+
+    /// <summary>
+    /// Blazor Server prerenders this page's markup on first response, then — the moment its SignalR circuit
+    /// connects and takes over — replaces the ENTIRE render tree with fresh DOM node instances carrying
+    /// identical content (see <c>InteractiveRenderModeTests</c>' remarks on the two-pass render). Most
+    /// element-scoped captures in this suite never observe that swap because some earlier step already
+    /// forced a server round-trip — a tab click confirmed via <c>aria-selected</c>, a Locator
+    /// <c>Expect(...)</c> assertion that only succeeds against the live circuit's output — so by the time
+    /// they screenshot, the swap is long finished. A scenario that screenshots as its very first assertion
+    /// after navigation (nothing but an instant, non-waiting theme check in between) has no such guarantee:
+    /// under a loaded full-suite run, where the shared app process is juggling many concurrent circuits, the
+    /// capture can land squarely inside the swap, and Playwright reports the element it just resolved as
+    /// "not attached to the DOM".
+    /// </summary>
+    /// <remarks>
+    /// The fix is a bounded retry, not a sleep: <paramref name="scope"/> is a live Playwright
+    /// <see cref="ILocator"/>, not a cached element handle, so calling <see cref="ILocator.ScreenshotAsync"/>
+    /// on it again re-resolves the selector against whatever DOM is current at that moment — including
+    /// Playwright's own internal actionability wait (visible + stable) run fresh each attempt. A retry that
+    /// lands after the interactive swap finishes captures the settled tree. If the element genuinely never
+    /// attaches — a real defect, not this race — the final attempt's exception is left uncaught and fails
+    /// the scenario, exactly as an unguarded call would have.
+    /// </remarks>
+    private static async Task CaptureElementScopedScreenshotAsync(ILocator scope, string stagedPath)
+    {
+        const int maxAttempts = 5;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await scope.ScreenshotAsync(new LocatorScreenshotOptions
+                {
+                    Path = stagedPath,
+                    Type = ScreenshotType.Png,
+                    Animations = ScreenshotAnimations.Disabled,
+                    Caret = ScreenshotCaret.Hide,
+                });
+                return;
+            }
+            catch (PlaywrightException ex) when (
+                attempt < maxAttempts && ex.Message.Contains("not attached to the DOM"))
+            {
+                // Blazor swapped the node out from under us between its own actionability wait resolving
+                // and the capture running. Loop straight back to a fresh ScreenshotAsync call — no delay
+                // is inserted here on purpose: Playwright's own internal actionability polling inside the
+                // next ScreenshotAsync call is the wait.
+            }
+        }
     }
 
     /// <summary>

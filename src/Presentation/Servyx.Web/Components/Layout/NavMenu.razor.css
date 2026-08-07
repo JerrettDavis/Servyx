@@ -6,7 +6,7 @@
     padding: 0 1.25rem;
     font-weight: 700;
     letter-spacing: 0.02em;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid var(--svx-sidebar-border);
 }
 
 .svx-brand-mark {
@@ -15,16 +15,17 @@
     justify-content: center;
     width: 1.9rem;
     height: 1.9rem;
-    border-radius: 0.5rem;
-    background: linear-gradient(135deg, #6d5bff, #b45bff);
-    color: white;
+    border-radius: var(--svx-radius-md);
+    background: var(--svx-accent);
+    color: var(--svx-accent-fg);
+    box-shadow: 0 0 0 1px var(--svx-accent-subtle-border), var(--svx-shadow-xs);
     font-size: 1rem;
     flex: 0 0 auto;
 }
 
 .svx-brand-word {
     font-size: 1.05rem;
-    color: #f4f3ff;
+    color: var(--svx-sidebar-brand-text);
 }
 
 .svx-nav {
@@ -44,28 +45,23 @@
     display: flex;
     align-items: center;
     gap: 0.85rem;
-    padding: 0.65rem 0.75rem;
+    padding: var(--svx-space-2) var(--svx-space-3);
     border-radius: 0.55rem;
-    color: #c7c6e0;
+    color: var(--svx-sidebar-text);
     text-decoration: none;
     font-size: 0.9rem;
     white-space: nowrap;
 }
 
 .svx-nav-item ::deep .svx-nav-link:hover {
-    background: rgba(255, 255, 255, 0.08);
-    color: #ffffff;
-}
-
-.svx-nav-item ::deep .svx-nav-link:focus-visible {
-    outline: 2px solid #b45bff;
-    outline-offset: 2px;
+    background: var(--svx-sidebar-item-hover);
+    color: var(--svx-sidebar-text-active);
 }
 
 .svx-nav-item ::deep .svx-nav-link-active {
-    background: rgba(180, 91, 255, 0.22);
-    color: #ffffff;
-    box-shadow: inset 3px 0 0 #b45bff;
+    background: var(--svx-sidebar-item-active);
+    color: var(--svx-sidebar-text-active);
+    box-shadow: inset 2px 0 0 var(--svx-accent);
 }
 
 @media (max-width: 980px) {

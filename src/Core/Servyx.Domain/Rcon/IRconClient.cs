@@ -62,6 +62,33 @@ public interface IRconReachability
     /// </summary>
     Task<bool> IsAvailableAsync(RconEndpoint endpoint, CancellationToken ct = default);
 
+    /// <summary>
+    /// A short, human-readable, non-secret explanation of why the most recent <see cref="IsAvailableAsync"/>
+    /// call returned <see langword="false"/> — or <see langword="null"/> if it has not been called yet, or
+    /// last returned <see langword="true"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// This exists so <c>RconReachabilityChain</c> can fold a WHY into <c>RconUnreachableException</c>
+    /// instead of naming only the strategy ids it tried. It is diagnostics only: nothing reads this value to
+    /// decide whether the strategy is available, and setting it never changes what
+    /// <see cref="IsAvailableAsync"/> returns.
+    /// </para>
+    /// <para>
+    /// <strong>Must never contain a password, secret, or credential.</strong> Implementations of
+    /// <see cref="IsAvailableAsync"/> take no credential parameter, so there is structurally nothing secret
+    /// for this property to leak; any captured process output (e.g. a probe's stderr) must be truncated to a
+    /// bounded length before being stored here.
+    /// </para>
+    /// <para>
+    /// A strategy is probed sequentially, one at a time, by <c>RconReachabilityChain</c> within a single
+    /// <c>AcquireAsync</c> call, so a single mutable field per instance is enough for that use. An
+    /// implementation shared across concurrent probes of the same instance should not assume this value stays
+    /// attributable to one particular caller's call.
+    /// </para>
+    /// </remarks>
+    string? LastUnavailableReason { get; }
+
     /// <summary>Establishes a session using this strategy.</summary>
     Task<IRconSession> AcquireAsync(RconEndpoint endpoint, CancellationToken ct = default);
 }

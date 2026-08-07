@@ -1,25 +1,59 @@
-@if (Saves is null)
+@if (Result.Availability == SavesAvailability.NotConfigured)
 {
-    <div class="svx-empty-state">
+    <div class="svx-empty-state" data-testid="saves-not-configured">
+        <h3>Save inspection is not configured</h3>
+        <p>
+            No loaded game definition declares a <code>saves</code> block for this server (or none of
+            them are readable in this process), so nothing has been looked at.
+        </p>
+    </div>
+}
+else if (Result.Availability == SavesAvailability.UnsupportedTransport)
+{
+    <div class="svx-empty-state" data-testid="saves-unsupported-transport">
+        <h3>Save inspection is not available for this deployment</h3>
+        <p data-testid="saves-unsupported-transport-detail">@Result.FailureDetail</p>
+        <p>This is a named limitation of the current deployment type, not a failed read or an empty world.</p>
+    </div>
+}
+else if (Result.Availability == SavesAvailability.Failed)
+{
+    <div class="svx-empty-state svx-empty-state-degraded" data-testid="saves-list-failed" role="alert">
+        <h3>Save data could not be read</h3>
+        <p data-testid="saves-list-failure-detail">@Result.FailureDetail</p>
+        <p>This is not the same as "no saves" — the world directory itself could not be read.</p>
+    </div>
+}
+else if (Result.Save is null)
+{
+    <div class="svx-empty-state" data-testid="saves-empty">
         <h3>No save data found</h3>
-        <p>The world directory could not be read.</p>
+        <p>No world matching this server's save layout has been created yet.</p>
     </div>
 }
 else
 {
+    var save = Result.Save;
     <div class="svx-card">
         <h3>World</h3>
         <dl class="svx-dl">
-            <div><dt>World ID</dt><dd><code>@Saves.WorldId</code></dd></div>
-            <div><dt>@Saves.LevelFileName</dt><dd>@FormatSize(Saves.LevelFileSizeBytes)</dd></div>
-            <div><dt>@Saves.LevelMetaFileName</dt><dd>@FormatSize(Saves.LevelMetaFileSizeBytes)</dd></div>
+            <div><dt>World ID</dt><dd><code>@save.WorldId</code></dd></div>
+            <div><dt>@save.LevelFileName</dt><dd>@FormatSize(save.LevelFileSizeBytes)</dd></div>
+            <div><dt>@save.LevelMetaFileName</dt><dd>@FormatSize(save.LevelMetaFileSizeBytes)</dd></div>
         </dl>
+        @if (save.WorldCandidatesTruncated)
+        {
+            <p data-testid="saves-world-candidates-truncated">
+                More world directories exist than could be scanned; the world shown here is the most recently
+                modified <em>of those scanned</em>, which may not be the true most recent overall.
+            </p>
+        }
     </div>
 
     <div class="svx-card">
-        <h3>Player saves (@Saves.PlayerFiles.Count)</h3>
+        <h3>Player saves (@save.PlayerFiles.Count)</h3>
 
-        @if (Saves.PlayerFiles.Count == 0)
+        @if (save.PlayerFiles.Count == 0)
         {
             <div class="svx-empty-state"><h3>No players have joined this world yet</h3></div>
         }
@@ -30,7 +64,7 @@ else
                     <span>File</span>
                     <span>Size</span>
                 </div>
-                @foreach (var file in Saves.PlayerFiles)
+                @foreach (var file in save.PlayerFiles)
                 {
                     <div class="svx-row-link" role="listitem" style="grid-template-columns: 2fr 1fr;">
                         <span data-col-label="File"><code>@file.FileName</code></span>
@@ -39,12 +73,23 @@ else
                 }
             </div>
         }
+        @if (save.PlayerFilesTruncated)
+        {
+            <p data-testid="saves-player-files-truncated">
+                Showing the first @save.PlayerFiles.Count player save files; more exist than are listed here.
+            </p>
+        }
     </div>
 }
 
 @code {
+    /// <summary>
+    /// The current read of this server's save world, including whether it could be produced at all —
+    /// never just the bare <see cref="SaveInfo"/>, so "no saves", "could not be read", and "not available
+    /// for this deployment" render as visibly distinct states rather than collapsing into the same panel.
+    /// </summary>
     [Parameter, EditorRequired]
-    public SaveInfo? Saves { get; set; }
+    public SavesResult Result { get; set; } = new(null, SavesAvailability.NotConfigured, null);
 
     private static string FormatSize(long bytes)
     {

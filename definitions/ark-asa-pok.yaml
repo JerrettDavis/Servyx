@@ -1,0 +1,337 @@
+apiVersion: servyx.dev/v1
+kind: GameDefinition
+metadata:
+  id: ark-asa-pok
+  name: "ARK: Survival Ascended (acekorneya Docker)"
+  version: 1.0.0
+  license: MIT
+  tags: [survival, steam, unreal, proton]
+
+capabilities:
+  network:
+    - { port: 7777,  protocol: udp, purpose: game, var: ASA_PORT,  published: true }
+    - { port: 27020, protocol: tcp, purpose: rcon, var: RCON_PORT, published: false }
+    # No separate query port: unlike Palworld (a2s query on 27015), ASA exposes no distinct query protocol —
+    # player/status queries go through RCON only. See control.channels below; there is no 'query' channel.
+  filesystem:
+    - { path: "${DATA_DIR}", access: rw, purpose: "config (GameUserSettings.ini/Game.ini), SavedArks world data, mods, logs" }
+  # The image downloads the ASA dedicated server binary, the Proton runtime, and any CurseForge mods declared
+  # via MOD_IDS entirely inside its own entrypoint at container start (see 'mods' below). Unlike
+  # itzg/minecraft-server, whose exact download hosts are documented (piston-data.mojang.com,
+  # libraries.minecraft.net), acekorneya/asa_server's egress destinations (Steam CDN, CurseForge API/CDN
+  # endpoints) are not confirmed for this definition — mirroring definitions/palworld-docker.yaml's own
+  # precedent for a self-updating image, this is left empty rather than guessed at.
+  egress: []
+  shell: false
+  privileged: false
+  hostNetwork: false
+
+deployments:
+  - id: docker-acekorneya
+    kind: docker
+    detect:
+      imageRepo: "acekorneya/asa_server"
+      requiredMounts: [{ containerPath: /home/pok/arkserver/ShooterGame/Saved }]
+    image:
+      default: "acekorneya/asa_server:2_1_latest"
+    dataDir: /home/pok/arkserver/ShooterGame/Saved
+
+    # Servyx's own orchestration budget for a graceful stop — distinct from 'stopGracePeriodSeconds' below,
+    # which is the container RUNTIME's kill timer. Sized to comfortably cover the full lifecycle.stop ladder
+    # (60s + 30s + 120s = 210s) with headroom for RCON round-trip latency.
+    stopTimeout: 220s
+
+    # Docker's own stop grace period defaults to just 10 SECONDS — nowhere near enough for ARK's ladder below
+    # (SaveWorld alone is budgeted 60s). Without this field, Docker would SIGKILL the process at the 10s mark,
+    # almost certainly mid-save, corrupting or losing world state. Set to the ladder's total (210s) plus
+    # headroom; the parser hard-errors if this is ever less than the ladder's stage-timeout sum (see
+    # ResolveDeferredChecks in GameDefinitionYamlParser.Semantics.cs).
+    stopGracePeriodSeconds: 240
+
+    config:
+      surfaces:
+        # THE source of truth for this image: every setting below is an environment variable the image's own
+        # entrypoint reads on container start (same shape as both reference definitions' 'env' surface).
+        - id: env
+          role: authoritative
+          format: dotenv
+          locator: { kind: host-file, path: "${COMPOSE_DIR}/.env" }
+          mergePolicy: preserve-unknown
+
+        # Ports, volumes, restart policy, container name.
+        - id: compose
+          role: authoritative
+          format: yaml
+          locator: { kind: host-file, path: "${COMPOSE_DIR}/compose.yaml" }
+          managedSubtree: "services.ark-asa"
+          mergePolicy: preserve-unknown
+
+        # UNLIKE Palworld's PalWorldSettings.ini (wholesale-regenerated from .env on every boot, modeled as
+        # 'derived'), GameUserSettings.ini for this image PERSISTS across restarts and is hand-editable —
+        # anything an operator or a mod writes here survives. Env vars only drive launch parameters (map,
+        # ports, session name, admin password, ...) at first creation; nothing regenerates this file out from
+        # under a later write. Modeled 'authoritative' for that reason: Servyx may write to it directly.
+        - id: gameusersettings
+          role: authoritative
+          format: ini
+          locator: { kind: host-file,
+                     path: "${DATA_DIR}/Config/WindowsServer/GameUserSettings.ini" }
+          mergePolicy: preserve-unknown
+
+        # Optional, hand-editable gameplay-rules INI (multipliers, engram points, etc.) under a different
+        # section than GameUserSettings.ini. Not created by every operator, but declared as a surface so
+        # Servyx can bind to it (and so an operator's manual edits are visible) once it exists.
+        - id: gameini
+          role: authoritative
+          format: ini
+          locator: { kind: host-file, path: "${DATA_DIR}/Config/WindowsServer/Game.ini" }
+          mergePolicy: preserve-unknown
+
+      # PUID/PGID (7777/7777) select the image's own fixed non-root user and are not operator-configurable —
+      # unlike every setting below, there is no scenario where Servyx would want to change them, so they are
+      # not modeled as a 'settings' item (mirroring how Palworld's ~150-key .env is not exhaustively modeled).
+
+lifecycle:
+  ready:
+    - kind: log-regex
+      # Confirmed verbatim log line. ASA runs the Windows-only dedicated server binary under Proton on Linux,
+      # which is markedly slower to boot than a native Linux binary (Palworld, Minecraft) — the timeout below
+      # is sized generously for that, not because the regex itself is uncertain.
+      pattern: 'Server has completed startup and is now advertising for join'
+      timeout: 20m
+    # No control-probe fallback here, unlike palworld-docker.yaml (probes 'Info') and minecraft-itzg.yaml
+    # (probes 'list'). A control-probe's 'expect' string is matched verbatim against the live RCON reply, and
+    # — per the UNVERIFIED note on control.players.parsers['rcon.players'] below — the exact reply text of
+    # every RCON command this definition could probe with (ListPlayers, SaveWorld) could not be confirmed.
+    # Gating server readiness on an unverified substring match would risk a false negative blocking startup
+    # forever, which is a far more dangerous failure mode than the player-list parser's worst case (degrading
+    # to PlayerListFidelity.Unknown). The confirmed log-regex line above is left as the sole readiness
+    # detector until a real reply has been captured and this can be tightened safely.
+
+  # Load-bearing ladder: SaveWorld -> DoExit -> SIGTERM -> SIGKILL, budgeted 60s + 30s + 120s = 210s total.
+  # A bare SIGTERM alone loses world state, which is why this is 4 stages rather than palworld/minecraft's
+  # simpler shutdown+doexit+signal+kill shape collapsed further.
+  stop:
+    # 1) Persist the world to SavedArks/ before anything destructive happens. 'continueOnError: true' (the
+    #    'control' stage default, spelled out here rather than left implicit) means an unreachable RCON
+    #    escalates the ladder instead of wedging the whole stop — the single most common reason a control
+    #    stage fails.
+    - { kind: control, channel: rcon, command: save, timeout: 60s, continueOnError: true }
+    # 2) Ask the process to exit cleanly. DoExit can itself tear down the RCON connection as part of exiting,
+    #    which the caller may see as a failed command even though the server did exactly what was asked —
+    #    continueOnError keeps that from prematurely aborting rather than escalating.
+    - { kind: control, channel: rcon, command: doexit, timeout: 30s, continueOnError: true }
+    # 3) A genuine escalation past RCON. Defaults (and is set here) to 'continueOnError: false': a runtime
+    #    that refuses to deliver SIGTERM at all is a real fault worth surfacing, not one to paper over.
+    - { kind: signal, signal: SIGTERM, timeout: 120s, continueOnError: false }
+    # 4) Unconditional, terminal. By the time the ladder reaches here (~210s in), SaveWorld already ran in
+    #    stage 1, so this is a last resort against a wedged process, not a point where world state is lost.
+    - { kind: kill }
+
+  crashDetection:
+    # Same reasoning as definitions/palworld-docker.yaml: ARK, like Palworld, is an Unreal Engine title, so
+    # the same class of fatal/assertion log lines applies.
+    - { kind: log-regex, pattern: 'Fatal error|Assertion failed', action: mark-crashed }
+
+  # No healthSignal block: acekorneya/asa_server's own container-level HEALTHCHECK behavior (if any) was not
+  # part of this definition's verified fact set, so — as with minecraft-itzg.yaml — there is nothing here to
+  # document an override for. The generic, game-neutral explanation applies untouched if Docker ever reports
+  # this container unhealthy.
+
+control:
+  channels:
+    - id: rcon
+      protocol: source-rcon
+      port: "${RCON_PORT}"
+      passwordRef: "secret:admin-password"
+      enabledWhen: "env.RCON_ENABLED == 'true'"
+      reachability:                  # ordered; first available wins
+        - kind: direct-tcp           # only if the port is published
+        # No 'docker-exec-tool' entry: unlike itzg's bundled rcon-cli (Minecraft) or thijsvanloef's bundled
+        # rcon-cli (Palworld), acekorneya/asa_server is not documented as bundling any RCON CLI tool, so no
+        # specific in-container tool/argv is declared here rather than guessed at.
+        - kind: docker-exec-network  # nc/curl from a sibling container on the same compose network
+      commands:
+        # Verified: ARK ASA's Source RCON dialect takes NO 'admincheat'/'cheat' prefix on any of these,
+        # unlike the admin-console commands of the same names typed in-game.
+        players:   { template: "ListPlayers",          readOnly: true }
+        save:      { template: "SaveWorld",             readOnly: false }
+        broadcast: { template: "Broadcast {message}",   readOnly: false }
+        chat:      { template: "ServerChat {message}",  readOnly: false }
+        kick:      { template: "KickPlayer {steamId}",  readOnly: false }
+        ban:       { template: "BanPlayer {steamId}",   readOnly: false }
+        doexit:    { template: "DoExit",                readOnly: false }
+
+  players:
+    preferred: [rcon.players]
+    pollInterval: 30s
+    parsers:
+      # UNVERIFIED: ListPlayers' exact reply text could not be confirmed from available documentation. It is
+      # BELIEVED to return one numbered line per connected player, shaped "N. PlayerName, SteamID", with a
+      # literal "No Players Connected"-style line when the server is empty — but this has NOT been checked
+      # against a real captured fixture. The parser below is deliberately permissive rather than precise: the
+      # 'lines' kind degrades a reply that does not match to PlayerListFidelity.Unknown (see the remarks on
+      # PlayerParserSpec in Servyx.Domain) rather than throwing or silently mis-attributing a name/count, and
+      # a mis-parse here cannot affect readiness or the stop ladder (see the 'ready' comment above). Tighten
+      # this from a captured fixture once real ListPlayers output has been observed; do not treat the shape
+      # below as confirmed.
+      rcon.players:
+        kind: lines
+        entryPattern: '^\s*\d+\.\s*(?<name>[^,]+),\s*(?<id>\d+)\s*$'
+        ignorePatterns:
+          - '[Nn]o\s+[Pp]layers\s+[Cc]onnected'
+          - '^\s*$'
+
+settings:
+  - group: Identity
+    items:
+      - key: SESSION_NAME
+        label: Server / session name
+        type: string
+        bindings:
+          - { surface: env, direction: write, key: SESSION_NAME }
+          - { surface: gameusersettings, direction: read, member: SessionName, unquote: true }
+
+  - group: Networking
+    items:
+      - key: ASA_PORT
+        label: Game port
+        type: port
+        default: 7777
+        requiresRecreate: true       # env is baked at container create; the published port mapping cannot change without one
+        bindings:
+          - { surface: env,     direction: write, key: ASA_PORT }
+          - { surface: compose, direction: write,
+              pointer: "/services/ark-asa/ports", strategy: publish-udp }
+          - { surface: gameusersettings, direction: read, member: Port }
+
+      - key: RCON_PORT
+        label: RCON port
+        type: port
+        default: 27020
+        publishByDefault: false      # Servyx will not expose RCON to the host network
+        bindings:
+          - { surface: env, direction: write, key: RCON_PORT }
+          - { surface: gameusersettings, direction: read, member: RCONPort }
+
+  - group: Gameplay
+    items:
+      - key: MAP_NAME
+        label: Map
+        type: string
+        default: TheIsland
+        requiresRecreate: true       # picks which map/save the entrypoint launches with, like Minecraft's TYPE/VERSION
+        bindings:
+          - { surface: env, direction: write, key: MAP_NAME }
+
+      - key: MAX_PLAYERS
+        label: Max players
+        type: int
+        min: 1
+        max: 255
+        default: 70
+        bindings:
+          - { surface: env, direction: write, key: MAX_PLAYERS }
+          - { surface: gameusersettings, direction: read, member: MaxPlayers }
+
+      - key: CLUSTER_ID
+        label: Cluster ID (for cross-server save transfers)
+        type: string
+        bindings:
+          - { surface: env, direction: write, key: CLUSTER_ID }
+
+      - key: MOD_IDS
+        label: Mod IDs (CurseForge, comma-separated)
+        type: text
+        requiresRecreate: true       # the image downloads/applies mods via '-mods=' during its own startup sequence
+        bindings:
+          - { surface: env, direction: write, key: MOD_IDS }
+
+  - group: Security
+    items:
+      - key: RCON_ENABLED
+        label: Enable RCON
+        type: bool
+        trueValue: "TRUE"
+        falseValue: "FALSE"
+        default: "TRUE"
+        bindings:
+          - { surface: env, direction: write, key: RCON_ENABLED }
+
+      - key: BATTLEEYE
+        label: Enable BattlEye
+        type: bool
+        trueValue: "TRUE"
+        falseValue: "FALSE"
+        default: "TRUE"
+        bindings:
+          - { surface: env, direction: write, key: BATTLEEYE }
+
+      - key: admin-password
+        label: Server admin / RCON password
+        type: secret
+        required: true
+        bindings:
+          - { surface: env, direction: write, key: SERVER_ADMIN_PASSWORD }
+          - { surface: gameusersettings, direction: read, member: ServerAdminPassword, sensitive: true }
+
+      - key: server-password
+        label: Join password
+        type: secret
+        bindings:
+          - { surface: env, direction: write, key: SERVER_PASSWORD }
+          - { surface: gameusersettings, direction: read, member: ServerPassword, sensitive: true }
+
+backup:
+  include:
+    - "${DATA_DIR}/SavedArks/**"
+    - "${DATA_DIR}/Config/WindowsServer/GameUserSettings.ini"
+    - "${DATA_DIR}/Config/WindowsServer/Game.ini"
+    - "${COMPOSE_DIR}/.env"
+    - "${COMPOSE_DIR}/compose.yaml"
+  exclude:
+    - "${DATA_DIR}/Logs/**"
+    - "${DATA_DIR}/**/*.bak"
+    # ASA runs the Windows-only dedicated server binary under Proton on Linux (see the deployment's 'image'
+    # comment above), which leaves Proton/Wine scratch and shader-cache files behind. This image's exact
+    # prefix path relative to DATA_DIR is not documented, so excluded broadly by pattern rather than an
+    # unverified exact path.
+    - "${DATA_DIR}/**/*.tmp"
+    - "${DATA_DIR}/**/dxvk_cache/**"
+  quiesce:
+    # ARK has no save-off/save-on pair the way some titles do — SaveWorld is a one-shot synchronous write, so
+    # quiescing is a single control step rather than the bracketed pair a different game's backup policy
+    # might need.
+    - { kind: control, channel: rcon, command: save, timeout: 60s }
+  # No 'adopt': unlike thijsvanloef/palworld-server-docker's documented daily cron rotation, acekorneya/
+  # asa_server ships no cron-based backup rotation of its own that this definition could confirm, so there is
+  # no foreign archive source to declare here.
+  defaultRetention: { keepHourly: 6, keepDaily: 7, keepWeekly: 4 }
+
+saves:
+  # SCHEMA LIMITATION (confirmed by reading GameDefinitionYamlParser.SavesAndMods.cs): 'levelFile'/'metaFile'
+  # are parsed with plain RequireString — unlike 'worldRoot', neither is run through QueueTemplateTokens, so
+  # neither supports '${VAR}' interpolation today. We therefore CANNOT write '${MAP_NAME}_WP.ark' to reference
+  # the MAP_NAME setting declared above — it would be taken as a literal, un-substituted string containing the
+  # four characters '$', '{', etc. A glob ('*_WP.ark') is used instead, which has the added benefit of still
+  # matching after a MAP_NAME change without this block going stale.
+  worldRoot: "${DATA_DIR}/SavedArks"
+  # ARK does not organize saves into a per-world subfolder the way Palworld (SaveGames/<32-char-hex-id>/) or
+  # Minecraft (world/, world_nether/, ...) do: SavedArks/ is flat, holding one '<Map>_WP.ark' file per map
+  # plus '*.arkprofile'/'*.arktribe' sidecars directly alongside it. There is no per-world folder name to
+  # constrain, so 'worldIdPattern' (optional) is deliberately omitted rather than filled with a pattern that
+  # doesn't apply to this layout.
+  levelFile: "*_WP.ark"
+  # ARK has no separate save-metadata sidecar the way Palworld's LevelMeta.sav is split out from Level.sav —
+  # the single '.ark' file IS both. Pointed at the same glob as 'levelFile', the same way minecraft-itzg.yaml
+  # reuses 'level.dat' for both when a game draws no such distinction either.
+  metaFile: "*_WP.ark"
+  # '*.arkprofile' (per-player) and '*.arktribe' (per-tribe) files sit flat in worldRoot itself rather than
+  # under a distinct subdirectory, so there is no single 'playerDir' to name; left unset (optional).
+
+mods:
+  # MOD_IDS (settings > Gameplay, above) is a comma-separated list of CurseForge mod ids; the image's own
+  # entrypoint downloads and applies them at startup via '-mods=' before the server binary launches — Servyx
+  # itself downloads nothing. Unlike Palworld ('supported: false'), ARK ASA supports this natively through
+  # the image, so 'supported: true'.
+  supported: true

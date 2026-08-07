@@ -1,17 +1,131 @@
+@using Servyx.Domain.Lifecycle
+@using Servyx.Domain.Transport
 @if (Detail is null)
 {
     <div class="svx-empty-state"><h3>No overview data</h3></div>
 }
 else
 {
-    <div class="svx-card">
+    <div class="svx-card" data-testid="power-card">
         <h3>Power</h3>
-        <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
-            <GatedButton Label="Start">Start</GatedButton>
-            <GatedButton Label="Restart">Restart</GatedButton>
-            <GatedButton Label="Stop">Stop</GatedButton>
-            <GatedButton Label="Kill">Kill</GatedButton>
-        </div>
+
+        @if (WriteMode == WriteMode.PreviewOnly)
+        {
+            @* PreviewOnly renders the computed stop plan only — which stages would run, in order, with
+               their timeouts — and no apply control of any kind. A preview that offered even a disabled
+               button would look like a control that only needs one more click; there is deliberately not
+               one here, not even a locked one. *@
+            <p class="svx-page-description" data-testid="lifecycle-preview-note">
+                This server is in preview-only mode. Below is the stop-escalation ladder that would run if
+                writes were enabled for it. Nothing on this page can apply it.
+            </p>
+
+            @if (StopPlan is null || StopPlan.Stages.Count == 0)
+            {
+                <p data-testid="lifecycle-preview-empty">No stop plan is available for this server's definition.</p>
+            }
+            else
+            {
+                <ol class="svx-deploy-stages" data-testid="lifecycle-stop-plan">
+                    @foreach (var stage in StopPlan.Stages)
+                    {
+                        <li data-testid="lifecycle-stop-stage">@DescribeStage(stage)</li>
+                    }
+                </ol>
+            }
+        }
+        else
+        {
+            @* Every button here keeps GatedButton's default data-testid="gated-button" — the same generic
+               testid these controls have rendered since before write support existed, and what every other
+               page that asserts against a gated control still looks for. Distinguish between the four by
+               their trimmed text content ("Start"/"Restart"/"Stop"/"Kill"), not by a bespoke id per action. *@
+            <div style="display:flex; gap:0.6rem; flex-wrap:wrap;">
+                <GatedButton Label="Start" Enabled="@(CanApply && !_busy)" OnClick="StartAsync">
+                    @(_busy ? "Working…" : "Start")
+                </GatedButton>
+
+                @if (!_restartConfirming)
+                {
+                    <GatedButton Label="Restart" Enabled="@(CanApply && !_busy)" OnClick="() => _restartConfirming = true">
+                        Restart
+                    </GatedButton>
+                }
+
+                @if (!_stopConfirming)
+                {
+                    <GatedButton Label="Stop" Enabled="@(CanApply && !_busy)" OnClick="() => _stopConfirming = true">
+                        Stop
+                    </GatedButton>
+                }
+
+                @if (!_killConfirming)
+                {
+                    <GatedButton Label="Kill" Enabled="@(CanApply && !_busy)" OnClick="() => _killConfirming = true">
+                        Kill
+                    </GatedButton>
+                }
+            </div>
+
+            @* Two-step confirmation for every destructive action, matching BackupsPage's create-confirm-step
+               pattern exactly: a separate control that must be clicked first, with nothing applied by the
+               first click alone. *@
+            @if (_restartConfirming)
+            {
+                <div class="svx-deploy-confirm" data-testid="restart-confirm-step">
+                    <p>Nothing has happened yet. Confirming stops and restarts <strong>@Detail.Summary.Name</strong>.</p>
+                    <button type="button" class="svx-btn svx-btn-primary" data-testid="restart-confirm" disabled="@_busy" @onclick="RestartAsync">
+                        @(_busy ? "Working…" : "Yes, restart the server")
+                    </button>
+                    <button type="button" class="svx-btn" data-testid="restart-cancel" disabled="@_busy" @onclick="() => _restartConfirming = false">
+                        Cancel
+                    </button>
+                </div>
+            }
+
+            @if (_stopConfirming)
+            {
+                <div class="svx-deploy-confirm" data-testid="stop-confirm-step">
+                    <p>Nothing has happened yet. Confirming walks <strong>@Detail.Summary.Name</strong>'s stop-escalation ladder.</p>
+                    <button type="button" class="svx-btn svx-btn-primary" data-testid="stop-confirm" disabled="@_busy" @onclick="StopAsync">
+                        @(_busy ? "Working…" : "Yes, stop the server")
+                    </button>
+                    <button type="button" class="svx-btn" data-testid="stop-cancel" disabled="@_busy" @onclick="() => _stopConfirming = false">
+                        Cancel
+                    </button>
+                </div>
+            }
+
+            @if (_killConfirming)
+            {
+                <div class="svx-deploy-confirm" data-testid="kill-confirm-step">
+                    <p>Nothing has happened yet. Confirming forcibly terminates <strong>@Detail.Summary.Name</strong> immediately, skipping its stop-escalation ladder.</p>
+                    <button type="button" class="svx-btn svx-btn-danger" data-testid="kill-confirm" disabled="@_busy" @onclick="KillAsync">
+                        @(_busy ? "Working…" : "Yes, kill the server")
+                    </button>
+                    <button type="button" class="svx-btn" data-testid="kill-cancel" disabled="@_busy" @onclick="() => _killConfirming = false">
+                        Cancel
+                    </button>
+                </div>
+            }
+
+            @* Confirmed state only, never optimistic: every action above sets _busy, waits for the call to
+               complete, then re-reads GetStatusAsync before anything below renders a new value. IServerLifecycle
+               exposes no live per-stage progress channel — see ServerLifecycleService's own remarks — so a
+               ~90s stop ladder shows a busy state throughout and only the final observed status, never a
+               fabricated "stage 2 of 4" that this codebase has no way to know is true. *@
+            @if (_status is not null)
+            {
+                <p class="svx-deploy-applied" data-testid="lifecycle-status">
+                    Last observed status: @_status.State@(_status.Uptime is { } uptime ? $" · up {FormatUptime(uptime)}" : string.Empty)
+                </p>
+            }
+
+            @if (_error is not null)
+            {
+                <p class="svx-deploy-error" data-testid="lifecycle-error">@_error</p>
+            }
+        }
     </div>
 
     <div class="svx-card">
@@ -66,6 +180,125 @@ else
 @code {
     [Parameter, EditorRequired]
     public ServerDetail? Detail { get; set; }
+
+    /// <summary>The server's discovery id. Used only to label log lines and errors; the real target lives inside <see cref="Lifecycle"/>.</summary>
+    [Parameter]
+    public string ServerId { get; set; } = string.Empty;
+
+    /// <summary>This server's write posture. Drives which controls render at all (<see cref="WriteMode.PreviewOnly"/>) and which are clickable (<see cref="WriteMode.Enabled"/>).</summary>
+    [Parameter]
+    public WriteMode WriteMode { get; set; } = WriteMode.ReadOnly;
+
+    /// <summary>
+    /// The write-guarded lifecycle for this server, or <see langword="null"/> when none is available (no
+    /// lifecycle definition loaded, or the server is not adopted). Every mutating call still goes through
+    /// the write guard regardless of what this component believes — see <see cref="WritesDisabledException"/>
+    /// handling below.
+    /// </summary>
+    [Parameter]
+    public IServerLifecycle? Lifecycle { get; set; }
+
+    /// <summary>The definition's declared stop-escalation ladder, used both to drive Stop/Restart and to render the PreviewOnly plan.</summary>
+    [Parameter]
+    public StopPlan? StopPlan { get; set; }
+
+    private ServerStatus? _status;
+    private string? _error;
+    private bool _busy;
+    private bool _restartConfirming;
+    private bool _stopConfirming;
+    private bool _killConfirming;
+
+    private bool CanApply => WriteMode == WriteMode.Enabled && Lifecycle is not null;
+
+    private async Task StartAsync()
+    {
+        if (_busy || Lifecycle is null)
+        {
+            return;
+        }
+
+        await RunAsync(() => Lifecycle.StartAsync(), "Start");
+    }
+
+    private async Task RestartAsync()
+    {
+        if (_busy || Lifecycle is null || StopPlan is null)
+        {
+            _restartConfirming = false;
+            return;
+        }
+
+        await RunAsync(() => Lifecycle.RestartAsync(StopPlan), "Restart");
+        _restartConfirming = false;
+    }
+
+    private async Task StopAsync()
+    {
+        if (_busy || Lifecycle is null || StopPlan is null)
+        {
+            _stopConfirming = false;
+            return;
+        }
+
+        await RunAsync(() => Lifecycle.StopAsync(StopPlan), "Stop");
+        _stopConfirming = false;
+    }
+
+    private async Task KillAsync()
+    {
+        if (_busy || Lifecycle is null)
+        {
+            _killConfirming = false;
+            return;
+        }
+
+        // Kill deliberately bypasses the escalation ladder entirely — a single-stage plan whose only stage
+        // is StopStage.Kill — rather than walking Stop's rcon/console/signal stages first. That is the
+        // whole point of a distinct Kill control.
+        await RunAsync(() => Lifecycle.StopAsync(new StopPlan([new StopStage.Kill()])), "Kill");
+        _killConfirming = false;
+    }
+
+    /// <summary>
+    /// Runs one lifecycle call: sets busy, awaits it, re-reads <see cref="IServerLifecycle.GetStatusAsync"/>
+    /// for the confirmed post-action state, and renders the result — never an optimistic guess about what
+    /// the action probably did.
+    /// </summary>
+    private async Task RunAsync(Func<Task> action, string verb)
+    {
+        _busy = true;
+        _error = null;
+        try
+        {
+            await action();
+            _status = Lifecycle is null ? null : await Lifecycle.GetStatusAsync();
+        }
+        catch (WritesDisabledException ex)
+        {
+            // Rendered verbatim: the message already names the server and its write mode.
+            _error = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _error = $"{verb} failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+
+    private static string DescribeStage(StopStage stage) => stage switch
+    {
+        StopStage.Rcon rcon => $"RCON '{rcon.CommandId}' — timeout {FormatTimeout(rcon.Timeout)}",
+        StopStage.ConsoleWrite console => $"Console write '{console.Text}' — timeout {FormatTimeout(console.Timeout)}",
+        StopStage.Signal signal => $"Signal {signal.SignalName} — timeout {FormatTimeout(signal.Timeout)}",
+        StopStage.Kill => "Force kill (final, unconditional stage)",
+        _ => stage.GetType().Name,
+    };
+
+    private static string FormatTimeout(TimeSpan timeout) => $"{timeout.TotalSeconds:0}s";
 
     private static string FormatUptime(TimeSpan? uptime)
         => uptime is null ? "—" : $"{(int)uptime.Value.TotalHours}h {uptime.Value.Minutes}m";

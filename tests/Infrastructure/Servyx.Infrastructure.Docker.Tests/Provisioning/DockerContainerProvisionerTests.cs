@@ -178,6 +178,73 @@ public class DockerContainerProvisionerTests
         captured.Labels[ServyxResourceTags.JobIdLabel].Should().Be("job-42");
     }
 
+    /// <summary>
+    /// A definition's <c>deployments[].stopGracePeriodSeconds</c> only means anything if it reaches the
+    /// daemon: without it the container keeps Docker's ten-second default, and any plain <c>docker stop</c>,
+    /// host reboot, or daemon shutdown SIGKILLs a slow-saving game part-way through writing its world.
+    /// </summary>
+    [Fact]
+    public async Task A_declared_stop_grace_period_is_baked_into_the_created_container()
+    {
+        var (client, containers) = SubstituteClient();
+        CreateContainerParameters? captured = null;
+        containers
+            .CreateContainerAsync(Arg.Do<CreateContainerParameters>(p => captured = p), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new CreateContainerResponse { ID = "container-1" }));
+
+        var provisioner = new DockerContainerProvisioner(client, Endpoint);
+        var spec = DockerContainerProvisioner.BuildSpec(PalworldRequest(new Dictionary<string, string>
+        {
+            ["stopGracePeriodSeconds"] = "300",
+        }));
+
+        spec.StopGracePeriod.Should().Be(TimeSpan.FromSeconds(300));
+
+        await provisioner.CreateOperation(spec).CreateAsync();
+
+        captured.Should().NotBeNull();
+        captured!.StopTimeout.Should().Be(TimeSpan.FromSeconds(300));
+    }
+
+    /// <summary>
+    /// Omitting the parameter leaves the field null rather than substituting a number this adapter invented,
+    /// so the daemon's own default applies and nothing silently claims to have configured a grace period.
+    /// </summary>
+    [Fact]
+    public async Task No_declared_stop_grace_period_leaves_the_daemon_default_in_force()
+    {
+        var (client, containers) = SubstituteClient();
+        CreateContainerParameters? captured = null;
+        containers
+            .CreateContainerAsync(Arg.Do<CreateContainerParameters>(p => captured = p), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new CreateContainerResponse { ID = "container-1" }));
+
+        var provisioner = new DockerContainerProvisioner(client, Endpoint);
+
+        await provisioner.CreateOperation(DockerContainerProvisioner.BuildSpec(PalworldRequest())).CreateAsync();
+
+        captured!.StopTimeout.Should().BeNull();
+    }
+
+    /// <summary>
+    /// A malformed or non-positive value is refused outright rather than falling back to ten seconds — the
+    /// fallback is exactly the failure this parameter exists to prevent, and it would surface much later as
+    /// a corrupt save rather than as a provisioning error.
+    /// </summary>
+    [Theory]
+    [InlineData("300s")]
+    [InlineData("0")]
+    [InlineData("-1")]
+    public void A_malformed_stop_grace_period_parameter_is_refused(string value)
+    {
+        var build = () => DockerContainerProvisioner.BuildSpec(PalworldRequest(new Dictionary<string, string>
+        {
+            ["stopGracePeriodSeconds"] = value,
+        }));
+
+        build.Should().Throw<ArgumentException>().WithMessage("*stopGracePeriodSeconds*");
+    }
+
     [Fact]
     public void A_resource_tag_set_cannot_be_constructed_without_an_instance_id_and_a_job_id()
     {

@@ -1,7 +1,7 @@
 @page "/games"
 @inject IDashboardDataService Data
 
-<PageTitle>Games - Servyx</PageTitle>
+<SvxPageTitle Section="Games" />
 
 <div class="svx-page-header">
     <h2>Games</h2>
@@ -13,11 +13,11 @@
 
 @if (_loading)
 {
-    <p>Loading games…</p>
+    <Skeleton Variant="card" Rows="3" Label="Loading games" />
 }
-else if (_games.Count == 0)
+else if (_games.Count == 0 && _faults.Count == 0)
 {
-    <div class="svx-empty-state">
+    <div class="svx-empty-state" data-testid="games-empty">
         <h3>No game definitions found</h3>
     </div>
 }
@@ -26,10 +26,10 @@ else
     <div class="games-grid">
         @foreach (var game in _games)
         {
-            <div class="svx-card game-card">
+            <div class="svx-card game-card" data-testid="game-card">
                 <div class="game-card-header">
                     <h3>@game.Name</h3>
-                    <span class="badge trust-badge trust-@game.Trust.ToString().ToLowerInvariant()">@game.Trust</span>
+                    <TrustBadge Trust="game.Trust" />
                 </div>
                 <p class="settings-value-muted">Version @game.Version</p>
 
@@ -56,16 +56,35 @@ else
                 </p>
             </div>
         }
+        @foreach (var fault in _faults)
+        {
+            <div class="svx-card game-card game-card-fault" data-testid="game-fault-card" role="alert">
+                <div class="game-card-header">
+                    <h3>Definition failed to load</h3>
+                    <span class="svx-badge fault-badge">Fault</span>
+                </div>
+                <p class="fault-path" data-testid="game-fault-path">@fault.Path</p>
+                <p class="fault-message" data-testid="game-fault-message">@fault.Message</p>
+                @if (fault.Line is not null)
+                {
+                    <p class="settings-value-muted" data-testid="game-fault-location">
+                        Line @fault.Line@(fault.Column is not null ? $", column {fault.Column}" : "")
+                    </p>
+                }
+            </div>
+        }
     </div>
 }
 
 @code {
     private bool _loading = true;
     private IReadOnlyList<GameCardSummary> _games = [];
+    private IReadOnlyList<GameDefinitionFaultSummary> _faults = [];
 
     protected override async Task OnInitializedAsync()
     {
         _games = await Data.GetGamesAsync();
+        _faults = await Data.GetGameDefinitionFaultsAsync();
         _loading = false;
     }
 }

@@ -79,7 +79,12 @@ public class DeployFormTests : BunitContext
         cut.WaitForAssertion(() => docker.LastRequest.Should().NotBeNull());
 
         var request = docker.LastRequest!;
-        request.GameDefinitionId.Should().Be("palworld");
+
+        // No GameDefinitionCatalog is registered in this test's composition (see EnableBoth), which is the
+        // honest "no game definitions loaded" state the game-selection work made real rather than a
+        // hardcoded "palworld" no catalog ever justified. See DeployPageGameSelectionTests for the
+        // catalog-driven preselection/selection behavior this pin does not exercise.
+        request.GameDefinitionId.Should().BeEmpty();
         request.DeploymentProfileId.Should().Be("docker");
         request.ConnectorId.Should().Be("docker-container-local");
 

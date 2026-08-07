@@ -65,6 +65,7 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
     private readonly IDockerClient _client;
     private readonly string? _endpoint;
     private readonly TimeProvider _timeProvider;
+    private readonly ITransport? _transport;
 
     /// <summary>
     /// Creates a provisioner operating against <paramref name="client"/>.
@@ -77,13 +78,25 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
     /// same way it does for any hand-configured target (<c>DOCKER_HOST</c>, then an OS default).
     /// </param>
     /// <param name="timeProvider">Clock used for plan expiry. Defaults to <see cref="TimeProvider.System"/>.</param>
-    public DockerContainerProvisioner(IDockerClient client, string? endpoint = null, TimeProvider? timeProvider = null)
+    /// <param name="transport">
+    /// The transport used to write a spec's <see cref="DockerContainerSpec.SeededFiles"/> into the created
+    /// container before it is started. Optional, and unused by every spec that seeds no files. Supplying the
+    /// DI-registered <see cref="ITransport"/> (which is always a <see cref="WriteGuardedTransport"/>) is what
+    /// puts seeding behind the write guard; a spec that declares files while this is null is refused rather
+    /// than seeded through some other route — see <see cref="SeedFilesAsync"/>.
+    /// </param>
+    public DockerContainerProvisioner(
+        IDockerClient client,
+        string? endpoint = null,
+        TimeProvider? timeProvider = null,
+        ITransport? transport = null)
     {
         ArgumentNullException.ThrowIfNull(client);
 
         _client = client;
         _endpoint = endpoint;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _transport = transport;
     }
 
     /// <inheritdoc />
@@ -161,6 +174,20 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
                 Id,
                 $"Start container '{spec.ContainerName}' and observe its assigned address."),
         };
+
+        if (spec.SeededFiles.Count > 0)
+        {
+            // Inserted before "start-container" rather than appended, because the ordering is the whole
+            // point: these files exist to be found by the workload's very first start, and a plan that
+            // showed them being written afterwards would be describing a different (useless) operation.
+            stages.Insert(
+                stages.Count - 1,
+                new ProvisioningStage(
+                    "seed-files",
+                    Id,
+                    $"Write {spec.SeededFiles.Count} declared file(s) into the created container before it starts: "
+                    + string.Join(", ", spec.SeededFiles.Select(f => f.ToString()))));
+        }
 
         var planHash = ComputePlanHash(spec, labels);
 
@@ -409,6 +436,7 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
     /// <item><description><c>instanceId</c>, <c>jobId</c>, <c>connectorId</c> — required; become the mandatory Servyx labels.</description></item>
     /// <item><description><c>rootPath</c> — the profile's <c>dataDir</c>. Defaults to <c>/</c>.</description></item>
     /// <item><description><c>restartPolicy</c> — e.g. <c>unless-stopped</c>.</description></item>
+    /// <item><description><c>stopGracePeriodSeconds</c> — the profile's <c>stopGracePeriodSeconds</c>, in whole seconds. Omit it to accept the daemon's ten-second default, which truncates a slow save.</description></item>
     /// <item><description><c>port:&lt;containerPort&gt;/&lt;protocol&gt;</c> — value is the host port, or empty to expose without publishing (<c>published: false</c>).</description></item>
     /// <item><description><c>volume:&lt;containerPath&gt;</c> — value is <c>&lt;hostPath&gt;|rw</c> or <c>&lt;hostPath&gt;|ro</c>, mirroring <c>filesystem[].access</c>.</description></item>
     /// <item><description><c>env:&lt;NAME&gt;</c> — an environment variable baked in at create time.</description></item>
@@ -468,7 +496,31 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
             AdditionalLabels = extraLabels,
             RootPath = parameters.TryGetValue("rootPath", out var rootPath) && !string.IsNullOrWhiteSpace(rootPath) ? rootPath : "/",
             RestartPolicy = parameters.TryGetValue("restartPolicy", out var restartPolicy) && !string.IsNullOrWhiteSpace(restartPolicy) ? restartPolicy : null,
+            StopGracePeriod = ParseStopGracePeriod(parameters),
         };
+    }
+
+    /// <summary>
+    /// Reads the optional <c>stopGracePeriodSeconds</c> parameter. A malformed or non-positive value throws
+    /// rather than falling back to the daemon default, on the same principle as
+    /// <see cref="ParsePort"/>: a grace period that silently reverts to ten seconds is precisely the failure
+    /// the parameter exists to prevent, and it would only be noticed as a corrupt save much later.
+    /// </summary>
+    private static TimeSpan? ParseStopGracePeriod(IReadOnlyDictionary<string, string> parameters)
+    {
+        if (!parameters.TryGetValue("stopGracePeriodSeconds", out var raw) || string.IsNullOrWhiteSpace(raw))
+        {
+            return null;
+        }
+
+        if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var seconds) || seconds <= 0)
+        {
+            throw new ArgumentException(
+                $"'{raw}' is not a valid 'stopGracePeriodSeconds' provisioning parameter; it must be a positive whole number of seconds.",
+                nameof(parameters));
+        }
+
+        return TimeSpan.FromSeconds(seconds);
     }
 
     /// <summary>
@@ -557,6 +609,9 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
         {
             Image = spec.Image,
             Name = spec.ContainerName,
+            // Left null when the spec declares none, so the daemon's own default stands rather than this
+            // adapter inventing one. See DockerContainerSpec.StopGracePeriod for why null is a real risk.
+            StopTimeout = spec.StopGracePeriod,
             Labels = labels,
             Env = spec.Environment
                 .Select(e => $"{e.Key}={e.Value}")
@@ -927,6 +982,49 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
         return Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString())));
     }
 
+    /// <summary>
+    /// Materializes <paramref name="spec"/>'s declared files into the just-created container, through the
+    /// transport rather than through this adapter's own Docker client.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why the transport and not <c>_client</c>.</strong> This type already holds an
+    /// <see cref="IDockerClient"/> and could place an archive into the container directly in three lines.
+    /// It deliberately does not: the Docker client is a private door, and a write that went through it would
+    /// bypass <see cref="WriteGuardedExecutionTarget"/> entirely, which is to say it would write to a
+    /// read-only server. Routing through <see cref="ITransport.ConnectAsync"/> means the session is the
+    /// guarded decorator (a Servyx-registered transport hands out nothing else) and the write is refused
+    /// before any I/O when the server's <see cref="WriteMode"/> is not <see cref="WriteMode.Enabled"/>.
+    /// </para>
+    /// <para>
+    /// <strong>No transport plus declared files is a refusal, not a fallback.</strong> Falling back to the
+    /// private door "just this once, because nothing else is wired up" is precisely how a guard stops being
+    /// one. A misconfigured composition fails loudly, before the container is started, and compensation
+    /// removes it.
+    /// </para>
+    /// </remarks>
+    private async Task SeedFilesAsync(string containerId, DockerContainerSpec spec, CancellationToken ct)
+    {
+        if (spec.SeededFiles.Count == 0)
+        {
+            return;
+        }
+
+        if (_transport is null)
+        {
+            throw new InvalidOperationException(
+                $"Container spec '{spec.ContainerName}' declares {spec.SeededFiles.Count} file(s) to seed before "
+                + "start, but this provisioner was constructed without an ITransport to write them through. "
+                + "Seeded files are written through the transport's write-guarded session, never through this "
+                + "provisioner's own Docker client, so a composition that supplies no transport is refused rather "
+                + "than silently writing around the guard.");
+        }
+
+        var descriptor = BuildTargetDescriptor(containerId, spec.ContainerName, spec.RootPath);
+        await using var session = await _transport.ConnectAsync(descriptor, ct).ConfigureAwait(false);
+        await DeployedFileSeeder.SeedAsync(session, spec.SeededFiles, spec.RootPath, ct).ConfigureAwait(false);
+    }
+
     private static string? NullIfBlank(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 
     private async Task<bool> RemoveContainerAsync(string containerId, CancellationToken ct)
@@ -997,6 +1095,15 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
         foreach (var label in labels.OrderBy(l => l.Key, StringComparer.Ordinal))
         {
             builder.Append(CultureInfo.InvariantCulture, $"label {label.Key}={label.Value}\n");
+        }
+
+        // Path, mode, create-only posture and content length — never the content itself. A plan hash is
+        // recorded, compared and shown; feeding a seeded credential into it would make the digest a
+        // (weak, but real) oracle for that credential, and would change the plan id whenever a secret was
+        // rotated even though the plan describes the same operation.
+        foreach (var file in spec.SeededFiles.OrderBy(f => f.Path.Value, StringComparer.Ordinal))
+        {
+            builder.Append(CultureInfo.InvariantCulture, $"file {file.Path.Value} {file.Mode} {file.CreateOnly} {file.Content.Length}\n");
         }
 
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes(builder.ToString()));
@@ -1106,6 +1213,13 @@ public sealed partial class DockerContainerProvisioner : IProvisioner, IMaintain
 
             _createdContainerId = created?.ID
                 ?? throw new InvalidOperationException("The Docker Engine returned no container id from CreateContainerAsync.");
+
+            // Between create and start, never after. A file this list declares exists so that the workload
+            // finds it on its first start; seeding after the start would let the workload generate its own
+            // content first, which is exactly the situation the feature exists to prevent. A failure here
+            // propagates, and the plan executor's CompensateAsync removes the container it just created —
+            // better an absent server than one started with an unknown credential.
+            await _owner.SeedFilesAsync(_createdContainerId, _spec, ct).ConfigureAwait(false);
 
             await _owner._client.Containers
                 .StartContainerAsync(_createdContainerId, new ContainerStartParameters(), ct)

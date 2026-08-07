@@ -5,7 +5,7 @@
 .svx-deploy-error {
     margin-top: 0.75rem;
     font-size: 0.85rem;
-    color: #ff8f8f;
+    color: var(--svx-danger-fg);
 }
 
 .svx-deploy-facts {
@@ -17,7 +17,7 @@
 }
 
 .svx-deploy-facts dt {
-    opacity: 0.7;
+    color: var(--svx-text-muted);
     font-weight: 500;
 }
 
@@ -37,7 +37,7 @@
 .svx-deploy-confirm {
     margin-top: 1.25rem;
     padding-top: 1rem;
-    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    border-top: 1px solid var(--svx-border-default);
 }
 
 .svx-deploy-confirm p {
@@ -49,8 +49,8 @@
     margin-top: 1rem;
     padding: 0.75rem 1rem;
     border-radius: 0.5rem;
-    border: 1px solid rgba(120, 220, 160, 0.35);
-    background: rgba(120, 220, 160, 0.08);
+    border: 1px solid var(--svx-success-border);
+    background: var(--svx-success-bg);
 }
 
 /* Same treatment DeployPage gives its data-impact acknowledgement: a visibly separate block from the
@@ -59,8 +59,8 @@
     margin: 0.75rem 0;
     padding: 0.6rem 0.75rem;
     border-radius: 0.4rem;
-    border: 2px dashed rgba(255, 92, 92, 0.65);
-    background: rgba(255, 92, 92, 0.08);
+    border: 2px dashed var(--svx-danger-strong);
+    background: var(--svx-danger-wash);
     font-size: 0.85rem;
 }
 
@@ -75,37 +75,14 @@
    thing on the page for that reason — a solid red edge on the whole card, not a line of copy that can
    be skimmed past. */
 .svx-restore-panel {
-    border: 2px solid rgba(255, 92, 92, 0.7);
+    border: 2px solid var(--svx-danger-strong);
 }
 
 .svx-restore-overwrite {
     margin: 0.75rem 0;
     padding: 0.75rem 1rem;
     border-radius: 0.4rem;
-    border-left: 4px solid #ff5c5c;
-    background: rgba(255, 92, 92, 0.12);
+    border-left: 4px solid var(--svx-danger-strong);
+    background: var(--svx-danger-wash);
     font-size: 0.9rem;
-}
-
-/* The banner itself is rendered by DataImpactBanner, a child component, so reaching it needs ::deep.
-   Only the danger severity is emphasised; a calm banner is left alone so the real alerts stay easy to
-   pick out. */
-::deep .svx-data-impact[data-severity="danger"] {
-    display: flex;
-    gap: 0.75rem;
-    align-items: flex-start;
-    margin: 0.75rem 0;
-    padding: 0.75rem 1rem;
-    border-radius: 0.4rem;
-    border: 2px solid #ff5c5c;
-    background: rgba(255, 92, 92, 0.14);
-}
-
-::deep .svx-data-impact-glyph {
-    font-size: 1.4rem;
-    line-height: 1;
-}
-
-::deep .svx-data-impact-headline {
-    letter-spacing: 0.04em;
 }

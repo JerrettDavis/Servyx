@@ -3,7 +3,7 @@
 @inject IDashboardDataService Data
 @inject PersistentComponentState ApplicationState
 
-<PageTitle>Dashboard - Servyx</PageTitle>
+<SvxPageTitle Section="Dashboard" />
 
 <div class="svx-page-header">
     <h2>Dashboard</h2>
@@ -14,7 +14,7 @@
 
 @if (_loading)
 {
-    <p>Loading dashboard…</p>
+    <Skeleton Variant="stat" Rows="4" Label="Loading dashboard" />
 }
 else if (_summary is null)
 {
@@ -53,9 +53,20 @@ else
 
         @if (_servers.Count == 0)
         {
-            <div class="svx-empty-state">
+            <div class="svx-empty-state @(_discoveryFailed ? "svx-empty-state-degraded" : "")" data-testid="servers-empty-state">
                 <h3>No servers adopted yet</h3>
-                <p>Adopting an existing container is the first step in Milestone 1.</p>
+                @if (_discoveryFailed)
+                {
+                    <p class="svx-discovery-failed-banner" data-testid="servers-discovery-failed">
+                        <strong>This may not be accurate.</strong> Servyx could not read the server list from
+                        the Docker host@(string.IsNullOrWhiteSpace(_discoveryFailureDetail) ? "." : $": {_discoveryFailureDetail}")
+                        There may be adopted servers Servyx cannot currently see.
+                    </p>
+                }
+                else
+                {
+                    <p>Adopting an existing container is the first step in Milestone 1.</p>
+                }
             </div>
         }
         else
@@ -90,10 +101,21 @@ else
 @code {
     private const string SummaryStateKey = "Home.Summary";
     private const string ServersStateKey = "Home.Servers";
+    private const string DiscoveryFailedStateKey = "Home.DiscoveryFailed";
+    private const string DiscoveryFailureDetailStateKey = "Home.DiscoveryFailureDetail";
 
     private bool _loading = true;
     private DashboardSummary? _summary;
     private IReadOnlyList<ServerSummary> _servers = [];
+
+    /// <summary>
+    /// Whether the empty <see cref="_servers"/> list above means "genuinely zero servers adopted" (<see
+    /// langword="false"/>) or "discovery itself failed, so this list cannot be trusted" (<see
+    /// langword="true"/>) — see <c>Servyx.Application.Servers.ServerListResult</c>'s remarks for why an
+    /// empty list alone can never honestly answer that question.
+    /// </summary>
+    private bool _discoveryFailed;
+    private string? _discoveryFailureDetail;
     private PersistingComponentStateSubscription _persistingSubscription;
 
     /// <summary>
@@ -112,11 +134,16 @@ else
         {
             _summary = restoredSummary;
             _servers = restoredServers ?? [];
+            ApplicationState.TryTakeFromJson<bool>(DiscoveryFailedStateKey, out _discoveryFailed);
+            ApplicationState.TryTakeFromJson<string?>(DiscoveryFailureDetailStateKey, out _discoveryFailureDetail);
         }
         else
         {
             _summary = await Data.GetDashboardSummaryAsync();
-            _servers = await Data.GetServersAsync();
+            var serverList = await Data.GetServersWithStatusAsync();
+            _servers = serverList.Servers;
+            _discoveryFailed = serverList.DiscoveryFailed;
+            _discoveryFailureDetail = serverList.FailureDetail;
         }
 
         _loading = false;
@@ -126,6 +153,8 @@ else
     {
         ApplicationState.PersistAsJson(SummaryStateKey, _summary);
         ApplicationState.PersistAsJson(ServersStateKey, _servers);
+        ApplicationState.PersistAsJson(DiscoveryFailedStateKey, _discoveryFailed);
+        ApplicationState.PersistAsJson(DiscoveryFailureDetailStateKey, _discoveryFailureDetail);
         return Task.CompletedTask;
     }
 

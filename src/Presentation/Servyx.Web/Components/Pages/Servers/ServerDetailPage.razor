@@ -1,13 +1,18 @@
 @page "/servers/{Id}"
 @implements IDisposable
+@using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus
+@using Servyx.Domain.Lifecycle
+@using Servyx.Domain.Rcon
+@using Servyx.Domain.Transport
 @inject IDashboardDataService Data
 @inject PersistentComponentState ApplicationState
+@inject IServiceProvider Services
 
-<PageTitle>@(_detail?.Summary.Name ?? "Server") - Servyx</PageTitle>
+<SvxPageTitle Section="@(_detail?.Summary.Name ?? "Server")" />
 
 @if (_loading)
 {
-    <p>Loading server…</p>
+    <Skeleton Variant="card" Rows="2" Label="Loading server" />
 }
 else if (_detail is null)
 {
@@ -20,8 +25,61 @@ else
 {
     <div class="svx-page-header">
         <h2>@_detail.Summary.Name</h2>
-        <p class="svx-page-description">@_detail.Summary.Game · @_detail.Image</p>
+        <p class="svx-page-description">
+            @if (_detail.Summary.BindingStatus == ServerBindingStatus.Bound)
+            {
+                @_detail.Summary.Game
+            }
+            else
+            {
+                <BindingStatusBadge Status="@_detail.Summary.BindingStatus" CandidateGameIds="@_detail.Summary.AmbiguousCandidateGameIds" />
+            }
+            · @_detail.Image
+        </p>
     </div>
+
+    @if (_detail.Summary.BindingStatus != ServerBindingStatus.Bound)
+    {
+        <div class="svx-card binding-status-notice binding-status-notice-@_detail.Summary.BindingStatus.ToString().ToLowerInvariant()"
+             role="note" data-testid="binding-status-notice">
+            @if (_detail.Summary.BindingStatus == ServerBindingStatus.Ambiguous)
+            {
+                <h3>Binding is ambiguous</h3>
+                <p data-testid="binding-status-notice-body">
+                    This server matched more than one loaded game definition with equal specificity, so
+                    Servyx deliberately did not guess which one governs it — settings, lifecycle controls,
+                    and the health signal are unavailable until the tie is resolved (e.g. by editing or
+                    removing one of the tied definitions so only one still matches).
+                </p>
+                @if (_detail.Summary.AmbiguousCandidateGameIds is { Count: > 0 } candidates)
+                {
+                    <p>
+                        Tied definitions:
+                        <strong data-testid="binding-status-candidates">@string.Join(", ", candidates)</strong>
+                    </p>
+                }
+            }
+            else
+            {
+                <h3>Binding needs re-binding</h3>
+                <p data-testid="binding-status-notice-body">
+                    This server was previously bound to a game definition version (content hash) that no
+                    longer resolves in the loaded catalog — most likely because the definition was edited or
+                    removed. Servyx will not silently substitute a different version, so settings, lifecycle
+                    controls, and the health signal are unavailable for this server. <strong>There is
+                    currently no action in Servyx's UI to resolve this</strong> — re-binding requires
+                    restoring or reloading a matching definition; automatically clearing or re-persisting
+                    this binding is not implemented yet.
+                </p>
+                @if (_detail.Summary.AmbiguousCandidateGameIds is { Count: > 0 } previous)
+                {
+                    <p>
+                        Previously bound to: <strong data-testid="binding-status-previous-id">@previous[0]</strong>
+                    </p>
+                }
+            }
+        </div>
+    }
 
     <div class="svx-tablist" role="tablist" aria-label="Server detail sections" @onkeydown="OnTabListKeyDown">
         @foreach (var tab in Tabs)
@@ -40,16 +98,16 @@ else
         @switch (_activeTab)
         {
             case "Overview":
-                <ServerOverviewTab Detail="@_detail" />
+                <ServerOverviewTab Detail="@_detail" ServerId="@Id" WriteMode="@_writeMode" Lifecycle="@_lifecycle" StopPlan="@_stopPlan" />
                 break;
             case "Console":
-                <ServerConsoleTab Logs="@_logs" />
+                <ServerConsoleTab Logs="@_logs" Commands="@_rconChannels.Catalog.Commands" WriteMode="@_writeMode" ResolveSession="@ResolveConsoleSessionAsync" />
                 break;
             case "Settings":
                 <ServerSettingsTab Settings="@_settings" />
                 break;
             case "Saves":
-                <ServerSavesTab Saves="@_saves" />
+                <ServerSavesTab Result="@_saves" />
                 break;
             case "Backups":
                 <ServerBackupsTab Backups="@_backups" />
@@ -70,9 +128,28 @@ else
     private ServerDetail? _detail;
     private IReadOnlyList<SettingRow> _settings = [];
     private IReadOnlyList<LogLine> _logs = [];
-    private SaveInfo? _saves;
+    private SavesResult _saves = new(null, SavesAvailability.NotConfigured, null);
     private IReadOnlyList<BackupEntry> _backups = [];
     private PersistingComponentStateSubscription _persistingSubscription;
+
+    /// <summary>
+    /// This server's write posture and, when one is available, its write-guarded lifecycle. Neither is
+    /// persisted via <see cref="ApplicationState"/> — <see cref="IServerLifecycle"/> holds live resources
+    /// (an open control-channel session) that cannot be serialized — so both are (re)computed on every
+    /// pass, including the interactive one after prerendering. <see cref="ServyxServerLifecycles.GetAsync"/>
+    /// memoizes per server id, so recomputing here is cheap rather than reconnecting.
+    /// </summary>
+    private WriteMode _writeMode = WriteMode.ReadOnly;
+    private IServerLifecycle? _lifecycle;
+    private StopPlan? _stopPlan;
+
+    /// <summary>
+    /// Resolved via <see cref="IServiceProvider"/> rather than <c>@@inject</c>, for the reason BackupsPage
+    /// gives for its own optional resolutions: a host — or a bUnit test rendering this page directly —
+    /// that never composed this service must still render, degrading to the safe default rather than
+    /// throwing at render time over a required injection.
+    /// </summary>
+    private ServyxRconChannels _rconChannels = ServyxRconChannels.None;
 
     /// <summary>
     /// See <c>Home.razor</c>'s identical pattern for why this avoids issuing all five Docker-backed calls
@@ -87,13 +164,13 @@ else
         if (ApplicationState.TryTakeFromJson<ServerDetail?>(StateKey("Detail"), out var restoredDetail)
             && ApplicationState.TryTakeFromJson<IReadOnlyList<SettingRow>>(StateKey("Settings"), out var restoredSettings)
             && ApplicationState.TryTakeFromJson<IReadOnlyList<LogLine>>(StateKey("Logs"), out var restoredLogs)
-            && ApplicationState.TryTakeFromJson<SaveInfo?>(StateKey("Saves"), out var restoredSaves)
+            && ApplicationState.TryTakeFromJson<SavesResult>(StateKey("Saves"), out var restoredSaves)
             && ApplicationState.TryTakeFromJson<IReadOnlyList<BackupEntry>>(StateKey("Backups"), out var restoredBackups))
         {
             _detail = restoredDetail;
             _settings = restoredSettings ?? [];
             _logs = restoredLogs ?? [];
-            _saves = restoredSaves;
+            _saves = restoredSaves ?? new(null, SavesAvailability.NotConfigured, null);
             _backups = restoredBackups ?? [];
         }
         else
@@ -101,12 +178,27 @@ else
             _detail = await Data.GetServerDetailAsync(Id);
             _settings = await Data.GetServerSettingsAsync(Id);
             _logs = await Data.GetServerLogsAsync(Id);
-            _saves = await Data.GetServerSavesAsync(Id);
+            _saves = await Data.GetServerSavesWithStatusAsync(Id);
             _backups = await Data.GetServerBackupsAsync(Id);
         }
 
+        var writableServers = Services.GetService(typeof(WritableServers)) as WritableServers ?? WritableServers.None;
+        _writeMode = writableServers.Mode(_detail?.Summary.Id, _detail?.Summary.Name);
+
+        var serverLifecycles = Services.GetService(typeof(ServyxServerLifecycles)) as ServyxServerLifecycles;
+        _stopPlan = serverLifecycles?.StopPlan;
+        _lifecycle = _detail is null || serverLifecycles is null ? null : await serverLifecycles.GetAsync(_detail.Summary.Id);
+
+        _rconChannels = Services.GetService(typeof(ServyxRconChannels)) as ServyxRconChannels ?? ServyxRconChannels.None;
+
         _loading = false;
     }
+
+    /// <summary>Resolves this server's write-guarded RCON session for <see cref="ServerConsoleTab"/>, which surfaces a thrown <see cref="RconUnreachableException"/> itself.</summary>
+    private Task<IRconSession?> ResolveConsoleSessionAsync(CancellationToken ct) =>
+        _detail is null
+            ? Task.FromResult<IRconSession?>(null)
+            : _rconChannels.GetSessionAsync(_detail.Summary.Id, _detail.Summary.Name, ct);
 
     private Task PersistData()
     {

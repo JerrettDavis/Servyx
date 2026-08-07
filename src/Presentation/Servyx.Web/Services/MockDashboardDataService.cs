@@ -39,10 +39,50 @@ public sealed class MockDashboardDataService : IDashboardDataService
     private static readonly ServerDetail Detail = new(
         Summary: Server,
         Image: "thijsvanloef/palworld-server-docker:latest",
-        MountHostPath: @"D:\Games\Palworld\data",
+        MountHostPath: "/srv/palworld/data",
         MountContainerPath: "/palworld",
         Network: "palworld_default",
         IpAddress: "172.19.0.2",
+        MemoryLimit: "8G",
+        CpuLimit: "4");
+
+    // ── Remote (ssh+docker) server ────────────────────────────────────────────────────────────────
+    // Mirrors a real container adopted over SSH: `Host` carries the transport id ("ssh+docker", see
+    // ServerQueryService.ToSummary), and health is the same false-negative Palworld unhealthy state as
+    // the local server — the container's own HEALTHCHECK gets 401 Unauthorized while the game itself is
+    // fine (ServerQueryService.PalworldUnhealthyExplanation). Kept as a second, independent server rather
+    // than a variant of `Server` so both render side by side in the Servers list.
+    private const string RemoteServerId = "example-remote-palworld";
+
+    private static readonly ServerSummary RemoteServer = new(
+        Id: RemoteServerId,
+        Name: "Example Remote Palworld",
+        Game: "Palworld",
+        State: ServerState.Running,
+        Health: ContainerHealth.Unhealthy,
+        HealthTooltip: "The container's own HEALTHCHECK calls http://localhost:8212/v1/api/info without " +
+                       "admin credentials and receives 401 Unauthorized on every probe. The Palworld " +
+                       "server itself is healthy \u2014 /v1/api/players returns OK on the same polling " +
+                       "cycle. Servyx derives readiness from its own authenticated detectors, never from " +
+                       "this signal.",
+        PlayersOnline: 7,
+        PlayersMax: 32,
+        Uptime: TimeSpan.FromDays(3) + TimeSpan.FromHours(6) + TimeSpan.FromMinutes(41),
+        Host: "ssh+docker",
+        Ports:
+        [
+            new PortBinding(8211, "udp", "game", Published: true),
+            new PortBinding(27015, "udp", "query", Published: true),
+            new PortBinding(25575, "tcp", "rcon", Published: false),
+        ]);
+
+    private static readonly ServerDetail RemoteDetail = new(
+        Summary: RemoteServer,
+        Image: "thijsvanloef/palworld-server-docker:latest",
+        MountHostPath: "/opt/palworld/data",
+        MountContainerPath: "/palworld",
+        Network: "bridge",
+        IpAddress: "172.18.0.3",
         MemoryLimit: "8G",
         CpuLimit: "4");
 
@@ -128,25 +168,54 @@ public sealed class MockDashboardDataService : IDashboardDataService
     public Task<ConnectionStatus> GetDockerConnectionStatusAsync(CancellationToken ct = default)
         => Task.FromResult(ConnectionStatus.Connected);
 
+    public Task<DockerConnectionInfo> GetDockerConnectionInfoAsync(CancellationToken ct = default)
+        => Task.FromResult(new DockerConnectionInfo(
+            ConnectionStatus.Connected,
+            "docker",
+            "Docker 27.3.1 (API 1.47) on linux/amd64, kernel 6.6.87.2-microsoft-standard-WSL2"));
+
     public Task<DashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default)
     {
         var now = new DateTimeOffset(2026, 7, 22, 0, 0, 0, TimeSpan.Zero);
+        var servers = new[] { Server, RemoteServer };
+
+        // Mirrors LiveDashboardDataService.GetDashboardSummaryAsync's aggregation exactly for
+        // ServersOnline/ServersTotal/AlertsCount (running-state count, list count, unhealthy-health count).
+        // Live always reports TotalPlayers/TotalPlayerCapacity as null — an authenticated RCON/REST session
+        // is M2+ scope there — but the mock's ServerSummary rows *do* carry demo player figures (so the
+        // per-server tiles have something to show), so the dashboard-wide tiles sum across the whole seeded
+        // list rather than reading only the first server, the same way Live would if/when it had the data.
         return Task.FromResult(new DashboardSummary(
-            ServersOnline: 1,
-            ServersTotal: 1,
-            TotalPlayers: Server.PlayersOnline,
-            TotalPlayerCapacity: Server.PlayersMax,
+            ServersOnline: servers.Count(s => s.State == ServerState.Running),
+            ServersTotal: servers.Length,
+            TotalPlayers: servers.Sum(s => s.PlayersOnline ?? 0),
+            TotalPlayerCapacity: servers.Sum(s => s.PlayersMax ?? 0),
             ForeignBackupsCount: Backups.Count,
-            AlertsCount: 1,
+            AlertsCount: servers.Count(s => s.Health == ContainerHealth.Unhealthy),
             CpuSparkline: BuildSparkline(now, seed: 11, baseline: 34, spread: 14),
             MemorySparkline: BuildSparkline(now, seed: 47, baseline: 62, spread: 8)));
     }
 
     public Task<IReadOnlyList<ServerSummary>> GetServersAsync(CancellationToken ct = default)
-        => Task.FromResult<IReadOnlyList<ServerSummary>>([Server]);
+        => Task.FromResult<IReadOnlyList<ServerSummary>>([Server, RemoteServer]);
+
+    public Task<ServerListResult> GetServersWithStatusAsync(CancellationToken ct = default)
+        => Task.FromResult(new ServerListResult([Server, RemoteServer], DiscoveryFailed: false, FailureDetail: null));
 
     public Task<ServerDetail?> GetServerDetailAsync(string serverId, CancellationToken ct = default)
-        => Task.FromResult(string.Equals(serverId, ServerId, StringComparison.OrdinalIgnoreCase) ? Detail : null);
+    {
+        if (string.Equals(serverId, ServerId, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult<ServerDetail?>(Detail);
+        }
+
+        if (string.Equals(serverId, RemoteServerId, StringComparison.OrdinalIgnoreCase))
+        {
+            return Task.FromResult<ServerDetail?>(RemoteDetail);
+        }
+
+        return Task.FromResult<ServerDetail?>(null);
+    }
 
     public Task<IReadOnlyList<SettingRow>> GetServerSettingsAsync(string serverId, CancellationToken ct = default)
         => Task.FromResult(string.Equals(serverId, ServerId, StringComparison.OrdinalIgnoreCase)
@@ -168,6 +237,9 @@ public sealed class MockDashboardDataService : IDashboardDataService
 
     public Task<IReadOnlyList<BackupEntry>> GetAllBackupsAsync(CancellationToken ct = default)
         => Task.FromResult(Backups);
+
+    public Task<BackupsListResult> GetAllBackupsWithStatusAsync(CancellationToken ct = default)
+        => Task.FromResult(new BackupsListResult(Backups, BackupsAvailability.Listed, null));
 
     public Task<IReadOnlyList<GameCardSummary>> GetGamesAsync(CancellationToken ct = default)
         => Task.FromResult(Games);

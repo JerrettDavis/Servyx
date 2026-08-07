@@ -1,3 +1,4 @@
+using Servyx.Domain.Transport;
 using Servyx.Web.Authentication;
 
 namespace Servyx.Web.Services;
@@ -34,18 +35,71 @@ public static class StartupSafetyWarnings
         + "an untrusted network.";
 
     /// <summary>
-    /// Logs whatever the combination of <paramref name="authentication"/> and <paramref name="provisioning"/>
-    /// deserves, and nothing at all when authentication is enabled.
+    /// The message logged at <see cref="LogLevel.Warning"/> naming every server this process granted a
+    /// non-read-only <see cref="WriteMode"/>. Exposed as a constant for the same reason the other messages
+    /// are: a test asserts the exact text an operator will see.
+    /// </summary>
+    public const string WriteModeGrantedMessage =
+        "Write mode is granted to {GrantCount} server(s): {Grants}. A mutating command CAN reach these "
+        + "targets — each is still subject to the write guard's own per-call checks, but the process is no "
+        + "longer read-only for them.";
+
+    /// <summary>
+    /// The message logged at <see cref="LogLevel.Critical"/> when authentication is off and at least one
+    /// server is granted <see cref="WriteMode.Enabled"/> — the write-mode equivalent of
+    /// <see cref="UnauthenticatedProvisioningMessage"/>.
+    /// </summary>
+    public const string UnauthenticatedWriteAccessMessage =
+        "SERVYX IS RUNNING UNAUTHENTICATED WITH WRITE ACCESS ENABLED. "
+        + "{AuthenticationKey} is false and the following server(s) are granted WriteMode = Enabled: {Grants}. "
+        + "ANY caller who can reach this web port can mutate them, with no login, no session and no record of "
+        + "who did it. Re-enable authentication, or shut this process down.";
+
+    /// <summary>
+    /// Logs whatever the combination of <paramref name="authentication"/>, <paramref name="provisioning"/>
+    /// and <paramref name="writeGrants"/> deserves. Nothing at all is logged when authentication is enabled
+    /// and no server carries a write grant.
     /// </summary>
     /// <param name="logger">Where the warning goes.</param>
     /// <param name="authentication">This process's authentication gate.</param>
     /// <param name="provisioning">This process's provisioning gate.</param>
+    /// <param name="writeGrants">
+    /// Every <see cref="WriteModeGrant"/> registered in this process, across every transport — <see langword="null"/>
+    /// or empty means no server was granted anything beyond the default <see cref="WriteMode.ReadOnly"/>.
+    /// </param>
     public static void LogDangerousCombinations(
-        ILogger logger, AuthenticationGate authentication, ProvisioningGate provisioning)
+        ILogger logger,
+        AuthenticationGate authentication,
+        ProvisioningGate provisioning,
+        IReadOnlyList<WriteModeGrant>? writeGrants = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(authentication);
         ArgumentNullException.ThrowIfNull(provisioning);
+
+        var grants = writeGrants ?? [];
+
+        if (grants.Count > 0)
+        {
+            var described = string.Join(", ", grants.Select(DescribeGrant));
+
+            logger.LogWarning(
+                AuthenticationAudit.WriteModeGranted,
+                WriteModeGrantedMessage,
+                grants.Count,
+                described);
+
+            if (!authentication.Enabled && grants.Any(g => g.Mode == WriteMode.Enabled))
+            {
+                var enabledOnly = string.Join(", ", grants.Where(g => g.Mode == WriteMode.Enabled).Select(DescribeGrant));
+
+                logger.LogCritical(
+                    AuthenticationAudit.UnauthenticatedWriteAccess,
+                    UnauthenticatedWriteAccessMessage,
+                    AuthenticationGate.ConfigurationKey,
+                    enabledOnly);
+            }
+        }
 
         if (authentication.Enabled)
         {
@@ -66,5 +120,24 @@ public static class StartupSafetyWarnings
             AuthenticationAudit.AuthenticationDisabled,
             AuthenticationDisabledMessage,
             AuthenticationGate.ConfigurationKey);
+    }
+
+    /// <summary>
+    /// A short, human-readable description of what a grant names — the same container/endpoint priority
+    /// <see cref="WriteGuardedTransport"/> uses in its own refusal messages, so an operator sees the same
+    /// name in the log they would see in a thrown exception.
+    /// </summary>
+    private static string DescribeGrant(WriteModeGrant grant)
+    {
+        foreach (var key in (string[])["containerName", "containerId", "container"])
+        {
+            if (grant.RequiredOptions.TryGetValue(key, out var value) && !string.IsNullOrWhiteSpace(value))
+            {
+                return $"{value} ({grant.Mode}, {grant.TransportId})";
+            }
+        }
+
+        var name = grant.Endpoint ?? "(unscoped)";
+        return $"{name} ({grant.Mode}, {grant.TransportId})";
     }
 }

@@ -1,79 +1,34 @@
-html, body {
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-}
+/* ==========================================================================
+   Servyx dashboard shell — shared, page-agnostic building blocks.
+   Design tokens live in wwwroot/theme.css (loaded before this file). No
+   literal colours belong here — see docs/design/theming-blueprint.md.
+   ========================================================================== */
 
-a, .btn-link {
-    color: #006bb7;
-}
-
-.btn-primary {
-    color: #fff;
-    background-color: #1b6ec2;
-    border-color: #1861ac;
-}
-
-.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
-  box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
-}
-
-.content {
-    padding-top: 1.1rem;
-}
-
-h1:focus {
-    outline: none;
-}
+/* -- Blazor validation & error UI ------------------------------------------ */
 
 .valid.modified:not([type=checkbox]) {
-    outline: 1px solid #26b050;
+    outline: 1px solid var(--svx-success);
 }
 
 .invalid {
-    outline: 1px solid #e50000;
+    outline: 1px solid var(--svx-danger);
 }
 
 .validation-message {
-    color: #e50000;
+    color: var(--svx-danger-fg);
+    font-size: var(--svx-text-xs);
 }
 
 .blazor-error-boundary {
-    background: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNTYiIGhlaWdodD0iNDkiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgeG1sbnM6eGxpbms9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkveGxpbmsiIG92ZXJmbG93PSJoaWRkZW4iPjxkZWZzPjxjbGlwUGF0aCBpZD0iY2xpcDAiPjxyZWN0IHg9IjIzNSIgeT0iNTEiIHdpZHRoPSI1NiIgaGVpZ2h0PSI0OSIvPjwvY2xpcFBhdGg+PC9kZWZzPjxnIGNsaXAtcGF0aD0idXJsKCNjbGlwMCkiIHRyYW5zZm9ybT0idHJhbnNsYXRlKC0yMzUgLTUxKSI+PHBhdGggZD0iTTI2My41MDYgNTFDMjY0LjcxNyA1MSAyNjUuODEzIDUxLjQ4MzcgMjY2LjYwNiA1Mi4yNjU4TDI2Ny4wNTIgNTIuNzk4NyAyNjcuNTM5IDUzLjYyODMgMjkwLjE4NSA5Mi4xODMxIDI5MC41NDUgOTIuNzk1IDI5MC42NTYgOTIuOTk2QzI5MC44NzcgOTMuNTEzIDI5MSA5NC4wODE1IDI5MSA5NC42NzgyIDI5MSA5Ny4wNjUxIDI4OS4wMzggOTkgMjg2LjYxNyA5OUwyNDAuMzgzIDk5QzIzNy45NjMgOTkgMjM2IDk3LjA2NTEgMjM2IDk0LjY3ODIgMjM2IDk0LjM3OTkgMjM2LjAzMSA5NC4wODg2IDIzNi4wODkgOTMuODA3MkwyMzYuMzM4IDkzLjAxNjIgMjM2Ljg1OCA5Mi4xMzE0IDI1OS40NzMgNTMuNjI5NCAyNTkuOTYxIDUyLjc5ODUgMjYwLjQwNyA1Mi4yNjU4QzI2MS4yIDUxLjQ4MzcgMjYyLjI5NiA1MSAyNjMuNTA2IDUxWk0yNjMuNTg2IDY2LjAxODNDMjYwLjczNyA2Ni4wMTgzIDI1OS4zMTMgNjcuMTI0NSAyNTkuMzEzIDY5LjMzNyAyNTkuMzEzIDY5LjYxMDIgMjU5LjMzMiA2OS44NjA4IDI1OS4zNzEgNzAuMDg4N0wyNjEuNzk1IDg0LjAxNjEgMjY1LjM4IDg0LjAxNjEgMjY3LjgyMSA2OS43NDc1QzI2Ny44NiA2OS43MzA5IDI2Ny44NzkgNjkuNTg3NyAyNjcuODc5IDY5LjMxNzkgMjY3Ljg3OSA2Ny4xMTgyIDI2Ni40NDggNjYuMDE4MyAyNjMuNTg2IDY2LjAxODNaTTI2My41NzYgODYuMDU0N0MyNjEuMDQ5IDg2LjA1NDcgMjU5Ljc4NiA4Ny4zMDA1IDI1OS43ODYgODkuNzkyMSAyNTkuNzg2IDkyLjI4MzcgMjYxLjA0OSA5My41Mjk1IDI2My41NzYgOTMuNTI5NSAyNjYuMTE2IDkzLjUyOTUgMjY3LjM4NyA5Mi4yODM3IDI2Ny4zODcgODkuNzkyMSAyNjcuMzg3IDg3LjMwMDUgMjY2LjExNiA4Ni4wNTQ3IDI2My41NzYgODYuMDU0N1oiIGZpbGw9IiNGRkU1MDAiIGZpbGwtcnVsZT0iZXZlbm9kZCIvPjwvZz48L3N2Zz4=) no-repeat 1rem/1.8rem, #b32121;
-    padding: 1rem 1rem 1rem 3.7rem;
-    color: white;
+    padding: var(--svx-space-4);
+    border-radius: var(--svx-radius-md);
+    border: 1px solid var(--svx-danger-border);
+    background: var(--svx-danger-bg);
+    color: var(--svx-danger-fg);
 }
 
-    .blazor-error-boundary::after {
-        content: "An error has occurred."
-    }
-
-.darker-border-checkbox.form-check-input {
-    border-color: #929292;
-}
-
-.form-floating > .form-control-plaintext::placeholder, .form-floating > .form-control::placeholder {
-    color: var(--bs-secondary-color);
-    text-align: end;
-}
-
-.form-floating > .form-control-plaintext:focus::placeholder, .form-floating > .form-control:focus::placeholder {
-    text-align: start;
-}
-
-/* ==========================================================================
-   Servyx dashboard shell — shared, page-agnostic building blocks.
-   ========================================================================== */
-
-:root {
-    --svx-bg: #f5f6fa;
-    --svx-surface: #ffffff;
-    --svx-border: #e2e4ea;
-    --svx-text: #1c1f26;
-    --svx-text-muted: #5b5f6b;
-}
-
-*:focus-visible {
-    outline: 2px solid #6d5bff;
-    outline-offset: 2px;
+.blazor-error-boundary::after {
+    content: "An error has occurred.";
 }
 
 /* -- Page header ----------------------------------------------------------- */
@@ -84,9 +39,10 @@ h1:focus {
 
 .svx-page-header h2 {
     margin: 0 0 0.25rem 0;
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: var(--svx-text);
+    font-size: var(--svx-text-xl);
+    font-weight: var(--svx-weight-bold);
+    letter-spacing: -0.01em;
+    color: var(--svx-text-primary);
 }
 
 .svx-page-description {
@@ -98,10 +54,11 @@ h1:focus {
 /* -- Cards ------------------------------------------------------------------ */
 
 .svx-card {
-    background: var(--svx-surface);
-    border: 1px solid var(--svx-border);
-    border-radius: 0.75rem;
-    padding: 1.25rem;
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-default);
+    border-radius: var(--svx-radius-lg);
+    padding: var(--svx-space-5);
+    box-shadow: var(--svx-shadow-xs);
 }
 
 .svx-card + .svx-card {
@@ -110,7 +67,7 @@ h1:focus {
 
 .svx-card h3 {
     font-size: 1rem;
-    font-weight: 700;
+    font-weight: var(--svx-weight-bold);
     margin: 0 0 0.75rem 0;
 }
 
@@ -127,9 +84,9 @@ h1:focus {
     display: flex;
     align-items: flex-start;
     gap: 0.85rem;
-    background: var(--svx-surface);
-    border: 1px solid var(--svx-border);
-    border-radius: 0.75rem;
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-default);
+    border-radius: var(--svx-radius-lg);
     padding: 1rem 1.1rem;
 }
 
@@ -140,8 +97,8 @@ h1:focus {
     width: 2.5rem;
     height: 2.5rem;
     border-radius: 0.6rem;
-    background: #efeaff;
-    color: #6d5bff;
+    background: var(--svx-accent-subtle);
+    color: var(--svx-accent-on-subtle);
     flex: 0 0 auto;
 }
 
@@ -152,14 +109,18 @@ h1:focus {
 }
 
 .stat-card-value {
-    font-size: 1.5rem;
-    font-weight: 700;
+    font-size: var(--svx-text-2xl);
+    font-weight: var(--svx-weight-bold);
     line-height: 1.2;
-    color: var(--svx-text);
+    letter-spacing: -0.02em;
+    color: var(--svx-text-primary);
+    font-variant-numeric: tabular-nums;
 }
 
 .stat-card-title {
-    font-size: 0.8rem;
+    text-transform: uppercase;
+    font-size: var(--svx-text-2xs);
+    letter-spacing: var(--svx-tracking-caps);
     color: var(--svx-text-muted);
 }
 
@@ -171,52 +132,116 @@ h1:focus {
 
 /* -- Badges ------------------------------------------------------------------ */
 
-.health-badge, .state-badge, .drift-badge {
+.health-badge, .state-badge, .drift-badge, .trust-badge, .foreign-badge, .binding-status-badge {
     display: inline-flex;
     align-items: center;
-    gap: 0.35rem;
-    font-size: 0.72rem;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    padding: 0.28rem 0.6rem;
-    border-radius: 999px;
+    gap: var(--svx-space-1);
+    font-size: var(--svx-text-xs);
+    font-weight: var(--svx-weight-semibold);
+    letter-spacing: var(--svx-tracking-wide);
+    padding: 0.1875rem var(--svx-space-2);
+    border-radius: var(--svx-radius-full);
+    border: 1px solid transparent;
     cursor: default;
+    white-space: nowrap;
 }
 
-.health-dot {
-    width: 0.5rem;
-    height: 0.5rem;
+.svx-dot, .health-dot {
+    width: 0.4375rem;
+    height: 0.4375rem;
     border-radius: 50%;
     display: inline-block;
+    flex: 0 0 auto;
 }
 
-.health-healthy { background: #e5f6ea; color: #1f7a3d; }
-.health-healthy .health-dot { background: #1f9d55; }
+.health-healthy   { background: var(--svx-success-bg); border-color: var(--svx-success-border); color: var(--svx-success-fg); }
+.health-unhealthy { background: var(--svx-danger-bg);  border-color: var(--svx-danger-border);  color: var(--svx-danger-fg);  }
+.health-unknown   { background: var(--svx-neutral-bg); border-color: var(--svx-neutral-border); color: var(--svx-neutral-fg); }
 
-.health-unhealthy { background: #fff1de; color: #9a5300; }
-.health-unhealthy .health-dot { background: #d97a06; }
+.health-healthy   .svx-dot, .health-healthy   .health-dot { background: var(--svx-success-solid); }
+.health-unhealthy .svx-dot, .health-unhealthy .health-dot { background: var(--svx-danger-solid);  }
+.health-unknown   .svx-dot, .health-unknown   .health-dot { background: var(--svx-neutral-solid); }
 
-.health-unknown { background: #eef0f4; color: #5b5f6b; }
-.health-unknown .health-dot { background: #9aa0ac; }
+.state-running  { background: var(--svx-success-bg); border-color: var(--svx-success-border); color: var(--svx-success-fg); }
+.state-stopped,
+.state-unknown  { background: var(--svx-neutral-bg); border-color: var(--svx-neutral-border); color: var(--svx-neutral-fg); }
+.state-starting,
+.state-stopping { background: var(--svx-info-bg);    border-color: var(--svx-info-border);    color: var(--svx-info-fg);    }
+.state-crashed  { background: var(--svx-danger-bg);  border-color: var(--svx-danger-border);  color: var(--svx-danger-fg);  }
 
-.state-running { background: #e5f6ea; color: #1f7a3d; }
-.state-stopped { background: #eef0f4; color: #5b5f6b; }
-.state-starting, .state-stopping { background: #e6f0ff; color: #1657c2; }
-.state-crashed { background: #fdeaea; color: #b31c1c; }
-.state-unknown { background: #eef0f4; color: #5b5f6b; }
-
-.drift-none { background: #eef0f4; color: #5b5f6b; }
-.drift-present { background: #fdeaea; color: #b31c1c; }
+.drift-none    { background: var(--svx-neutral-bg); border-color: var(--svx-neutral-border); color: var(--svx-neutral-fg); }
+.drift-present { background: var(--svx-danger-bg);  border-color: var(--svx-danger-border);  color: var(--svx-danger-fg);  }
 
 .foreign-badge {
+    background: var(--svx-neutral-bg);
+    border-color: var(--svx-neutral-border);
+    color: var(--svx-neutral-fg);
+}
+
+/* A server's game-definition binding was not resolved decisively — see BindingStatusBadge.razor. Rendered
+   only for the two non-Bound states; Bound is the overwhelmingly common case and shows no badge at all. */
+.binding-status-ambiguous  { background: var(--svx-warning-bg); border-color: var(--svx-warning-border); color: var(--svx-warning-fg); }
+.binding-status-needsrebind { background: var(--svx-danger-bg);  border-color: var(--svx-danger-border);  color: var(--svx-danger-fg);  }
+
+.binding-status-ambiguous  .svx-dot { background: var(--svx-warning-solid); }
+.binding-status-needsrebind .svx-dot { background: var(--svx-danger-solid); }
+
+/* The fuller explanation shown on the server detail page for a non-Bound server — see ServerDetailPage.razor.
+   Same visible-not-silently-dropped treatment as .game-card-fault on the Games page. */
+.binding-status-notice {
+    border: 1px dashed var(--svx-warning-border);
+    background: var(--svx-warning-bg);
+}
+
+.binding-status-notice-needsrebind {
+    border-color: var(--svx-danger-border);
+    background: var(--svx-danger-wash);
+}
+
+.binding-status-notice h3 { margin-top: 0; }
+
+/* F3: .svx-cost was never declared — render cost figures with tabular numbers and semibold weight. */
+.svx-cost {
+    font-variant-numeric: tabular-nums;
+    font-weight: var(--svx-weight-semibold);
+    color: var(--svx-text-primary);
+}
+
+/* F3: .svx-cost-confidence was never declared and rode entirely on Bootstrap's .badge. */
+.svx-cost-confidence {
     display: inline-flex;
-    font-size: 0.72rem;
-    font-weight: 700;
-    padding: 0.28rem 0.6rem;
-    border-radius: 999px;
-    background: #eef0f4;
-    color: #5b5f6b;
-    cursor: default;
+    align-items: center;
+    padding: 0.1875rem var(--svx-space-2);
+    font-size: var(--svx-text-xs);
+    font-weight: var(--svx-weight-semibold);
+    border-radius: var(--svx-radius-full);
+    border: 1px solid var(--svx-neutral-border);
+    background: var(--svx-neutral-bg);
+    color: var(--svx-neutral-fg);
+}
+
+/* -- Live/running treatment — the one "gamer" flourish ----------------------- */
+
+.state-running .svx-dot,
+.svx-connection-connected .svx-connection-dot {
+    background: var(--svx-live-dot);
+    box-shadow: var(--svx-live-glow);
+}
+
+.svx-dot-pulse { position: relative; }
+.svx-dot-pulse::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: 50%;
+    background: var(--svx-live-halo);
+    animation: svx-pulse 2.4s var(--svx-ease) infinite;
+}
+
+@keyframes svx-pulse {
+    0%   { transform: scale(1);   opacity: 0.7; }
+    70%  { transform: scale(2.6); opacity: 0;   }
+    100% { transform: scale(2.6); opacity: 0;   }
 }
 
 /* -- Gated controls (always-disabled write paths in Milestone 1) ------------- */
@@ -224,42 +249,38 @@ h1:focus {
 .gated-button {
     display: inline-flex;
     align-items: center;
-    gap: 0.4rem;
-    background: #eef0f4;
-    color: #7a7f8c;
-    border: 1px solid #dfe2e8;
-    border-radius: 0.5rem;
-    padding: 0.45rem 0.85rem;
-    font-size: 0.85rem;
+    gap: var(--svx-space-2);
+    padding: 0.4375rem 0.8125rem;
+    font-size: var(--svx-text-base);
+    border-radius: var(--svx-radius-md);
+    border: 1px dashed var(--svx-border-strong);
+    background: var(--svx-bg-subtle);
+    color: var(--svx-text-disabled);
+    box-shadow: none;
     cursor: not-allowed;
 }
-
-.gated-button svg {
-    flex: 0 0 auto;
+.gated-button:not(:disabled) {
+    border: 1px solid var(--svx-accent);
+    background: var(--svx-accent);
+    color: var(--svx-accent-fg);
+    cursor: pointer;
+    box-shadow: var(--svx-shadow-xs);
 }
+.gated-button:not(:disabled):hover { background: var(--svx-accent-hover); border-color: var(--svx-accent-hover); }
+.gated-button-compact { padding: var(--svx-space-1) var(--svx-space-2); font-size: var(--svx-text-xs); }
 
 .gated-control {
-    border: 1px dashed #dfe2e8;
-    border-radius: 0.5rem;
-    padding: 0.6rem 0.75rem 0.6rem 2rem;
-    margin: 0;
     position: relative;
-    background: #fafafc;
+    padding: var(--svx-space-2) var(--svx-space-3) var(--svx-space-2) var(--svx-space-8);
+    border: 1px dashed var(--svx-border-default);
+    border-radius: var(--svx-radius-md);
+    background: var(--svx-bg-inset);
 }
-
-.gated-control-lock {
-    position: absolute;
-    left: 0.6rem;
-    top: 0.65rem;
-    color: #9aa0ac;
-}
-
-.gated-control input,
-.gated-control select,
-.gated-control textarea {
-    background: transparent;
-    cursor: not-allowed;
-}
+.gated-control:not([disabled]) { border-style: solid; border-color: var(--svx-border-default); background: transparent; padding-left: var(--svx-space-3); }
+.gated-control-lock { position: absolute; left: var(--svx-space-3); top: 0.7rem; color: var(--svx-text-subtle); }
+.gated-control[disabled] input,
+.gated-control[disabled] select,
+.gated-control[disabled] textarea { background: transparent; cursor: not-allowed; }
 
 /* -- Sparkline placeholder ---------------------------------------------------- */
 
@@ -267,20 +288,27 @@ h1:focus {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: #6d5bff;
+    color: var(--svx-accent);
 }
 
 .sparkline-svg {
     width: 100%;
     max-width: 140px;
     height: 32px;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+}
+
+:root[data-theme="dark"] .sparkline-svg {
+    filter: drop-shadow(0 0 3px var(--svx-accent-glow));
 }
 
 .sparkline-current {
     font-size: 0.8rem;
-    font-weight: 700;
-    color: var(--svx-text);
+    font-weight: var(--svx-weight-bold);
+    color: var(--svx-text-primary);
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .sparkline-empty {
@@ -314,16 +342,16 @@ h1:focus {
 }
 
 .svx-row-link {
-    background: var(--svx-surface);
-    border: 1px solid var(--svx-border);
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-default);
     border-radius: 0.6rem;
     color: inherit;
     text-decoration: none;
 }
 
 .svx-row-link:hover {
-    border-color: #b8b3ff;
-    background: #faf9ff;
+    border-color: var(--svx-accent-subtle-border);
+    background: var(--svx-bg-hover);
 }
 
 .svx-row-cell-label {
@@ -340,64 +368,80 @@ h1:focus {
 
 .port-chip {
     font-size: 0.68rem;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
-    background: #eef0f4;
+    font-family: var(--svx-font-mono);
+    background: var(--svx-bg-subtle);
     color: var(--svx-text-muted);
     border-radius: 0.35rem;
     padding: 0.15rem 0.4rem;
     white-space: nowrap;
+    font-variant-numeric: tabular-nums;
 }
 
 .port-chip.port-published {
-    background: #e6f0ff;
-    color: #1657c2;
+    background: var(--svx-info-bg);
+    color: var(--svx-info-fg);
 }
 
 /* -- Empty states -------------------------------------------------------------- */
 
 .svx-empty-state {
     text-align: center;
-    padding: 3rem 1.5rem;
+    padding: var(--svx-space-12) var(--svx-space-6);
     color: var(--svx-text-muted);
-    background: var(--svx-surface);
-    border: 1px dashed var(--svx-border);
-    border-radius: 0.75rem;
+    background: var(--svx-bg-surface);
+    border: 1px dashed var(--svx-border-default);
+    border-radius: var(--svx-radius-lg);
+}
+.svx-empty-state h3 { color: var(--svx-text-primary); margin-bottom: var(--svx-space-2); font-size: var(--svx-text-md); }
+.svx-empty-state p  { max-width: 46ch; margin-left: auto; margin-right: auto; }
+
+/* An empty server list where discovery itself failed — visually distinct from a genuinely empty one, so
+   an operator can never mistake "could not be read" for "confirmed zero servers". See Home.razor and
+   ServersList.razor's _discoveryFailed handling. */
+.svx-empty-state-degraded {
+    border: 1px dashed var(--svx-danger-strong);
+    background: var(--svx-danger-wash);
+    color: var(--svx-danger-fg);
 }
 
-.svx-empty-state h3 {
-    color: var(--svx-text);
-    margin-bottom: 0.4rem;
+.svx-discovery-failed-banner {
+    color: var(--svx-danger-fg);
+    font-weight: var(--svx-weight-medium);
 }
 
 /* -- Tabs ----------------------------------------------------------------------- */
 
 .svx-tablist {
     display: flex;
-    gap: 0.25rem;
-    border-bottom: 1px solid var(--svx-border);
-    margin-bottom: 1.25rem;
+    gap: var(--svx-space-1);
+    border-bottom: 1px solid var(--svx-border-default);
+    margin-bottom: var(--svx-space-5);
     overflow-x: auto;
+    scrollbar-width: none;
 }
 
 .svx-tab {
     background: none;
     border: none;
     border-bottom: 2px solid transparent;
-    padding: 0.65rem 0.9rem;
-    font-size: 0.9rem;
+    padding: var(--svx-space-2) var(--svx-space-3);
+    margin-bottom: -1px;
+    font-size: var(--svx-text-base);
+    font-weight: var(--svx-weight-medium);
     color: var(--svx-text-muted);
     cursor: pointer;
     white-space: nowrap;
+    transition: color var(--svx-duration-fast) var(--svx-ease);
 }
 
 .svx-tab:hover {
-    color: var(--svx-text);
+    color: var(--svx-text-primary);
 }
 
 .svx-tab[aria-selected="true"] {
-    color: #6d5bff;
-    border-bottom-color: #6d5bff;
-    font-weight: 600;
+    color: var(--svx-accent);
+    border-bottom-color: var(--svx-accent);
+    font-weight: var(--svx-weight-semibold);
 }
 
 /* -- Settings four-column table -------------------------------------------------- */
@@ -408,7 +452,7 @@ h1:focus {
 
 .settings-group h3 {
     font-size: 0.95rem;
-    font-weight: 700;
+    font-weight: var(--svx-weight-bold);
     margin-bottom: 0.6rem;
 }
 
@@ -428,21 +472,22 @@ h1:focus {
 }
 
 .settings-row {
-    background: var(--svx-surface);
-    border: 1px solid var(--svx-border);
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-default);
     border-radius: 0.5rem;
     margin-bottom: 0.4rem;
 }
 
 .settings-row.has-drift {
-    border-color: #f2b8b8;
-    background: #fffaf9;
+    border-color: var(--svx-danger-border);
+    background: var(--svx-danger-wash);
 }
 
 .settings-value {
     font-size: 0.85rem;
-    color: var(--svx-text);
+    color: var(--svx-text-primary);
     word-break: break-word;
+    font-variant-numeric: tabular-nums;
 }
 
 .settings-value-muted {
@@ -457,7 +502,7 @@ h1:focus {
 .settings-label-key {
     font-size: 0.72rem;
     color: var(--svx-text-muted);
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-family: var(--svx-font-mono);
 }
 
 @media (max-width: 900px) {
@@ -502,12 +547,12 @@ h1:focus {
 .svx-dl dd {
     margin: 0;
     font-size: 0.9rem;
-    color: var(--svx-text);
+    color: var(--svx-text-primary);
 }
 
 .svx-subheading {
     font-size: 0.85rem;
-    font-weight: 700;
+    font-weight: var(--svx-weight-bold);
     margin: 1rem 0 0.5rem 0;
     color: var(--svx-text-muted);
 }
@@ -531,14 +576,14 @@ h1:focus {
 
 .trust-badge {
     font-size: 0.68rem;
-    font-weight: 700;
+    font-weight: var(--svx-weight-bold);
     padding: 0.25rem 0.55rem;
-    border-radius: 999px;
+    border-radius: var(--svx-radius-full);
 }
 
-.trust-builtin { background: #e5f6ea; color: #1f7a3d; }
-.trust-verified { background: #e6f0ff; color: #1657c2; }
-.trust-unverified { background: #fff1de; color: #9a5300; }
+.trust-builtin    { background: var(--svx-success-bg); border-color: var(--svx-success-border); color: var(--svx-success-fg); }
+.trust-verified   { background: var(--svx-info-bg);    border-color: var(--svx-info-border);    color: var(--svx-info-fg);    }
+.trust-unverified { background: var(--svx-warning-bg); border-color: var(--svx-warning-border);  color: var(--svx-warning-fg); }
 
 .game-tags {
     display: flex;
@@ -557,7 +602,7 @@ h1:focus {
 }
 
 .deployment-profile-list li {
-    border-left: 3px solid #dfe2e8;
+    border-left: 3px solid var(--svx-border-default);
     padding-left: 0.6rem;
 }
 
@@ -566,19 +611,42 @@ h1:focus {
     font-size: 0.8rem;
 }
 
-.gated-button-compact {
-    padding: 0.3rem 0.55rem;
-    font-size: 0.72rem;
+/* A definition that failed to load — deliberately as visible as a successful card, never silently dropped
+   from the grid. See GamesPage.razor and LiveDashboardDataService.GetGameDefinitionFaultsAsync. */
+.game-card-fault {
+    border-color: var(--svx-danger-border);
+    background: var(--svx-danger-wash);
+}
+
+.fault-badge {
+    background: var(--svx-danger-bg);
+    border-color: var(--svx-danger-border);
+    color: var(--svx-danger-fg);
+}
+
+.fault-path {
+    font-family: var(--svx-font-mono);
+    font-size: 0.8rem;
+    color: var(--svx-text-primary);
+    word-break: break-all;
+    margin: 0.5rem 0 0.25rem 0;
+}
+
+.fault-message {
+    color: var(--svx-danger-fg);
+    font-size: 0.85rem;
+    margin: 0 0 0.25rem 0;
 }
 
 /* -- Console log viewport ------------------------------------------------------- */
 
 .console-viewport {
-    background: #0e1020;
-    color: #d7dae6;
-    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    background: var(--svx-console-bg);
+    color: var(--svx-console-fg);
+    font-family: var(--svx-font-mono);
     font-size: 0.8rem;
     border-radius: 0.6rem;
+    border: 1px solid var(--svx-console-border);
     padding: 0.85rem 1rem;
     height: 360px;
     overflow-y: auto;
@@ -590,11 +658,11 @@ h1:focus {
 }
 
 .console-line-warn {
-    color: #f0b95c;
+    color: var(--svx-console-warn);
 }
 
 .console-timestamp {
-    color: #6b7086;
+    color: var(--svx-console-dim);
     margin-right: 0.5rem;
 }
 
@@ -616,55 +684,164 @@ h1:focus {
         display: inline;
     }
 }
-/* ── Data impact ──────────────────────────────────────────────────────────────────────────────────
+
+/* ── Data impact ──────────────────────────────────────────────────────────────
    AtRisk and Destroyed must be unmissable: a loud border, a filled background, and a glyph — not a
    muted badge sitting in a row of muted badges. Preserved is deliberately quiet, so that the loud
-   treatment keeps meaning something. */
+   treatment keeps meaning something.
+
+   Styled off the data-severity attribute rather than the svx-data-impact-calm/-danger classes: the
+   classes still ride along in markup (DataImpactBanner.razor) but style nothing here — see F2. */
+
 .svx-data-impact {
     display: flex;
     align-items: flex-start;
-    gap: 0.6rem;
-    margin: 0.85rem 0;
-    padding: 0.7rem 0.9rem;
-    border-radius: 0.5rem;
-    border: 1px solid rgba(255, 255, 255, 0.14);
-    background: rgba(255, 255, 255, 0.03);
+    gap: var(--svx-space-3);
+    margin: var(--svx-space-3) 0;
+    padding: var(--svx-space-3) var(--svx-space-4);
+    border-radius: var(--svx-radius-md);
+    border: 1px solid var(--svx-border-default);
+    background: var(--svx-bg-subtle);
 }
 
-.svx-data-impact-glyph {
-    font-size: 1.35rem;
-    line-height: 1.2;
-}
-
-.svx-data-impact-headline {
-    display: block;
-    font-size: 0.9rem;
-}
-
+.svx-data-impact-glyph { font-size: 1.35rem; line-height: 1.1; }
+.svx-data-impact-body { flex: 1 1 auto; min-width: 0; }
+.svx-data-impact-headline { display: block; font-size: var(--svx-text-md); font-weight: var(--svx-weight-medium); }
 .svx-data-impact-detail {
-    margin: 0.25rem 0 0;
-    font-size: 0.82rem;
-    opacity: 0.9;
+    margin: var(--svx-space-1) 0 0;
+    font-size: var(--svx-text-base);
+    color: var(--svx-text-muted);
 }
 
-.svx-data-impact-calm {
-    border-color: rgba(120, 220, 160, 0.35);
-    background: rgba(120, 220, 160, 0.07);
+.svx-data-impact[data-severity="calm"] {
+    border-color: var(--svx-success-border);
+    background: var(--svx-success-bg);
+}
+.svx-data-impact[data-severity="calm"] .svx-data-impact-headline { color: var(--svx-success-fg); }
+.svx-data-impact[data-severity="calm"] .svx-data-impact-detail   { color: var(--svx-text-muted); }
+
+.svx-data-impact[data-severity="danger"] {
+    border: 2px solid var(--svx-danger-strong);
+    background: var(--svx-danger-bg);
+    box-shadow: inset 0 0 0 1px var(--svx-danger-wash);
+}
+.svx-data-impact[data-severity="danger"] .svx-data-impact-headline {
+    color: var(--svx-danger-fg);
+    font-weight: var(--svx-weight-bold);
+    letter-spacing: var(--svx-tracking-caps);
+}
+.svx-data-impact[data-severity="danger"] .svx-data-impact-detail { color: var(--svx-danger-fg); }
+
+/* ==========================================================================
+   Replacement primitives for the removed Bootstrap surface.
+   ========================================================================== */
+
+.svx-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    gap: var(--svx-space-2);
+    padding: 0.4375rem 0.8125rem;
+    font-size: var(--svx-text-base);
+    font-weight: var(--svx-weight-medium);
+    line-height: 1.25;
+    border-radius: var(--svx-radius-md);
+    border: 1px solid var(--svx-border-strong);
+    background: var(--svx-bg-surface);
+    color: var(--svx-text-primary);
+    box-shadow: var(--svx-shadow-xs);
+    transition: background var(--svx-duration-fast) var(--svx-ease),
+                border-color var(--svx-duration-fast) var(--svx-ease),
+                color var(--svx-duration-fast) var(--svx-ease);
+    white-space: nowrap;
+}
+.svx-btn:hover:not(:disabled) { background: var(--svx-bg-hover); }
+.svx-btn:active:not(:disabled) { background: var(--svx-bg-active); box-shadow: none; }
+.svx-btn:disabled { opacity: 0.55; box-shadow: none; }
+
+.svx-btn-primary { background: var(--svx-accent); border-color: var(--svx-accent); color: var(--svx-accent-fg); }
+.svx-btn-primary:hover:not(:disabled) { background: var(--svx-accent-hover); border-color: var(--svx-accent-hover); }
+.svx-btn-primary:active:not(:disabled) { background: var(--svx-accent-active); border-color: var(--svx-accent-active); }
+
+.svx-btn-danger { background: var(--svx-danger); border-color: var(--svx-danger); color: #FFFFFF; }
+:root[data-theme="dark"] .svx-btn-danger { color: var(--svx-gray-1000); }
+
+.svx-btn-ghost { background: transparent; border-color: transparent; box-shadow: none; color: var(--svx-text-muted); }
+.svx-btn-ghost:hover:not(:disabled) { background: var(--svx-bg-hover); color: var(--svx-text-primary); }
+
+.svx-btn-sm { padding: 0.25rem 0.5rem; font-size: var(--svx-text-xs); border-radius: var(--svx-radius-sm); }
+
+.svx-btn-primary:focus-visible,
+.gated-button:not(:disabled):focus-visible {
+    outline-color: var(--svx-focus-ring);
+    box-shadow: 0 0 0 2px var(--svx-focus-ring-inner);
 }
 
-.svx-data-impact-calm .svx-data-impact-headline {
-    color: #7fdca6;
-    font-weight: 500;
+.svx-input, .svx-select, .svx-textarea {
+    width: 100%;
+    padding: 0.4375rem 0.625rem;
+    font-size: var(--svx-text-base);
+    color: var(--svx-text-primary);
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-strong);
+    border-radius: var(--svx-radius-md);
+    transition: border-color var(--svx-duration-fast) var(--svx-ease),
+                box-shadow var(--svx-duration-fast) var(--svx-ease);
+}
+.svx-input::placeholder, .svx-textarea::placeholder { color: var(--svx-text-subtle); }
+.svx-input:hover:not(:disabled), .svx-select:hover:not(:disabled) { border-color: var(--svx-text-subtle); }
+.svx-input:focus-visible, .svx-select:focus-visible, .svx-textarea:focus-visible {
+    outline: none;
+    border-color: var(--svx-accent);
+    box-shadow: 0 0 0 3px var(--svx-accent-glow);
+}
+.svx-input:disabled, .svx-select:disabled, .svx-textarea:disabled {
+    background: var(--svx-bg-inset);
+    color: var(--svx-text-disabled);
+}
+.svx-input-sm { padding: 0.25rem 0.5rem; font-size: var(--svx-text-xs); border-radius: var(--svx-radius-sm); }
+.svx-textarea { resize: vertical; min-height: 5rem; }
+
+.svx-checkbox {
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    accent-color: var(--svx-accent);
+    vertical-align: middle;
+    cursor: pointer;
+}
+.svx-checkbox:disabled { cursor: not-allowed; }
+.svx-checkbox:focus-visible {
+    outline: var(--svx-focus-ring-width) solid var(--svx-focus-ring);
+    outline-offset: var(--svx-focus-ring-offset);
 }
 
-.svx-data-impact-danger {
-    border: 2px solid #ff5c5c;
-    background: rgba(255, 92, 92, 0.14);
-    box-shadow: 0 0 0 1px rgba(255, 92, 92, 0.25) inset;
+.svx-badge {
+    display: inline-flex; align-items: center; gap: var(--svx-space-1);
+    padding: 0.1875rem var(--svx-space-2);
+    font-size: var(--svx-text-xs);
+    font-weight: var(--svx-weight-semibold);
+    line-height: 1.35;
+    letter-spacing: var(--svx-tracking-wide);
+    border-radius: var(--svx-radius-full);
+    border: 1px solid var(--svx-neutral-border);
+    background: var(--svx-neutral-bg);
+    color: var(--svx-neutral-fg);
+    cursor: default;
+    white-space: nowrap;
 }
 
-.svx-data-impact-danger .svx-data-impact-headline {
-    color: #ff8f8f;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+.svx-visually-hidden {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
 }
+
+.svx-skeleton-group { display: flex; flex-direction: column; gap: var(--svx-space-2); }
+.svx-skeleton { position: relative; overflow: hidden; background: var(--svx-skeleton-base); }
+.svx-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, var(--svx-skeleton-sheen), transparent);
+    animation: svx-shimmer 1.6s var(--svx-ease) infinite;
+}
+@keyframes svx-shimmer { 100% { transform: translateX(100%); } }

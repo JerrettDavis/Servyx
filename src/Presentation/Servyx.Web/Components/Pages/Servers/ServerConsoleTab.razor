@@ -1,3 +1,7 @@
+@using System.Text.RegularExpressions
+@using Servyx.Domain.Rcon
+@using Servyx.Domain.Transport
+@using Servyx.Infrastructure.Rcon
 @implements IAsyncDisposable
 @inject IJSRuntime JS
 
@@ -20,22 +24,149 @@
         }
     </div>
 
-    <div style="margin-top:0.75rem;">
-        <GatedControl Label="Console command input">
-            <div style="display:flex; gap:0.5rem;">
-                <input type="text" class="form-control" placeholder="Send an RCON command…" aria-label="Console command input" />
-                <button type="button" class="btn btn-secondary">Send</button>
+    @* A catalogued console, not a shell prompt: every command sent is one of Commands, invoked by id via
+       IRconSession.InvokeAsync, never a raw operator-authored string. SendRawAsync is never wired here —
+       it is the audited escape hatch WriteGuardedRconSession refuses unconditionally when no audit sink is
+       configured, and Program.cs configures none. *@
+    <div style="margin-top:0.75rem;" data-testid="console-command-panel">
+        @if (_unreachableReason is not null)
+        {
+            <p class="svx-deploy-error" data-testid="console-unreachable">@_unreachableReason</p>
+        }
+        else if (_session is null)
+        {
+            <p class="svx-page-description" data-testid="console-no-channel">No RCON control channel is configured for this server.</p>
+        }
+        else if (Commands.Count == 0)
+        {
+            <p class="svx-page-description" data-testid="console-no-commands">This server's definition declares no control commands.</p>
+        }
+        else
+        {
+            <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end;">
+                <label>
+                    Command
+                    <select data-testid="console-command-select" @onchange="OnCommandChanged">
+                        @foreach (var command in Commands)
+                        {
+                            <option value="@command.Id" selected="@(command.Id == _selectedCommandId)">
+                                @command.Id@(command.ReadOnly ? string.Empty : " (mutating)")
+                            </option>
+                        }
+                    </select>
+                </label>
+
+                @if (SelectedCommand is not null)
+                {
+                    @foreach (var name in ParameterNames(SelectedCommand.Template))
+                    {
+                        <label data-testid="console-arg-field" data-arg-name="@name">
+                            @name
+                            <input type="text" data-testid="@($"console-arg-{name}")"
+                                   value="@ArgValue(name)"
+                                   @oninput="e => SetArgValue(name, e.Value?.ToString() ?? string.Empty)" />
+                        </label>
+                    }
+                }
+
+                @if (!_confirming)
+                {
+                    <button type="button" class="svx-btn" data-testid="console-send"
+                            disabled="@(!CanSendSelected || _busy)"
+                            @onclick="SendAsync">
+                        @(_busy ? "Sending…" : "Send")
+                    </button>
+                }
             </div>
-        </GatedControl>
+
+            @* Mutating commands get the same separate-control-clicked-first confirmation every other
+               destructive action in this app uses; read-only commands (info/players) send immediately and
+               work regardless of write mode. *@
+            @if (_confirming && SelectedCommand is not null)
+            {
+                <div class="svx-deploy-confirm" data-testid="console-confirm-step">
+                    <p>Nothing has been sent yet. <code>@SelectedCommand.Id</code> mutates the running server.</p>
+                    <button type="button" class="svx-btn svx-btn-primary" data-testid="console-confirm" disabled="@_busy" @onclick="SendAsync">
+                        @(_busy ? "Sending…" : "Yes, send it")
+                    </button>
+                    <button type="button" class="svx-btn" data-testid="console-cancel" disabled="@_busy" @onclick="() => _confirming = false">
+                        Cancel
+                    </button>
+                </div>
+            }
+
+            @if (_lastResponse is not null)
+            {
+                <p class="@(_lastResponse.Success ? "svx-deploy-applied" : "svx-deploy-error")" data-testid="console-response">@_lastResponse.Text</p>
+            }
+
+            @if (_error is not null)
+            {
+                <p class="svx-deploy-error" data-testid="console-error">@_error</p>
+            }
+        }
     </div>
 </div>
 
 @code {
+    private static readonly Regex ParameterPattern = new(@"\{([A-Za-z_][A-Za-z0-9_]*)\}", RegexOptions.Compiled);
+
     [Parameter, EditorRequired]
     public IReadOnlyList<LogLine> Logs { get; set; } = [];
 
+    /// <summary>The definition's declared control commands. The select offers exactly these ids — nothing else is ever sendable.</summary>
+    [Parameter]
+    public IReadOnlyList<RconCommand> Commands { get; set; } = [];
+
+    /// <summary>This server's write posture. Mutating commands require <see cref="WriteMode.Enabled"/>; read-only ones work in every mode once a session exists.</summary>
+    [Parameter]
+    public WriteMode WriteMode { get; set; } = WriteMode.ReadOnly;
+
+    /// <summary>
+    /// Resolves the write-guarded RCON session for this server. Invoked once, on initialization; a
+    /// <see cref="RconUnreachableException"/> it throws is caught here and its message — naming why each
+    /// reachability strategy failed — is rendered instead of propagating.
+    /// </summary>
+    [Parameter]
+    public Func<CancellationToken, Task<IRconSession?>>? ResolveSession { get; set; }
+
     private ElementReference _viewportRef;
     private bool _scrolled;
+
+    private IRconSession? _session;
+    private string? _unreachableReason;
+
+    private string _selectedCommandId = string.Empty;
+    private readonly Dictionary<string, string> _argValues = new(StringComparer.Ordinal);
+    private bool _confirming;
+    private bool _busy;
+    private RconResponse? _lastResponse;
+    private string? _error;
+
+    private RconCommand? SelectedCommand => Commands.FirstOrDefault(c => c.Id == _selectedCommandId);
+
+    private bool CanSendSelected =>
+        SelectedCommand is not null && _session is not null && (SelectedCommand.ReadOnly || WriteMode == WriteMode.Enabled);
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (ResolveSession is not null)
+        {
+            try
+            {
+                _session = await ResolveSession(CancellationToken.None);
+            }
+            catch (RconUnreachableException ex)
+            {
+                _unreachableReason = ex.Message;
+            }
+        }
+
+        if (_selectedCommandId.Length == 0 && Commands.Count > 0)
+        {
+            _selectedCommandId = Commands[0].Id;
+        }
+    }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
@@ -48,10 +179,79 @@
             }
             catch (JSException)
             {
-                // Best-effort autoscroll; not critical to the read-only console view.
+                // Best-effort autoscroll; not critical to the console view.
             }
         }
     }
+
+    private void OnCommandChanged(ChangeEventArgs e)
+    {
+        _selectedCommandId = e.Value?.ToString() ?? string.Empty;
+        _argValues.Clear();
+        _confirming = false;
+        _lastResponse = null;
+        _error = null;
+    }
+
+    private string ArgValue(string name) => _argValues.TryGetValue(name, out var value) ? value : string.Empty;
+
+    private void SetArgValue(string name, string value) => _argValues[name] = value;
+
+    private async Task SendAsync()
+    {
+        if (_busy || SelectedCommand is null || _session is null || !CanSendSelected)
+        {
+            return;
+        }
+
+        // Mutating commands require a second, separate click before InvokeAsync is ever called; read-only
+        // commands send on the first click.
+        if (!SelectedCommand.ReadOnly && !_confirming)
+        {
+            _confirming = true;
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        try
+        {
+            _lastResponse = await _session.InvokeAsync(SelectedCommand.Id, BuildArgs(), CancellationToken.None);
+        }
+        catch (WritesDisabledException ex)
+        {
+            _error = ex.Message;
+        }
+        catch (RconUnreachableException ex)
+        {
+            _unreachableReason = ex.Message;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Command failed: {ex.Message}";
+        }
+        finally
+        {
+            _busy = false;
+            _confirming = false;
+        }
+    }
+
+    private IReadOnlyDictionary<string, string>? BuildArgs()
+    {
+        if (SelectedCommand is null)
+        {
+            return null;
+        }
+
+        var names = ParameterNames(SelectedCommand.Template);
+        return names.Count == 0
+            ? null
+            : names.ToDictionary(n => n, ArgValue, StringComparer.Ordinal);
+    }
+
+    private static IReadOnlyList<string> ParameterNames(string template) =>
+        [.. ParameterPattern.Matches(template).Select(m => m.Groups[1].Value).Distinct()];
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

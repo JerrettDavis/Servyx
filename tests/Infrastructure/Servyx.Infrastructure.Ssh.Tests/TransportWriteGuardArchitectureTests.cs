@@ -1,6 +1,8 @@
 using System.Reflection;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Secrets;
@@ -8,6 +10,7 @@ using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Process;
 using Servyx.Infrastructure.Ssh;
+using Servyx.Infrastructure.Ssh.Docker;
 
 namespace Servyx.Infrastructure.Ssh.Tests;
 
@@ -41,7 +44,27 @@ public class TransportWriteGuardArchitectureTests
         ("AddServyxDocker", services => services.AddServyxDocker()),
         ("AddServyxSsh", services => services.AddServyxSsh()),
         ("AddServyxLocalProcess", services => services.AddServyxLocalProcess()),
+        ("AddServyxSshDocker", services => services.AddServyxSshDocker(SshDockerTestOptions(), NullLogger.Instance)),
     ];
+
+    /// <summary>
+    /// A single fully-specified ssh+docker host, enough for <see cref="SshDockerWiringOptions.Any"/> to be
+    /// true and a transport to actually be registered — the same shape <c>AddServyxSshDocker</c> is a no-op
+    /// without.
+    /// </summary>
+    private static SshDockerWiringOptions SshDockerTestOptions()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Servyx:Hosts:testhost:Enabled"] = "true",
+                ["Servyx:Hosts:testhost:Endpoint"] = "ssh:user@10.0.0.9:22",
+                ["Servyx:Hosts:testhost:Container"] = "palworld-server",
+            })
+            .Build();
+
+        return SshDockerWiringOptions.FromConfiguration(configuration, NullLogger.Instance);
+    }
 
     /// <summary>
     /// Registrations that still hand out unguarded sessions. <b>Empty, and asserted to be.</b>
@@ -110,7 +133,7 @@ public class TransportWriteGuardArchitectureTests
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
 
-        implementations.Should().Equal("DockerTransport", "LocalProcessTransport", "SshTransport");
+        implementations.Should().Equal("DockerTransport", "LocalProcessTransport", "SshDockerTransport", "SshTransport");
         TransportRegistrations.Should().HaveCount(implementations.Count);
     }
 
@@ -118,6 +141,7 @@ public class TransportWriteGuardArchitectureTests
     [InlineData("AddServyxDocker")]
     [InlineData("AddServyxSsh")]
     [InlineData("AddServyxLocalProcess")]
+    [InlineData("AddServyxSshDocker")]
     public void Every_transport_registration_hands_out_write_guarded_sessions(string method)
     {
         var registration = TransportRegistrations.Single(r => r.Method == method);
@@ -155,7 +179,8 @@ public class TransportWriteGuardArchitectureTests
             var bare = services
                 .Where(d => d.ServiceType == typeof(DockerTransport)
                     || d.ServiceType == typeof(SshTransport)
-                    || d.ServiceType == typeof(LocalProcessTransport))
+                    || d.ServiceType == typeof(LocalProcessTransport)
+                    || d.ServiceType == typeof(SshDockerTransport))
                 .ToList();
 
             bare.Should().BeEmpty($"{method} must expose the concrete transport under no service type at all");
@@ -178,6 +203,93 @@ public class TransportWriteGuardArchitectureTests
             new Dictionary<string, string>(StringComparer.Ordinal) { ["containerName"] = "palworld-server" });
 
         resolver.Resolve(target).Should().Be(WriteMode.ReadOnly);
+    }
+
+    /// <summary>Every concrete, non-abstract <see cref="IExecutionTarget"/> implementation across the three transport assemblies scanned above.</summary>
+    private static IReadOnlyList<Type> ExecutionTargetImplementations() =>
+        new[]
+            {
+                typeof(DockerTransport).Assembly,
+                typeof(SshTransport).Assembly,
+                typeof(LocalProcessTransport).Assembly,
+            }
+            .Distinct()
+            .SelectMany(LoadableTypes)
+            .Where(type => type is { IsClass: true, IsAbstract: false } && typeof(IExecutionTarget).IsAssignableFrom(type))
+            .OrderBy(type => type.Name, StringComparer.Ordinal)
+            .ToList();
+
+    /// <summary>
+    /// Interfaces an <see cref="IExecutionTarget"/> implementation may carry without
+    /// <see cref="WriteGuardedExecutionTarget"/> needing to carry them too, because they add no method a
+    /// caller could invoke to reach a target's I/O — only structure the guard-seam already covers on
+    /// whichever <see cref="IExecutionTarget"/> is actually called through.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ICompositeExecutionTarget"/> is the one example today: <c>CompositeExecutionTarget</c>
+    /// implements it purely so <see cref="ExecutionTargetWriteMode.Resolve"/> can look through to whichever
+    /// half would perform a mutation — that method already special-cases <see cref="ICompositeExecutionTarget"/>
+    /// in its own switch expression, alongside <see cref="WriteGuardedExecutionTarget"/> itself. The interface
+    /// declares only two <see cref="IExecutionTarget"/>-typed properties and no method of its own, so there is
+    /// nothing reachable through it that <see cref="IExecutionTarget"/> does not already gate on whichever
+    /// half a caller actually calls. Unlike <see cref="IContainerLifecycle"/>, it is not a channel.
+    /// </remarks>
+    private static readonly Type[] NonCapabilityInterfaces = [typeof(ICompositeExecutionTarget)];
+
+    [Fact]
+    public void Every_IExecutionTarget_implementation_in_the_solution_is_named_here()
+    {
+        // If this fails, a new channel exists that the completeness test below has not yet scanned by name.
+        // Add it here, at which point the completeness assertion applies to whatever interfaces it carries.
+        var implementations = ExecutionTargetImplementations().Select(t => t.Name).ToList();
+
+        implementations.Should().Equal(
+            "CompositeExecutionTarget",
+            "DockerExecutionTarget",
+            "LazyConnectingExecutionTarget",
+            "LocalExecutionTarget",
+            "SftpFileChannel",
+            "ShellFileChannel",
+            "SshDockerLifecycleSession",
+            "SshExecChannel");
+    }
+
+    [Fact]
+    public void Every_capability_interface_an_IExecutionTarget_implementation_carries_is_also_on_the_write_guard()
+    {
+        // "Add a new channel to an inner target and forget to decorate WriteGuardedExecutionTarget" is
+        // exactly the hole ContainerLifecycle closed for Docker's start/stop/restart/kill: those calls have
+        // no CommandSpec for ExecuteAsync's gate to inspect, so an ungated cast straight to
+        // IContainerLifecycle would have reached the inner target with no refusal at all. This test is what
+        // keeps that hole from reopening for whatever the next channel turns out to be: any interface a real
+        // IExecutionTarget implementation carries must also appear on WriteGuardedExecutionTarget, or this
+        // fails the build instead of shipping a silent bypass.
+        var implementations = ExecutionTargetImplementations();
+        implementations.Should().NotBeEmpty("the scan above must find real channels for this assertion to mean anything");
+
+        var capabilityInterfaces = implementations
+            .SelectMany(type => type.GetInterfaces())
+            .Distinct()
+            .Except(NonCapabilityInterfaces)
+            .ToList();
+
+        // Pinned by name so a future channel that drops IExecutionTarget itself (impossible today, but not
+        // impossible to typo past) still fails loudly rather than shrinking this set to nothing.
+        // IContainerLifecycle joined this set when SshDockerLifecycleSession added a lifecycle channel to
+        // the ssh+docker session — WriteGuardedExecutionTarget already carries it (see its own remarks), so
+        // this assertion is what proves that coverage rather than assuming it.
+        capabilityInterfaces.Select(i => i.Name).OrderBy(n => n, StringComparer.Ordinal)
+            .Should().Equal("IAsyncDisposable", "IContainerLifecycle", "IExecutionTarget");
+
+        var guardInterfaces = typeof(WriteGuardedExecutionTarget).GetInterfaces();
+
+        foreach (var capability in capabilityInterfaces)
+        {
+            guardInterfaces.Should().Contain(
+                capability,
+                $"WriteGuardedExecutionTarget must implement {capability.Name} too, or a caller that reaches " +
+                "an inner target through it bypasses the write guard entirely");
+        }
     }
 
     [Fact]

@@ -2,13 +2,13 @@
 
 @if (Drift == DriftKind.None)
 {
-    <span class="badge drift-badge drift-none">No drift</span>
+    <span class="svx-badge drift-badge drift-none">No drift</span>
 }
 else
 {
     @foreach (var label in Labels())
     {
-        <span class="badge drift-badge drift-present" title="@DriftExplanation">@label</span>
+        <span class="svx-badge drift-badge drift-present" title="@DriftExplanation">@label</span>
     }
 }
 

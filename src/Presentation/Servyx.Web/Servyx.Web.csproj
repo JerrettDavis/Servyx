@@ -18,6 +18,10 @@
          models are built on. -->
     <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
     <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <!-- The data-driven game-definition catalog (parser, validator, filesystem provider, hot-reload
+         refresh service) that replaced the milestone-1 PalworldDefinitionLoader as the composition
+         root's source of adoption criteria, RCON commands, and lifecycle data. -->
+    <ProjectReference Include="..\..\Core\Servyx.Definitions\Servyx.Definitions.csproj" />
     <!-- Servyx.Infrastructure supplies the Data Protection-backed ISecretStore. The operator password's
          PBKDF2 verifier is a secret like any other, so it is written through the same store, at the same
          kind of secret:// URN, rather than through a storage mechanism invented for authentication. -->
@@ -54,9 +58,13 @@
   </ItemGroup>
 
   <ItemGroup>
-    <!-- Bundled game definition, copied to the output directory so it can be loaded at runtime without
-         reaching outside the published app's own directory tree. -->
-    <None Include="..\..\..\definitions\palworld-docker.yaml" Link="definitions\palworld-docker.yaml">
+    <!-- Every bundled game definition, copied to the output directory so it can be loaded at runtime
+         without reaching outside the published app's own directory tree. A glob, not one enumerated file
+         per definition: an earlier, single-file '<None Include="...\palworld-docker.yaml">' silently
+         shipped only Palworld's definition — a second definition (definitions/minecraft-itzg.yaml) would
+         parse and validate correctly in the repo's own dev tree yet simply not exist in a published build,
+         exactly the kind of "abstraction leak" M6's second-game exercise exists to surface. -->
+    <None Include="..\..\..\definitions\*.yaml" Link="definitions\%(Filename)%(Extension)">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>

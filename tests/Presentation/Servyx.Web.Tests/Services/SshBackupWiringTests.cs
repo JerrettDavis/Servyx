@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Servyx.Application.Backups;
 using Servyx.Domain.Backups;
@@ -55,7 +56,13 @@ public class SshBackupWiringTests
         Palworld(),
         new SourceRconClient(),
         new RecordingSecretStore(),
-        new WritableServers([serverKey]));
+        new WritableServers([serverKey]),
+        // A single always-available strategy: these tests assert quiesce-step wiring, not reachability.
+        chainFactory: channel => new RconReachabilityChain(
+        [
+            new AlwaysAvailableRconReachability(endpoint =>
+                new RconSession(new SourceRconClient(), endpoint, Palworld(), new RecordingSecretStore(), channel.PasswordUrn)),
+        ]));
 
     private static ITransport Transport()
     {
@@ -171,6 +178,45 @@ public class SshBackupWiringTests
         server.DeploymentKind.Should().Be(SshBackupWiringOptions.DefaultDeploymentKind);
         server.CredentialUrn?.Value.Should().Be($"secret://server/{SshServer}/ssh/password");
         server.Writable.Should().BeFalse();
+    }
+
+    /// <summary>
+    /// A declared <c>ForeignDirectory</c> is inert on its own — see <c>ServyxSshBackupContextSource</c>'s
+    /// remarks — and must never fail silently. Naming one still has to warn, naming none must stay silent.
+    /// </summary>
+    [Fact]
+    public void A_declared_foreign_directory_is_reported_as_inert_without_an_adopter()
+    {
+        var configuration = SshConfigured(($"Servyx:Servers:{SshServer}:Ssh:ForeignDirectory", "backups"));
+        var logger = new RecordingLogger();
+
+        var options = SshBackupWiringOptions.FromConfiguration(
+            configuration, ProvisioningGate.FromConfiguration(configuration), logger);
+
+        var server = options.Servers.Should().ContainSingle().Subject;
+        server.ForeignDirectory.Should().Be("backups");
+        server.ForeignPattern.Should().Be(SshBackupWiringOptions.DefaultForeignPattern);
+
+        logger.Entries.Should().ContainSingle(e =>
+            e.Level == LogLevel.Warning
+            && e.Message.Contains(SshServer)
+            && e.Message.Contains("backups")
+            && e.Message.Contains("ForeignDirectory")
+            && e.Message.Contains("no IBackupAdopter is registered"));
+    }
+
+    [Fact]
+    public void No_foreign_directory_configured_means_no_warning_and_no_directory()
+    {
+        var configuration = SshConfigured();
+        var logger = new RecordingLogger();
+
+        var options = SshBackupWiringOptions.FromConfiguration(
+            configuration, ProvisioningGate.FromConfiguration(configuration), logger);
+
+        var server = options.Servers.Should().ContainSingle().Subject;
+        server.ForeignDirectory.Should().BeNull();
+        logger.Entries.Should().BeEmpty();
     }
 
     [Fact]
@@ -317,6 +363,25 @@ public class SshBackupWiringTests
 
         // No adopter ships for a generic SSH host, so nothing may be asserted to be a foreign archive.
         context.Foreign.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_configured_foreign_directory_reaches_the_context_even_though_nothing_adopts_it_yet()
+    {
+        var configuration = SshConfigured(
+            ($"Servyx:Servers:{SshServer}:Ssh:ForeignDirectory", "backups"),
+            ($"Servyx:Servers:{SshServer}:Ssh:ForeignPattern", "*.tar.gz"));
+        var options = SshBackupWiringOptions.FromConfiguration(
+            configuration,
+            ProvisioningGate.FromConfiguration(configuration));
+
+        await using var source = new ServyxSshBackupContextSource(options, Transport());
+
+        var context = await source.GetAsync(SshServer);
+
+        var declared = context.Foreign.Should().ContainSingle().Subject;
+        declared.Directory.Should().Be("backups");
+        declared.Pattern.Should().Be("*.tar.gz");
     }
 
     [Fact]

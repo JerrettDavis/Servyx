@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 using Servyx.Domain.Backups;
 
 namespace Servyx.Infrastructure.Ssh.Backups;
@@ -53,7 +54,11 @@ public static class SshBackupServiceCollectionExtensions
         services.AddSingleton<IBackupProvider>(sp => new SshBackupProvider(
             sp.GetRequiredService<ISshBackupContextSource>(),
             sp.GetServices<IBackupAdopter>(),
-            sp.GetService<TimeProvider>()));
+            sp.GetService<TimeProvider>(),
+            restorePlanTtl: null,
+            // Resolved rather than required so a host with no logging configured still composes; a resume
+            // failure is thrown as well as logged, so it can never be lost entirely.
+            sp.GetService<ILogger<SshBackupProvider>>()));
 
         return services;
     }

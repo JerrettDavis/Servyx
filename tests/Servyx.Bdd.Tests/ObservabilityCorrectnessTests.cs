@@ -74,7 +74,7 @@ public class ObservabilityCorrectnessTests(ITestOutputHelper output) : TinyBddXu
                     Substitute.For<IMetricsSource>(),
                     Substitute.For<ILogStream>(),
                     Substitute.For<ITransport>(),
-                    AdoptionCriteria.PalworldDefault,
+                    new AdoptionCriteria("palworld", "Palworld Dedicated Server", "thijsvanloef/palworld-server-docker", "/palworld"),
                     NullLogger<ServerQueryService>.Instance);
             })
             .When("the server list is resolved", async Task<ServerSummary> (queryService) => (await queryService.GetAdoptedServersAsync()).Single())

@@ -1,4 +1,6 @@
-@using Servyx.Web.Authentication
+﻿@using Servyx.Web.Authentication
+@using Servyx.Web.Services
+@inject BrandingOptions Brand
 @*
     The sign-in page, and the only thing in Servyx an anonymous caller is ever served.
 
@@ -16,89 +18,111 @@
 <html lang="en">
 
 <head>
+    <script>
+        // Servyx theme bootstrap. Runs before first paint so the resolved theme is already
+        // on <html> when the stylesheets apply — no light-to-dark flash on load.
+        // DUPLICATED VERBATIM in Components/App.razor and Components/Pages/Login/LoginPage.razor.
+        // Keep the two copies identical. Full API lives in wwwroot/js/servyx-theme.js.
+        (function () {
+            var e = document.documentElement;
+            try {
+                var c = localStorage.getItem('svx-theme');
+                if (c !== 'light' && c !== 'dark') { c = 'system'; }
+                var r = c === 'system'
+                    ? (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+                    : c;
+                e.setAttribute('data-theme', r);
+                e.setAttribute('data-theme-choice', c);
+                e.style.colorScheme = r;
+            } catch (_) {
+                e.setAttribute('data-theme', 'light');
+                e.setAttribute('data-theme-choice', 'system');
+            }
+        })();
+    </script>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
-    <title>Sign in - Servyx</title>
-    <link rel="icon" type="image/png" href="favicon.png" />
+    <title>Sign in - @Brand.ProductName</title>
+    <link rel="icon" type="image/png" href="@Brand.FaviconAssetPath" />
+    <link rel="stylesheet" href="theme.css" />
     <link rel="stylesheet" href="app.css" />
     <style>
-        .svx-login {
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 2rem 1rem;
-            font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-        }
-
-        .svx-login-card {
-            width: 100%;
-            max-width: 26rem;
-            border: 1px solid rgba(127, 127, 127, 0.35);
-            border-radius: 0.75rem;
-            padding: 2rem;
-        }
-
-        .svx-login-card h1 {
-            margin: 0 0 0.25rem;
-            font-size: 1.5rem;
-        }
-
-        .svx-login-lede {
-            margin: 0 0 1.5rem;
-            opacity: 0.8;
-            font-size: 0.9rem;
-            line-height: 1.5;
-        }
-
-        .svx-login-card label {
-            display: block;
-            margin-bottom: 1rem;
-        }
-
-        .svx-login-card label span {
-            display: block;
-            margin-bottom: 0.35rem;
-            font-size: 0.85rem;
-            font-weight: 600;
-        }
-
-        .svx-login-card input[type="password"] {
-            width: 100%;
-            padding: 0.6rem 0.7rem;
-            border-radius: 0.4rem;
-            border: 1px solid rgba(127, 127, 127, 0.5);
-            font: inherit;
-        }
-
-        .svx-login-card button {
-            width: 100%;
-            padding: 0.65rem 1rem;
-            border: 0;
-            border-radius: 0.4rem;
-            font: inherit;
-            font-weight: 600;
-            cursor: pointer;
-            background: #0d6efd;
-            color: #fff;
-        }
-
-        .svx-login-error {
-            margin: 0 0 1rem;
-            padding: 0.6rem 0.75rem;
-            border-radius: 0.4rem;
-            border: 1px solid #dc3545;
-            color: #dc3545;
-            font-size: 0.9rem;
-        }
+.svx-login {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--svx-space-8) var(--svx-space-4);
+    background: var(--svx-bg-base);
+    color: var(--svx-text-primary);
+}
+.svx-login-card {
+    width: 100%;
+    max-width: 26rem;
+    padding: var(--svx-space-8);
+    background: var(--svx-bg-surface);
+    border: 1px solid var(--svx-border-default);
+    border-radius: var(--svx-radius-xl);
+    box-shadow: var(--svx-shadow-lg);
+}
+.svx-login-card h1 { margin: 0 0 var(--svx-space-1); font-size: var(--svx-text-xl); }
+.svx-login-lede {
+    margin: 0 0 var(--svx-space-6);
+    color: var(--svx-text-muted);
+    font-size: var(--svx-text-base);
+    line-height: var(--svx-leading-relaxed);
+}
+.svx-login-card label { display: block; margin-bottom: var(--svx-space-4); }
+.svx-login-card label span {
+    display: block;
+    margin-bottom: var(--svx-space-2);
+    font-size: var(--svx-text-xs);
+    font-weight: var(--svx-weight-semibold);
+    color: var(--svx-text-primary);
+}
+.svx-login-card input[type="password"] {
+    width: 100%;
+    padding: 0.4375rem 0.625rem;
+    border-radius: var(--svx-radius-md);
+    border: 1px solid var(--svx-border-strong);
+    background: var(--svx-bg-surface);
+    color: var(--svx-text-primary);
+    font: inherit;
+}
+.svx-login-card input[type="password"]:focus-visible {
+    outline: none;
+    border-color: var(--svx-accent);
+    box-shadow: 0 0 0 3px var(--svx-accent-glow);
+}
+.svx-login-card button {
+    width: 100%;
+    padding: 0.5625rem var(--svx-space-4);
+    border: 1px solid var(--svx-accent);
+    border-radius: var(--svx-radius-md);
+    font: inherit;
+    font-weight: var(--svx-weight-semibold);
+    cursor: pointer;
+    background: var(--svx-accent);
+    color: var(--svx-accent-fg);
+}
+.svx-login-card button:hover { background: var(--svx-accent-hover); border-color: var(--svx-accent-hover); }
+.svx-login-error {
+    margin: 0 0 var(--svx-space-4);
+    padding: var(--svx-space-2) var(--svx-space-3);
+    border-radius: var(--svx-radius-md);
+    border: 1px solid var(--svx-danger-border);
+    background: var(--svx-danger-bg);
+    color: var(--svx-danger-fg);
+    font-size: var(--svx-text-base);
+}
     </style>
 </head>
 
 <body>
     <main class="svx-login">
         <div class="svx-login-card">
-            <h1>Servyx</h1>
+            <h1>@Brand.ProductName</h1>
 
             @if (SetupRequired)
             {

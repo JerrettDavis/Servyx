@@ -9,8 +9,8 @@ Feature: Adopted inventory
 
   Scenario: The dashboard summarises the whole estate at a glance
     When I open the dashboard
-    Then the "Servers online" tile shows "1 / 1"
-    And the "Total players" tile shows "3 / 32"
+    Then the "Servers online" tile shows "2 / 2"
+    And the "Total players" tile shows "10 / 64"
     And the "Foreign backups" tile shows "5"
     And all 9 sidebar entries are reachable
     And I capture the screen as "dashboard-overview"

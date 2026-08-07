@@ -1,20 +1,27 @@
-@* A button that is always disabled in Milestone 1, with a lock icon and an explanatory tooltip.
-   No page should hand-roll a disabled mutating control — use this (or <GatedControl> for
-   non-button inputs) everywhere instead, so a write path can never be left un-gated by accident. *@
+@* A mutating action button, gated behind a server's write posture. <see cref="Enabled"/> defaults to
+   false, so a page that has not been taught this server's WriteMode renders the exact same permanently-
+   disabled, lock-iconed control this component has always rendered. A caller that has a real WriteMode and
+   a real handler passes both explicitly. No page should hand-roll a disabled mutating control — use this
+   (or <GatedControl> for non-button inputs) everywhere instead, so a write path can never be left
+   un-gated by accident. *@
 
 <button type="button"
-        class="btn gated-button @CssClass"
-        disabled
-        title="@Reason"
+        class="svx-btn gated-button @CssClass"
+        disabled="@(!Enabled)"
+        title="@(Enabled ? null : Reason)"
         aria-label="@AriaLabel"
-        data-testid="gated-button">
-    <Icon Name="lock" Size="14" />
+        data-testid="@(TestId ?? "gated-button")"
+        @onclick="OnClick">
+    @if (!Enabled)
+    {
+        <Icon Name="lock" Size="14" />
+    }
     <span class="gated-button-text">@ChildContent</span>
 </button>
 
 @code {
-    /// <summary>The standard, product-wide explanation for why every mutating control is disabled in M1.</summary>
-    public const string DefaultReason = "Servyx is in read-only mode. Writes are enabled per-server in Milestone 4.";
+    /// <summary>The standard, product-wide explanation for why a mutating control is disabled.</summary>
+    public const string DefaultReason = "This server is in read-only mode. An operator must grant it write access before this control works.";
 
     [Parameter]
     public RenderFragment? ChildContent { get; set; }
@@ -28,5 +35,24 @@
     [Parameter]
     public string CssClass { get; set; } = string.Empty;
 
-    private string AriaLabel => string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}";
+    /// <summary>Overrides the default <c>data-testid="gated-button"</c>, for pages with more than one gated button on screen.</summary>
+    [Parameter]
+    public string? TestId { get; set; }
+
+    /// <summary>
+    /// Whether this control is actually clickable. Defaults to <see langword="false"/> so every call site
+    /// that predates write support renders byte-identically to before: permanently disabled, lock icon
+    /// shown, tooltip explaining why. A caller wires this to the owning server's write posture (typically
+    /// <c>WriteMode == WriteMode.Enabled</c>).
+    /// </summary>
+    [Parameter]
+    public bool Enabled { get; set; }
+
+    /// <summary>Invoked on click. Never fires while <see cref="Enabled"/> is false — the native <c>disabled</c> attribute prevents the click event entirely.</summary>
+    [Parameter]
+    public EventCallback OnClick { get; set; }
+
+    private string? AriaLabel => Enabled
+        ? Label
+        : (string.IsNullOrWhiteSpace(Label) ? Reason : $"{Label}. {Reason}");
 }

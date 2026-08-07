@@ -1,0 +1,23 @@
+@using Servyx.Web.Services
+@inject IServiceProvider Services
+
+<PageTitle>@Section - @_brand.ProductName</PageTitle>
+
+@code {
+    /// <summary>The page-specific portion of the title, e.g. "Games" or a server's own name.</summary>
+    [Parameter, EditorRequired]
+    public string Section { get; set; } = string.Empty;
+
+    private BrandingOptions _brand = BrandingOptions.Default;
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>d, mirroring
+    /// <c>MainLayout</c>'s and <c>NavMenu</c>'s DI-optional pattern: a host that never registered
+    /// <see cref="BrandingOptions"/> — including a bUnit test that renders this component in isolation —
+    /// still renders, with the unconfigured default name.
+    /// </summary>
+    protected override void OnInitialized()
+    {
+        _brand = Services.GetService(typeof(BrandingOptions)) as BrandingOptions ?? BrandingOptions.Default;
+    }
+}

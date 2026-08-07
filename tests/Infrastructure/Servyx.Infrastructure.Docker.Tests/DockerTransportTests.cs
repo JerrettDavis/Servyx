@@ -25,11 +25,23 @@ public class DockerTransportTests
         var transport = new DockerTransport();
 
         transport.Capabilities.Should().Be(
-            TransportCapabilities.FileRead | TransportCapabilities.DirectoryList | TransportCapabilities.ContainerApi);
+            TransportCapabilities.FileRead | TransportCapabilities.DirectoryList |
+            TransportCapabilities.ContainerApi | TransportCapabilities.ContainerScopedFiles);
         transport.Capabilities.Should().NotHaveFlag(TransportCapabilities.ExecuteCommand);
         transport.Capabilities.Should().NotHaveFlag(TransportCapabilities.FileWrite);
         transport.Capabilities.Should().NotHaveFlag(TransportCapabilities.StreamStdin);
         transport.Capabilities.Should().NotHaveFlag(TransportCapabilities.PortForward);
+    }
+
+    [Fact]
+    public void Capabilities_advertises_container_scoped_files_because_paths_resolve_inside_the_container()
+    {
+        // This is the one transport in Servyx for which the flag is true: DockerExecutionTarget prefixes
+        // every TargetPath with the descriptor's 'rootPath' as an IN-CONTAINER path and reaches it through
+        // the Engine's container archive API, so no path it serves can land on the host filesystem. Callers
+        // that need container-rooted files (the Docker backup pipeline) key off exactly this flag.
+        new DockerTransport().Capabilities
+            .Should().HaveFlag(TransportCapabilities.ContainerScopedFiles);
     }
 
     [Fact]

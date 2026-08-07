@@ -1,0 +1,458 @@
+apiVersion: servyx.dev/v1
+kind: GameDefinition
+metadata:
+  id: factorio-factoriotools
+  name: Factorio Dedicated Server (factoriotools)
+  version: 1.0.0
+  license: MIT
+  tags: [survival, factory, steam]
+
+capabilities:
+  network:
+    - { port: 34197, protocol: udp, purpose: game, var: PORT,      published: true }
+    - { port: 27015, protocol: tcp, purpose: rcon, var: RCON_PORT, published: false }
+  filesystem:
+    - { path: "${DATA_DIR}", access: rw, purpose: "config (server-settings.json, admin/whitelist/banlist), mods, saves" }
+  # The image downloads the Factorio headless binary update and, when mod auto-download is enabled (see
+  # 'UPDATE_MODS_ON_START' below), talks to the Factorio mod portal to fetch mod archives. Mirroring
+  # definitions/ark-asa-pok.yaml's own precedent for a self-updating image whose exact egress hosts are not
+  # part of this definition's verified fact set, this is left empty rather than guessed at.
+  egress: []
+  shell: false
+  privileged: false
+  hostNetwork: false
+
+deployments:
+  - id: docker-factoriotools
+    kind: docker
+    detect:
+      imageRepo: "factoriotools/factorio"
+      requiredMounts: [{ containerPath: /factorio }]
+    image:
+      default: "factoriotools/factorio:stable"
+    dataDir: /factorio
+
+    # Servyx's own orchestration budget for a graceful stop — distinct from 'stopGracePeriodSeconds' below,
+    # which is the container RUNTIME's kill timer. Sized to comfortably cover the full lifecycle.stop ladder
+    # (30s + 240s = 270s) with headroom for RCON round-trip latency, the same relationship
+    # definitions/ark-asa-pok.yaml's 'stopTimeout' has to its own ladder total.
+    stopTimeout: 285s
+
+    # Docker's own stop grace period defaults to just 10 SECONDS — nowhere near enough for Factorio's ladder
+    # below. Factorio handles SIGTERM itself (it logs 'Received SIGTERM, shutting down' and then saves), but a
+    # too-short timeout truncates that save mid-write and leaves a stray '*.tmp.zip' behind (see
+    # 'backup.exclude'). Set to (at least) the ladder's total of 270s; the parser hard-errors if this is ever
+    # less than that total (see ResolveDeferredChecks in GameDefinitionYamlParser.Semantics.cs).
+    stopGracePeriodSeconds: 300
+
+    # ---- the single least obvious thing in this definition ----
+    # factoriotools/factorio's entrypoint accepts NO environment variable for the RCON password. On first
+    # boot, if (and only if) '/factorio/config/rconpw' does not already exist, the entrypoint generates one
+    # itself and writes it there — a password Servyx would have no way to learn. 'files[]' exists to close
+    # exactly this gap: it writes the seeded file *before* the workload's own entrypoint ever runs, so the
+    # image's generator sees the file already present and leaves it alone (helped along by 'createOnly: true'
+    # below, which is also the parser's own default — spelled out here because it is load-bearing, not
+    # incidental). 'control.channels[0].passwordRef' further down references the exact same secret key, so the
+    # value Servyx seeds into this file and the value it authenticates RCON with can never drift apart.
+    files:
+      - path: "${DATA_DIR}/config/rconpw"
+        mode: "0600"
+        createOnly: true
+        contentFrom: "secret:rcon-password"
+
+    config:
+      surfaces:
+        # THE source of truth for launch-time parameters (map/save selection, ports, DLC, mod auto-download
+        # credentials): every setting bound to this surface is an environment variable the image's own
+        # entrypoint reads on container start.
+        - id: env
+          role: authoritative
+          format: dotenv
+          locator: { kind: host-file, path: "${COMPOSE_DIR}/.env" }
+          mergePolicy: preserve-unknown
+
+        # Ports, volumes, restart policy, container name.
+        - id: compose
+          role: authoritative
+          format: yaml
+          locator: { kind: host-file, path: "${COMPOSE_DIR}/compose.yaml" }
+          managedSubtree: "services.factorio"
+          mergePolicy: preserve-unknown
+
+        # THE authoritative in-game settings surface. UNLIKE Palworld's PalWorldSettings.ini (regenerated
+        # wholesale from .env on every boot, modeled 'derived') or Minecraft's server.properties (rewritten by
+        # the entrypoint from env on every start, also 'derived'), this file is never touched by the image's
+        # own entrypoint at all — it is entirely operator-owned. Modeled 'authoritative' for the same reason
+        # ark-asa-pok.yaml's 'gameusersettings' surface is: nothing regenerates it out from under a Servyx
+        # write. A new-format ('format: json') surface, bound below via RFC 6901 JSON-pointer bindings rather
+        # than the flat-key or ini-member addressing every earlier definition's surfaces use.
+        - id: server-settings
+          role: authoritative
+          format: json
+          locator: { kind: host-file, path: "${DATA_DIR}/config/server-settings.json" }
+          mergePolicy: preserve-unknown
+
+      # map-gen-settings.json / map-settings.json apply ONLY at map-generation time — editing either after a
+      # save already exists has no effect on that save. Declared here so the UI can explain their presence,
+      # explicitly excluded from binding (there is nothing meaningful for Servyx to write into them post-
+      # creation) and, per the same reasoning, not part of 'backup.include' below either.
+      ignored:
+        - path: "${DATA_DIR}/config/map-gen-settings.json"
+          reason: "Applies only at map-generation time; has no effect once a save already exists."
+        - path: "${DATA_DIR}/config/map-settings.json"
+          reason: "Applies only at map-generation time; has no effect once a save already exists."
+
+lifecycle:
+  ready:
+    # PRIMARY: an authenticated RCON control probe, chosen over the (unverified — see the log-regex entry
+    # below) startup log line per this definition's brief. Deliberately does NOT depend on any specific reply
+    # text: 'expect: ".*"' is a regex that matches any response at all, including an empty one, so what
+    # actually gates readiness here is "the RCON listener accepted a TCP connection, authenticated with the
+    # password seeded via 'files[]' above, and returned *some* response to a read-only command" — a
+    # control-channel liveness check, not a guess at an unconfirmed reply format. This sidesteps the exact
+    # failure mode definitions/ark-asa-pok.yaml's 'ready' comment warns about (an unverified 'expect' string
+    # producing a false negative that blocks startup forever) while still satisfying the instruction to prefer
+    # a control probe as the primary signal.
+    - kind: control-probe
+      channel: rcon
+      command: players
+      expect: ".*"
+      interval: 10s
+      timeout: 20m
+    # SECONDARY/FALLBACK: the believed (but NOT confirmed against a captured log) startup line, of the form
+    # 'Hosting game at IP ADDR:(0.0.0.0:34197)'. Kept as a fallback rather than promoted to primary, and
+    # specifically NOT the sole detector, because a wrong guess here would otherwise be the only thing gating
+    # readiness — see the control-probe entry above for why that risk is avoided instead.
+    - kind: log-regex
+      pattern: 'Hosting game at IP ADDR:\(0\.0\.0\.0:\d+\)'
+      timeout: 20m
+
+  # Load-bearing ladder: server-save -> SIGTERM -> SIGKILL. Deliberately only THREE stages, unlike
+  # palworld-docker.yaml's shutdown+doexit+signal+kill or ark-asa-pok.yaml's save+doexit+signal+kill: Factorio's
+  # Source-RCON dialect exposes NO quit/stop/exit command whatsoever — this is a verified, deliberate absence
+  # in the game itself, not a gap in this definition (see the 'control.channels[0].commands' comment below for
+  # the same point made where an author reaching for a 'doexit'-shaped command would look first). SIGTERM is
+  # therefore the only way to ask the process to exit at all. Factorio handles it directly (logs 'Received
+  # SIGTERM, shutting down', then performs its own save) — but only if given enough time: a timeout shorter
+  # than the save takes truncates it and can leave a stray '*.tmp.zip' behind (see 'backup.exclude').
+  stop:
+    # 1) Best-effort explicit save before anything destructive happens. 'continueOnError: true' (the
+    #    'control' stage default, spelled out here rather than left implicit) means an unreachable RCON
+    #    escalates to SIGTERM instead of wedging the whole stop.
+    - { kind: control, channel: rcon, command: save, timeout: 30s, continueOnError: true }
+    # 2) The genuine escalation, and — per the ladder comment above — the ONLY way to ask Factorio to exit at
+    #    all. Budgeted generously (240s) because this single stage is now carrying the full weight a
+    #    quit-command-capable game would split across two RCON stages: Factorio's own save-on-SIGTERM plus the
+    #    process teardown itself. 'continueOnError: false' (the 'signal' stage default, also spelled out) is
+    #    correct here: a runtime that refuses to deliver SIGTERM at all is a real fault worth surfacing.
+    - { kind: signal, signal: SIGTERM, timeout: 240s, continueOnError: false }
+    # 3) Unconditional, terminal. By the time the ladder reaches here (~270s in), stage 1's explicit save and
+    #    stage 2's SIGTERM-triggered save have both already had their chance to run, so this is a last resort
+    #    against a wedged process rather than a point where world state is lost.
+    - { kind: kill }
+
+  crashDetection:
+    # Factorio is not an Unreal Engine title (unlike Palworld/ARK ASA), so their "Fatal error|Assertion
+    # failed" precedent does not transfer. This pattern targets the generic native-crash signatures a Linux
+    # binary produces regardless of engine, and — like the readiness log-regex above — has NOT been checked
+    # against a captured real crash log for this specific image; treat it as a best-effort default rather than
+    # a confirmed fact, and tighten it once a real crash trace has been observed.
+    - { kind: log-regex, pattern: 'Segmentation fault|Aborted \(core dumped\)|std::exception', action: mark-crashed }
+
+  # No healthSignal block: no documented container-level HEALTHCHECK behavior for factoriotools/factorio was
+  # part of this definition's verified fact set (same position as minecraft-itzg.yaml and ark-asa-pok.yaml), so
+  # there is nothing here to document an override for. The generic, game-neutral explanation applies untouched
+  # whenever Docker reports this container unhealthy for some other reason.
+
+control:
+  channels:
+    - id: rcon
+      protocol: source-rcon
+      port: "${RCON_PORT}"
+      # Resolves to the very same value seeded into '/factorio/config/rconpw' by the deployment's 'files[]'
+      # entry above — see that entry's comment for why this indirection exists at all.
+      passwordRef: "secret:rcon-password"
+      reachability:                  # ordered; first available wins
+        - kind: direct-tcp           # only if the port is published
+        # No 'docker-exec-tool' entry: unlike itzg's bundled rcon-cli (Minecraft) or thijsvanloef's bundled
+        # rcon-cli (Palworld), factoriotools/factorio is not documented as bundling any in-container RCON CLI
+        # tool, so no specific tool/argv is declared here rather than guessed at (the same position
+        # ark-asa-pok.yaml takes for acekorneya/asa_server).
+        - kind: docker-exec-network  # nc/curl from a sibling container on the same compose network
+      commands:
+        # Verified: standard Source RCON, slash-prefixed commands.
+        players:   { template: "/players online",         readOnly: true }
+        save:      { template: "/server-save",             readOnly: false }
+        broadcast: { template: "/shout {message}",          readOnly: false }
+        kick:      { template: "/kick {player} {reason}",   readOnly: false }
+        ban:       { template: "/ban {player} {reason}",    readOnly: false }
+        # Deliberately NO 'quit'/'stop'/'doexit'-shaped command here: Factorio's RCON dialect exposes none —
+        # verified, not an oversight. See the 'lifecycle.stop' ladder comment above for the consequence.
+
+  players:
+    preferred: [rcon.players]
+    pollInterval: 30s
+    parsers:
+      # UNVERIFIED: '/players online's exact reply text could not be confirmed from available documentation.
+      # Written permissively rather than precisely, the same reasoning as ark-asa-pok.yaml's 'rcon.players'
+      # parser: the 'lines' kind degrades any reply that does not match into PlayerListFidelity.Unknown rather
+      # than throwing or mis-attributing a name, and a mis-parse here cannot affect readiness (see the
+      # control-probe comment above, which deliberately does not depend on this parser or this reply's exact
+      # text) or the stop ladder. Tighten this from a captured fixture once real '/players online' output has
+      # been observed; do not treat the shape below as confirmed. 'entryPattern' captures a bare name and
+      # tolerates (but discards) a trailing parenthesized annotation some games append (e.g. "(online)");
+      # 'ignorePatterns' guards against an empty-server sentinel line and blank lines.
+      rcon.players:
+        kind: lines
+        entryPattern: '^\s*(?<name>[^\s(][^()]*?)\s*(?:\([^)]*\))?\s*$'
+        ignorePatterns:
+          - '(?i)no\s+players'
+          - '(?i)^\s*(online\s+)?players'
+          - '^\s*$'
+
+settings:
+  - group: Identity
+    items:
+      - key: name
+        label: Server name
+        type: string
+        maxLength: 100
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/name" }
+
+      - key: description
+        label: Description
+        type: text
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/description" }
+
+  - group: Networking
+    items:
+      - key: PORT
+        label: Game port
+        type: port
+        default: 34197
+        requiresRecreate: true       # env is baked at container create
+        bindings:
+          - { surface: env,     direction: write, key: PORT }
+          - { surface: compose, direction: write,
+              pointer: "/services/factorio/ports", strategy: publish-udp }
+
+      - key: RCON_PORT
+        label: RCON port
+        type: port
+        default: 27015
+        publishByDefault: false      # Servyx will not expose RCON to the host network
+        bindings:
+          - { surface: env, direction: write, key: RCON_PORT }
+
+  - group: Gameplay
+    items:
+      - key: PRESET
+        label: Map generation preset
+        type: string
+        requiresRecreate: true       # only consulted by the entrypoint on first map generation
+        bindings:
+          - { surface: env, direction: write, key: PRESET }
+
+      - key: BIND
+        label: Bind address
+        type: string
+        requiresRecreate: true       # env is baked at container create
+        bindings:
+          - { surface: env, direction: write, key: BIND }
+
+      - key: GENERATE_NEW_SAVE
+        label: Generate a new save on first start
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "false"
+        requiresRecreate: true
+        bindings:
+          - { surface: env, direction: write, key: GENERATE_NEW_SAVE }
+
+      - key: LOAD_LATEST_SAVE
+        label: Load the most recent save on start
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "true"
+        bindings:
+          - { surface: env, direction: write, key: LOAD_LATEST_SAVE }
+
+      - key: SAVE_NAME
+        label: Save name
+        type: string
+        default: "_autosave1"
+        bindings:
+          - { surface: env, direction: write, key: SAVE_NAME }
+
+      - key: DLC_SPACE_AGE
+        label: Enable Space Age DLC
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "true"
+        requiresRecreate: true
+        bindings:
+          - { surface: env, direction: write, key: DLC_SPACE_AGE }
+
+      - key: max_players
+        label: Max players
+        type: int
+        min: 0
+        default: 0                   # 0 == unlimited
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/max_players" }
+
+      - key: visibility_public
+        label: Advertise publicly
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "false"
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/visibility/public" }
+
+      - key: visibility_lan
+        label: Advertise on LAN
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "true"
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/visibility/lan" }
+
+      - key: require_user_verification
+        label: Require Factorio.com account verification
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "true"
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/require_user_verification" }
+
+      - key: autosave_interval
+        label: Autosave interval (minutes)
+        type: int
+        min: 1
+        default: 10
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/autosave_interval" }
+
+      - key: autosave_slots
+        label: Autosave slots
+        type: int
+        min: 1
+        default: 5
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/autosave_slots" }
+
+      - key: allow_commands
+        label: Allow console commands
+        type: enum
+        values: ["true", "false", "admins-only"]
+        default: "admins-only"
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/allow_commands" }
+
+      - key: auto_pause
+        label: Pause when no players are online
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "true"
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/auto_pause" }
+
+  - group: Mods
+    items:
+      - key: UPDATE_MODS_ON_START
+        label: Update mods on start
+        type: bool
+        trueValue: "true"
+        falseValue: "false"
+        default: "false"
+        # Coupled to the two secrets below: the image refuses to start altogether if this is 'true' but either
+        # 'factorio-username' or 'factorio-token' is unset/invalid — not a partial degradation.
+        bindings:
+          - { surface: env, direction: write, key: UPDATE_MODS_ON_START }
+
+      - key: factorio-username
+        label: Factorio.com username (mod downloads)
+        type: secret
+        bindings:
+          - { surface: env, direction: write, key: USERNAME }
+
+      - key: factorio-token
+        label: Factorio.com token (mod downloads)
+        type: secret
+        bindings:
+          - { surface: env, direction: write, key: TOKEN }
+
+  - group: Security
+    items:
+      - key: game-password
+        label: Join password
+        type: secret
+        bindings:
+          - { surface: server-settings, direction: write, pointer: "/game_password", sensitive: true }
+
+      # No 'bindings': this secret is never written through a settings surface at all — it is consumed
+      # exclusively via 'secret:' references, by the deployment's 'files[]' entry (which seeds it into
+      # '/factorio/config/rconpw') and by 'control.channels[0].passwordRef' (which authenticates RCON with it).
+      # See the deployment's 'files[]' comment for the full explanation of why this indirection is necessary.
+      - key: rcon-password
+        label: RCON password
+        type: secret
+        required: true
+
+backup:
+  include:
+    - "${DATA_DIR}/saves/**"
+    - "${DATA_DIR}/config/server-settings.json"
+    - "${DATA_DIR}/config/server-adminlist.json"
+    - "${DATA_DIR}/config/server-whitelist.json"
+    - "${DATA_DIR}/config/server-banlist.json"
+    - "${DATA_DIR}/mods/**"
+    - "${COMPOSE_DIR}/.env"
+    - "${COMPOSE_DIR}/compose.yaml"
+  exclude:
+    # In-progress/truncated autosave writes: Factorio (or an unlucky SIGKILL mid-save — see the
+    # 'stopGracePeriodSeconds' comment above) can leave one of these behind, and re-archiving a truncated save
+    # would silently poison a restore.
+    - "${DATA_DIR}/saves/*.tmp.zip"
+  quiesce:
+    # Factorio has no save-off/save-on pair the way some titles do — '/server-save' is a one-shot synchronous
+    # write, so quiescing is a single control step rather than the bracketed pair a different game's backup
+    # policy might need (same position as ark-asa-pok.yaml; there is no 'resume' block here either).
+    - { kind: control, channel: rcon, command: save, timeout: 30s }
+  # No 'adopt': unlike thijsvanloef/palworld-server-docker's documented daily cron rotation, factoriotools/
+  # factorio ships no cron-based backup rotation of its own that this definition could confirm, so there is no
+  # foreign archive source to declare here.
+  defaultRetention: { keepHourly: 6, keepDaily: 7, keepWeekly: 4 }
+
+saves:
+  worldRoot: "${DATA_DIR}/saves"
+  # Autosaves rotate '_autosave1.zip' .. '_autosaveN.zip'; manual saves may be named anything. There is no
+  # fixed, single-world directory name the way Minecraft's 'world/' or Palworld's SaveGames/<hex-id>/ is, so
+  # 'worldIdPattern' (optional) is left unset entirely rather than filled with a pattern that doesn't apply
+  # here (the same choice ark-asa-pok.yaml makes for its own flat SavedArks/ layout).
+  # A Factorio save IS a single '.zip' archive — unlike Palworld (separate Level.sav/LevelMeta.sav) or
+  # Minecraft (a 'level.dat' file alongside a region-file tree), there is no split between "the level" and
+  # "the level's metadata": both live inside the same archive. 'levelFile' and 'metaFile' therefore point at
+  # the same glob, the same resolution ark-asa-pok.yaml reaches for its own single-file '*_WP.ark' saves (see
+  # that file's 'saves' block for the identical reasoning).
+  levelFile: "*.zip"
+  metaFile: "*.zip"
+  # Per-player data lives inside the save archive itself rather than in a sibling directory the way Minecraft's
+  # 'playerdata/' does, so there is no 'playerDir' to name; left unset (optional).
+
+mods:
+  # UPDATE_MODS_ON_START (settings > Mods, above) plus valid 'factorio-username'/'factorio-token' secrets
+  # together drive the image's own mod download step at startup, applying 'mod-list.json' and any declared mod
+  # zips under '/factorio/mods' before the server binary launches — Servyx itself downloads nothing. Per that
+  # same setting's comment, the image refuses to start at all if mod updates are requested without valid
+  # credentials, rather than degrading to "start without mods".
+  supported: true

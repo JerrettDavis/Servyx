@@ -52,8 +52,10 @@ public class BackupsPageTests : BunitContext
 
         var cut = Render<BackupsPage>();
 
-        // The original copy, verbatim.
-        cut.Markup.Should().Contain("Servyx-owned backup creation, retention, and restore land in Milestone 5.");
+        // The read-only view's own copy: no backup provider is registered with the flag off, so nothing
+        // here can create, restore, or prune.
+        cut.Markup.Should().Contain("Servyx-owned backup creation, retention, and restore require");
+        cut.Markup.Should().Contain("Servyx:Provisioning:Enabled");
         cut.Markup.Should().Contain("discovered read-only");
 
         // Not one control of any kind — not even a disabled one.
@@ -89,6 +91,93 @@ public class BackupsPageTests : BunitContext
         {
             badge.GetAttribute("title").Should().Contain("Servyx will never prune, move, or rename");
         }
+    }
+
+    /// <summary>
+    /// Regression guard: the closed-gate listing used to render every row's ownership badge as "Foreign"
+    /// unconditionally, regardless of the entry's actual <see cref="Servyx.Web.Models.BackupOwnership"/> —
+    /// harmless while the mock data source's five sample backups were all Foreign, but wrong the moment a
+    /// real listing could contain a Servyx-owned archive too.
+    /// </summary>
+    [Fact]
+    public void Read_only_ownership_badges_reflect_actual_ownership_not_a_hardcoded_foreign_label()
+    {
+        Services.AddSingleton(new ProvisioningGate(enabled: false));
+        Services.AddSingleton(WritableServers.None);
+        Services.AddSingleton<IDashboardDataService>(new FixedBackupsListDataService(
+            new Servyx.Web.Models.BackupsListResult(
+                [
+                    new Servyx.Web.Models.BackupEntry(
+                        "srv", "Server", "owned.tar.gz", DateTimeOffset.UnixEpoch, 1024,
+                        Servyx.Web.Models.BackupOwnership.ServyxOwned),
+                    new Servyx.Web.Models.BackupEntry(
+                        "srv", "Server", "cron.tar.gz", DateTimeOffset.UnixEpoch, 2048,
+                        Servyx.Web.Models.BackupOwnership.Foreign),
+                ],
+                Servyx.Web.Models.BackupsAvailability.Listed,
+                null)));
+
+        var cut = Render<BackupsPage>();
+
+        cut.FindAll(".foreign-badge").Should().ContainSingle();
+        cut.Markup.Should().Contain("owned.tar.gz");
+        cut.Markup.Should().Contain("cron.tar.gz");
+
+        // The Servyx-owned row must not carry the foreign badge or its "never prune" tooltip.
+        var badges = cut.FindAll(".svx-badge");
+        badges.Should().Contain(b => b.TextContent.Trim() == "Servyx");
+    }
+
+    /// <summary>
+    /// The three closed-gate states — no provider configured, a listing failure, and a genuinely empty
+    /// listing — must render distinguishably from one another. Only the last may say "No backups found".
+    /// </summary>
+    [Fact]
+    public void No_backup_provider_configured_renders_distinguishably_from_none_and_failed()
+    {
+        Services.AddSingleton(new ProvisioningGate(enabled: false));
+        Services.AddSingleton(WritableServers.None);
+        Services.AddSingleton<IDashboardDataService>(new FixedBackupsListDataService(
+            new Servyx.Web.Models.BackupsListResult([], Servyx.Web.Models.BackupsAvailability.NotConfigured, null)));
+
+        var notConfigured = Render<BackupsPage>();
+
+        notConfigured.Find("[data-testid=backups-not-configured]").TextContent
+            .Should().Contain("No backup provider is configured");
+        notConfigured.FindAll("[data-testid=backups-list-failed]").Should().BeEmpty();
+        notConfigured.FindAll("[data-testid=backups-empty]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_closed_gate_listing_failure_renders_distinguishably_from_not_configured_and_from_none()
+    {
+        Services.AddSingleton(new ProvisioningGate(enabled: false));
+        Services.AddSingleton(WritableServers.None);
+        Services.AddSingleton<IDashboardDataService>(new FixedBackupsListDataService(
+            new Servyx.Web.Models.BackupsListResult(
+                [], Servyx.Web.Models.BackupsAvailability.Failed, "daemon unreachable")));
+
+        var cut = Render<BackupsPage>();
+
+        cut.Find("[data-testid=backups-list-failed]").TextContent.Should().Contain("could not be listed");
+        cut.Find("[data-testid=backups-list-failure-detail]").TextContent.Should().Contain("daemon unreachable");
+        cut.FindAll("[data-testid=backups-not-configured]").Should().BeEmpty();
+        cut.FindAll("[data-testid=backups-empty]").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void A_closed_gate_genuinely_empty_listing_renders_the_original_empty_state()
+    {
+        Services.AddSingleton(new ProvisioningGate(enabled: false));
+        Services.AddSingleton(WritableServers.None);
+        Services.AddSingleton<IDashboardDataService>(new FixedBackupsListDataService(
+            new Servyx.Web.Models.BackupsListResult([], Servyx.Web.Models.BackupsAvailability.Listed, null)));
+
+        var cut = Render<BackupsPage>();
+
+        cut.Find("[data-testid=backups-empty]").TextContent.Should().Contain("No backups found");
+        cut.FindAll("[data-testid=backups-not-configured]").Should().BeEmpty();
+        cut.FindAll("[data-testid=backups-list-failed]").Should().BeEmpty();
     }
 
     // ── Flag on but unwired ───────────────────────────────────────────────────────────────────────
@@ -164,6 +253,34 @@ public class BackupsPageTests : BunitContext
             .Should().Contain("Foreign artifacts are never pruned");
     }
 
+    /// <summary>
+    /// The existing guarantee, re-asserted after the backup-wiring changes: a dry run never proposes the
+    /// foreign artifact as a candidate, and applying it deletes only the Servyx-owned one.
+    /// </summary>
+    [Fact]
+    public void Foreign_archives_are_excluded_from_prune()
+    {
+        var dashboard = Arrange();
+        dashboard.PruneCandidates.Add(ServyxArtifact);
+        dashboard.SkippedForeign = 1;
+
+        var cut = Render<BackupsPage>();
+        cut.Find("[data-testid=preview-prune]").Click();
+
+        var candidates = cut.Find("[data-testid=prune-candidates]");
+        candidates.TextContent.Should().Contain(ServyxArtifact);
+        candidates.TextContent.Should().NotContain(ForeignArtifact);
+        cut.Find("[data-testid=prune-preview-summary]").TextContent.Should().Contain("1 foreign");
+
+        cut.Find("[data-testid=apply-prune]").Click();
+        dashboard.ApplyPruneCalls.Should().Be(1);
+
+        // No control anywhere on the page — in the foreign row or elsewhere — can prune a foreign artifact.
+        var foreignRow = cut.FindAll("[data-testid=backup-row]")
+            .Single(r => r.GetAttribute("data-ownership") == nameof(BackupOwnership.Foreign));
+        NoPruneOrDeleteControls(foreignRow);
+    }
+
     // ── Restore: preview, then a separate confirmation ────────────────────────────────────────────
 
     [Fact]
@@ -180,6 +297,39 @@ public class BackupsPageTests : BunitContext
         // The claim: planning reached PlanRestoreAsync and nothing reached ApplyRestoreAsync.
         dashboard.PlanRestoreCalls.Should().Be(1);
         dashboard.ApplyRestoreCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// The full triple guard, re-asserted after the backup-wiring changes: planning never applies, the apply
+    /// control is dead until the separate acknowledgement is given, and only then does a click reach
+    /// <c>ApplyRestoreAsync</c>.
+    /// </summary>
+    [Fact]
+    public void Restore_still_requires_the_plan_then_acknowledge_then_apply_sequence()
+    {
+        var dashboard = Arrange();
+
+        var cut = Render<BackupsPage>();
+
+        // Nothing to apply before a restore has even been planned.
+        cut.FindAll("[data-testid=apply-restore]").Should().BeEmpty();
+
+        cut.FindAll("[data-testid=plan-restore]")[0].Click();
+        dashboard.PlanRestoreCalls.Should().Be(1);
+        dashboard.ApplyRestoreCalls.Should().Be(0);
+
+        // The control exists now, but is disabled until the acknowledgement — a separate control — is given.
+        var apply = cut.Find("[data-testid=apply-restore]");
+        apply.HasAttribute("disabled").Should().BeTrue();
+        apply.Click();
+        dashboard.ApplyRestoreCalls.Should().Be(0);
+
+        cut.Find("[data-testid=restore-acknowledge]").Change(true);
+        cut.Find("[data-testid=apply-restore]").HasAttribute("disabled").Should().BeFalse();
+
+        cut.Find("[data-testid=apply-restore]").Click();
+        dashboard.ApplyRestoreCalls.Should().Be(1);
+        dashboard.PlanRestoreCalls.Should().Be(1);
     }
 
     [Fact]

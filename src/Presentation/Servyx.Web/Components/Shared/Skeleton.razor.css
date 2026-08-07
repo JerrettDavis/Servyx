@@ -1,0 +1,11 @@
+.svx-skeleton-group { display: flex; flex-direction: column; gap: var(--svx-space-2); }
+.svx-skeleton { position: relative; overflow: hidden; background: var(--svx-skeleton-base); }
+.svx-skeleton::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(90deg, transparent, var(--svx-skeleton-sheen), transparent);
+    animation: svx-shimmer 1.6s var(--svx-ease) infinite;
+}
+@keyframes svx-shimmer { 100% { transform: translateX(100%); } }

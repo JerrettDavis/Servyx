@@ -82,7 +82,7 @@ public sealed class RconSession : IRconSession
         {
             throw new ArgumentException(
                 "An RCON password URN is required. Build one with SecretUrn.Create, e.g. "
-                + "SecretUrn.Create(\"server\", \"palworld-server\", \"rcon\", \"password\"); a default(SecretUrn) is "
+                + "SecretUrn.Create(\"server\", \"<server-id>\", \"rcon\", \"password\"); a default(SecretUrn) is "
                 + "not a valid URN.",
                 nameof(passwordUrn));
         }

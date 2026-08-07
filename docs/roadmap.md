@@ -4,6 +4,22 @@ Servyx ships in nine milestones, M1 through M9. The MVP is **M1–M7**; M8 and
 M9 extend the platform to remote/non-Docker targets and to provisioning and
 mods respectively.
 
+**Where things actually stand today:** this document is the original,
+milestone-by-milestone plan, and each section below still describes that
+milestone's original goal and acceptance criteria — it is not rewritten
+after the fact. But several milestones have shipped substantially more than
+their position in this list suggests: real per-server write access (M4),
+Servyx-owned backup creation/restore/retention (M5), the `ssh+docker`
+remote transport (M8), and infrastructure provisioning via the Deploy page
+(M9) are all real and in the running dashboard today, each still gated
+behind its own explicit, off-by-default switch. See the **Status today**
+note under each of those four milestones for exactly what shipped and what
+didn't. M6 has also shipped, and substantially more than its original scope:
+see the **Status today** note under M6. Config editing (M3/M4's
+`.env`/`compose.yaml` write-and-revert path), identity/RBAC/audit UI (M7),
+and mod installation and the plugin SDK (M9) remain as originally planned:
+not yet built.
+
 ## M1 — Read-Only Observation
 
 **Goal:** Connect to and fully observe an existing, live Palworld deployment
@@ -85,6 +101,18 @@ them.
 
 ## M4 — Writes Enabled
 
+**Status today:** Shipped in part. A per-server write mode
+(`ReadOnly`/`PreviewOnly`/`Enabled`) is real, enforced by the write guard at
+every transport, and gated behind both a process-wide provisioning flag and
+an explicit per-server grant (see [Enabling writes](user-guide/enabling-writes.md)).
+Start/Restart/Stop/Kill execute through the stop ladder with two-step
+confirmation (see [Lifecycle control](user-guide/lifecycle-control.md)), and
+mutating RCON commands reach the target the same way, with their own
+confirm step (see [The RCON console](user-guide/rcon-console.md)). What
+hasn't shipped: `.env`/`compose.yaml` writes, pre-image snapshots,
+byte-exact revert, `PlanStaleException`, and container recreation — config
+editing overall is still not implemented.
+
 **Goal:** Allow real, guarded, reversible writes.
 
 **Acceptance criteria:**
@@ -101,6 +129,16 @@ them.
 
 ## M5 — Backups
 
+**Status today:** Shipped. Servyx can create, inspect, restore, and prune
+its own archives alongside foreign ones — creation quiesces the server
+first where the deployment declares a flush step, restore is previewed and
+requires a separate acknowledgement before it overwrites live data, and
+retention always previews as a dry run and never selects a foreign archive.
+All of it is gated behind provisioning plus a per-server write grant — see
+[Backups and saves](user-guide/backups-and-saves.md). Not verified in this
+pass against the acceptance criteria below word-for-word (e.g. the exact
+archive contents and exclusions).
+
 **Goal:** First-class, Servyx-owned backup lifecycle alongside foreign ones.
 
 **Acceptance criteria:**
@@ -112,6 +150,20 @@ them.
   foreign tarballs survive every prune path.
 
 ## M6 — Minecraft (Proves the Abstraction)
+
+**Status today:** Shipped, and then some. `definitions/minecraft-itzg.yaml`
+adopts, reads settings, and controls lifecycle/backups entirely through the
+generic, definition-driven code paths — no Minecraft-specific C# outside
+format adapters and the RCON dialect, exactly as this milestone's own
+acceptance criterion demanded. The abstraction has since been proven twice
+more: `definitions/ark-asa-pok.yaml` (ARK: Survival Ascended) and
+`definitions/factorio-factoriotools.yaml` (Factorio) both ship as full
+fourth/fifth definitions, and an architecture test
+(`GameNameLiteralSourceScanTests`) enforces the "no C# changes outside
+format adapters and the RCON dialect" rule going forward, not just at M6's
+own review. See [Supported games](games.md) for what each one covers,
+including which player-list reply shapes remain unverified pending a
+real-server capture.
 
 **Goal:** Validate that the role-based configuration model generalizes,
 using a deployment where the truth direction is mirrored relative to
@@ -133,6 +185,17 @@ loopback.
 
 ## M8 — Remote and Non-Docker Targets
 
+**Status today:** The `ssh+docker` transport has shipped: SSH exec and SFTP
+compose as independent channels, host keys are pinned (trust-on-first-use
+or a configured fingerprint) and fail closed, and a declared remote host's
+Docker calls route over it — see [Connecting a host](user-guide/connecting-a-host.md)
+and [Adopting a remote host](user-guide/adopting-a-remote-host.md). Only the
+first configured `Servyx:Hosts` entry is wired to anything at present. A
+local-process target exists for provisioning and for backups
+(`Servyx.Infrastructure.Process`), but full bare-process-host parity with
+the Docker adoption/lifecycle path was not independently re-verified in
+this pass.
+
 **Goal:** Extend beyond local Docker to bare process hosts and SSH targets.
 
 **Acceptance criteria:**
@@ -142,6 +205,16 @@ loopback.
   the name is never interpreted as a shell fragment.
 
 ## M9 — Provisioning, Mods, Plugin SDK
+
+**Status today:** Provisioning has shipped; mods and the plugin SDK have
+not. The Deploy page (`/deploy`) is gated behind its own
+`Servyx:Provisioning:Enabled` flag and offers eight registered provisioners
+(`aws-ec2`, `aws-ecs-fargate`, `aws-lightsail`, `azure-vm`,
+`azure-container-instance`, `digitalocean-droplet`, `docker-container`,
+`local-process`), cost estimation, and a preview → apply → ledger → drift
+pipeline with an explicit data-impact acknowledgement — see
+[Deploying a server](user-guide/deploying-a-server.md). Mods and Plugins
+remain the placeholder pages this milestone originally planned to replace.
 
 **Goal:** Provision new servers, install mods, and open the platform to
 third-party plugin authors.
@@ -156,8 +229,9 @@ third-party plugin authors.
 
 1. **Does Servyx get authority to recreate containers?** This blocks M4.
 2. **Does Servyx own `compose.yaml`, or only `.env`?** Recommendation: `.env`
-   is fully managed; `compose.yaml` is restricted to the `services.palworld`
-   subtree, with per-change confirmation.
+   is fully managed; `compose.yaml` is restricted to each definition's own
+   declared `managedSubtree` (e.g. `services.palworld`, `services.minecraft`),
+   with per-change confirmation.
 3. **Should the plaintext `.env` passwords be mirrored into the secret
    store?**
 4. **Is Windows a production platform, or dev-only?** Recommendation: Linux
