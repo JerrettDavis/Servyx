@@ -91,25 +91,34 @@ game — Palworld ships two: `docker-thijsvanloef` (the Docker image) and
   is **ten seconds**, which truncates the save of any game whose graceful
   shutdown takes longer. It must be at least the sum of the `lifecycle.stop`
   stage timeouts; a shorter value is a validation error, because the runtime
-  would force-kill part-way through the ladder and silently defeat it.
-  Three of the four shipped definitions set this and size it above their own
-  ladder total with headroom. **Known gap:** `DockerContainerProvisioner`
-  accepts a `stopGracePeriodSeconds` provisioning parameter of the same
-  shape and threads it through to the container's own stop timeout
-  (`DockerContainerSpec.StopGracePeriod` → Docker's `StopTimeout`) — but
-  nothing today automatically copies the parsed `DeploymentProfile.StopGracePeriod`
-  value into that parameter when a container is created or adopted; the two
-  agree by convention (the same field name/shape), not by a wired code path.
-  `definitions/palworld-docker.yaml` itself does not declare
-  `stopGracePeriodSeconds` at all, so its ~90s `lifecycle.stop` ladder still
-  runs against Docker's 10s default in practice.
+  would force-kill part-way through the ladder and silently defeat it. All
+  four shipped definitions set this and size it above their own ladder total
+  with headroom (Palworld 100s over a 90s ladder; Minecraft 200s over 180s;
+  ARK 240s over 210s; Factorio 300s over 270s). The value reaches a
+  provisioned container end to end: `DeployPage.DeriveDockerDefaults` reads
+  the selected definition's Docker profile's declared grace period and
+  hands it to `ProvisionerFormCatalog` as the `stop-grace-period-seconds`
+  field's default (editable, like the image and port fields beside it,
+  never invented when the definition declares none); building the request
+  writes it into the `stopGracePeriodSeconds` provisioning parameter;
+  `DockerContainerProvisioner.BuildSpec` parses that parameter into
+  `DockerContainerSpec.StopGracePeriod` — throwing on a malformed or
+  non-positive value rather than silently falling back to the daemon's
+  10-second default — which becomes the created container's own
+  `StopTimeout`. `DeployPageGameSelectionTests.OneDefinition_DeclaredStopGracePeriodReachesTheProvisioningRequest`
+  and `DockerContainerProvisionerTests` together pin the whole path.
 - `stopTimeout` is parsed and carried on the model (`DeploymentProfile.StopTimeout`)
   and every shipped definition declares one, but **no runtime code path
   reads it today** — it has no consumer anywhere outside the parser and the
-  model itself. Treat it as reserved/aspirational documentation of Servyx's
-  intended own orchestration budget (distinct from `stopGracePeriodSeconds`,
-  which is the container runtime's own kill timer and *is* wired through),
-  not as something that currently changes behavior.
+  model itself. It is kept, not removed, specifically *because* every
+  shipped definition declares it: dropping the key from the accepted schema
+  would turn real, working files into hard parse errors, which is worse
+  than an inert field. Treat it as reserved documentation of Servyx's
+  originally-intended own orchestration budget (distinct from
+  `stopGracePeriodSeconds`, which is the container runtime's own kill timer
+  and *is* wired through end to end) — the model's own XML doc comment on
+  `DeploymentProfile.StopTimeout` says so explicitly, so a reader who lands
+  on the field in code sees the same warning a reader of this doc does.
 - `files` (optional) seeds file content into the deployment's own storage
   *before* the workload starts for the very first time — see "Seeded files"
   below.

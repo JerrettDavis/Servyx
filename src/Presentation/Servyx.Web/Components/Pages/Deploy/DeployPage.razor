@@ -823,6 +823,7 @@ else
 
         string? containerImage = null;
         string? hostPort = null;
+        string? stopGracePeriodSeconds = null;
 
         // Resolved from the data-driven catalog rather than the retired PalworldDefinitionLoader, and over
         // every definition it holds — not just one. LoadedDefinition.Document is typed object because a
@@ -851,14 +852,15 @@ else
             // definitions leaves _gameDefinitionId at its honest empty default instead — see the "Game"
             // card's own empty state.
             _gameDefinitionId = _games[0].Metadata.Id;
-            (containerImage, hostPort) = DeriveDockerDefaults(_games[0]);
+            (containerImage, hostPort, stopGracePeriodSeconds) = DeriveDockerDefaults(_games[0]);
         }
 
         // Resolved like everything else on this page — optionally — so a host that registers no catalog gets
-        // the shipped one rather than a render-time failure. The selected definition's image and game port
-        // are handed to it so Docker's Image/Port fields start where the selected game says they should.
+        // the shipped one rather than a render-time failure. The selected definition's image, game port, and
+        // declared stop grace period are handed to it so Docker's Image/Port/Stop-grace-period fields start
+        // where the selected game says they should.
         _diFormCatalog = Services.GetService(typeof(ProvisionerFormCatalog)) as ProvisionerFormCatalog;
-        _formCatalog = _diFormCatalog ?? ProvisionerFormCatalog.CreateDefault(containerImage, hostPort);
+        _formCatalog = _diFormCatalog ?? ProvisionerFormCatalog.CreateDefault(containerImage, hostPort, stopGracePeriodSeconds);
 
         // Fixed once per page instance so repeated previews of unchanged inputs produce the same plan hash.
         _instanceId = $"preview-{Guid.NewGuid():n}"[..20];
@@ -924,8 +926,8 @@ else
     {
         if (_diFormCatalog is null)
         {
-            var (containerImage, hostPort) = DeriveDockerDefaults(SelectedGame);
-            _formCatalog = ProvisionerFormCatalog.CreateDefault(containerImage, hostPort);
+            var (containerImage, hostPort, stopGracePeriodSeconds) = DeriveDockerDefaults(SelectedGame);
+            _formCatalog = ProvisionerFormCatalog.CreateDefault(containerImage, hostPort, stopGracePeriodSeconds);
         }
 
         LoadFormForSelectedProvisioner();
@@ -954,22 +956,34 @@ else
     /// literal — a port that is itself a <see cref="PortRef.SettingRef"/> has no single number to default an
     /// input to, so the schema's own literal fallback is used instead.
     /// </remarks>
-    private static (string? Image, string? HostPort) DeriveDockerDefaults(GameDefinition? definition)
+    private static (string? Image, string? HostPort, string? StopGracePeriodSeconds) DeriveDockerDefaults(GameDefinition? definition)
     {
         if (definition is null)
         {
-            return (null, null);
+            return (null, null, null);
         }
 
-        var image = definition.Deployments
-            .FirstOrDefault(deployment => deployment.Kind == DeploymentKind.Docker)
-            ?.Image?.Default;
+        var dockerProfile = definition.Deployments
+            .FirstOrDefault(deployment => deployment.Kind == DeploymentKind.Docker);
+
+        var image = dockerProfile?.Image?.Default;
 
         var gamePort = definition.Capabilities.Network
             .FirstOrDefault(port => port.Purpose == "game" && port.Published);
         var hostPort = gamePort?.Port is PortRef.Literal literal ? literal.Port.ToString() : null;
 
-        return (image, hostPort);
+        // Closes the gap where a definition's own 'stopGracePeriodSeconds' was parsed and validated but
+        // never reached a provisioned container: this is the one place a Docker deployment's declared grace
+        // period is read back out of the loaded definition, on the same "derive, but let the operator
+        // override" footing as the image and port above. Whole seconds, invariant-formatted, matching
+        // exactly what the parser accepted from the YAML and what DockerContainerProvisioner.BuildSpec
+        // expects to parse back — see ProvisionerFormCatalog.CreateDefault's remarks on this parameter for
+        // why a definition that declares none leaves this blank rather than inventing a value.
+        var stopGracePeriodSeconds = dockerProfile?.StopGracePeriod is { } grace
+            ? ((int)grace.TotalSeconds).ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : null;
+
+        return (image, hostPort, stopGracePeriodSeconds);
     }
 
     /// <summary>The current value of <paramref name="field"/>, or empty if it has never been set.</summary>

@@ -74,7 +74,19 @@ public sealed class InteractiveRenderModeTests
 
         try
         {
-            using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
+            // No per-call HttpClient.Timeout here, deliberately: WaitForHtmlAsync already bounds the whole
+            // retry loop with its own 30s CancellationTokenSource, passed to every GetAsync call. A second,
+            // shorter timeout layered on top of that (this used to be 2s) does not shorten the overall
+            // wait — it just makes an individual slow attempt throw TaskCanceledException, which IS an
+            // OperationCanceledException, so WaitForHtmlAsync's "is not OperationCanceledException" retry
+            // filter cannot tell that failure apart from its own 30s deadline and lets it propagate instead
+            // of retrying. Under light load a 2s per-call timeout never fires and this bug is invisible; under
+            // parallel test-suite load, one slow request to the freshly-started subprocess is enough to fail
+            // the test outright with 28 of the 30 budgeted seconds still unused — exactly the flake this
+            // comment exists to prevent from coming back. Relying solely on the shared CancellationToken for
+            // the deadline means a slow individual attempt is cancelled at the same 30s boundary as everything
+            // else, and reaching that boundary is the only way this loop ever gives up.
+            using var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
             var html = await WaitForHtmlAsync(client, serverAddress);
 
             html.Should().Contain(

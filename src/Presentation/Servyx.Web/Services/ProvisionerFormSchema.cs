@@ -435,14 +435,28 @@ public sealed class ProvisionerFormCatalog
     /// <paramref name="containerImage"/> is: this type stays free of game-definition loading, and callers
     /// that never had a game to ask keep the literal this catalog always defaulted to.
     /// </param>
-    public static ProvisionerFormCatalog CreateDefault(string? containerImage = null, string? hostPort = null)
+    /// <param name="stopGracePeriodSeconds">
+    /// The whole-seconds value Docker's <c>stop-grace-period-seconds</c> field defaults to — the selected
+    /// game definition's Docker deployment profile's own declared <c>stopGracePeriodSeconds</c>, when one is
+    /// declared, as a plain decimal string. Passed in for the same reason <paramref name="containerImage"/>
+    /// is. Unlike the image and port, there is no non-empty fallback: a definition that declares no grace
+    /// period leaves the field blank, which is the honest "let Docker's own 10-second default apply" state —
+    /// inventing a fallback value here would be exactly the silent substitution this field exists to prevent.
+    /// See <see cref="Servyx.Infrastructure.Docker.Provisioning.DockerContainerProvisioner.BuildSpec"/> for
+    /// where an out-of-range or malformed value (never produced by this catalog itself, since it only ever
+    /// carries a value copied verbatim from a validated definition) is refused loudly rather than silently
+    /// discarded.
+    /// </param>
+    public static ProvisionerFormCatalog CreateDefault(
+        string? containerImage = null, string? hostPort = null, string? stopGracePeriodSeconds = null)
     {
         var image = string.IsNullOrWhiteSpace(containerImage) ? FallbackContainerImage : containerImage;
         var port = string.IsNullOrWhiteSpace(hostPort) ? FallbackHostPort : hostPort;
+        var gracePeriod = string.IsNullOrWhiteSpace(stopGracePeriodSeconds) ? null : stopGracePeriodSeconds;
 
         return new ProvisionerFormCatalog(
         [
-            Docker(image, port),
+            Docker(image, port, gracePeriod),
             SshProcess(),
             LocalProcess(),
             DigitalOcean(),
@@ -453,17 +467,21 @@ public sealed class ProvisionerFormCatalog
     }
 
     /// <summary>
-    /// <c>DockerContainerProvisioner</c>: image, container name, one published port, and a fixed restart
-    /// policy.
+    /// <c>DockerContainerProvisioner</c>: image, container name, one published port, an optional stop grace
+    /// period, and a fixed restart policy.
     /// </summary>
     /// <remarks>
-    /// <strong>This schema is a compatibility surface.</strong> Its three field ids are the
-    /// <c>data-testid</c>s the Docker form has always emitted, and the parameters it produces are
+    /// <strong>The first three field ids are a compatibility surface.</strong> They are the
+    /// <c>data-testid</c>s the Docker form has always emitted, and the parameters they produce are
     /// character-for-character the ones <c>DeployPage.BuildRequest</c> hardcoded before it existed —
     /// including <c>restartPolicy=unless-stopped</c> and the <c>port:&lt;n&gt;/tcp</c> key whose value is
-    /// the port again. <c>DeployPageDockerRequestTests</c> pins all of it.
+    /// the port again. <c>ProvisionerFormCatalogTests</c> pins all of it. The fourth field,
+    /// <c>stop-grace-period-seconds</c>, is newer: it closes the gap where a game definition's
+    /// <c>deployments[].stopGracePeriodSeconds</c> was parsed and validated but never actually reached a
+    /// provisioned container — see <see cref="CreateDefault"/>'s remarks on its own
+    /// <paramref name="stopGracePeriodSeconds"/> parameter for why it has no non-empty fallback.
     /// </remarks>
-    private static ProvisionerFormSchema Docker(string image, string hostPort) => new()
+    private static ProvisionerFormSchema Docker(string image, string hostPort, string? stopGracePeriodSeconds) => new()
     {
         ProvisionerId = DockerContainerProvisioner.Id,
         DeploymentProfileId = "docker",
@@ -491,6 +509,17 @@ public sealed class ProvisionerFormCatalog
                 ParameterKey = "port:{0}/tcp",
                 DefaultValue = hostPort,
                 Kind = ProvisionerFieldKind.Number,
+            },
+            new()
+            {
+                Id = "stop-grace-period-seconds",
+                Label = "Stop grace period (seconds)",
+                ParameterKey = "stopGracePeriodSeconds",
+                DefaultValue = stopGracePeriodSeconds ?? string.Empty,
+                Kind = ProvisionerFieldKind.Number,
+                IsRequired = false,
+                Hint = "How long Docker waits after asking the workload to stop before force-killing it. "
+                    + "Leave blank to accept Docker's own 10-second default, which truncates a slow save.",
             },
         ],
         FixedParameters = new Dictionary<string, string>(StringComparer.Ordinal)

@@ -118,6 +118,7 @@ public class PalworldDefinitionRoundTripTests
         docker.Image!.Default.Should().Be("thijsvanloef/palworld-server-docker:latest");
         docker.DataDir.Should().Be("/palworld");
         docker.StopTimeout.Should().Be(TimeSpan.FromSeconds(60));
+        docker.StopGracePeriod.Should().Be(TimeSpan.FromSeconds(100));
         docker.Executable.Should().BeNull();
         docker.Install.Should().BeEmpty();
 
@@ -168,6 +169,32 @@ public class PalworldDefinitionRoundTripTests
         native.Surfaces[0].Role.Should().Be(SurfaceRole.Authoritative);
         native.Surfaces[0].Format.Should().Be(SurfaceFormat.Ini);
         native.Ignored.Should().BeEmpty();
+    }
+
+    /// <summary>
+    /// Pins the load-bearing arithmetic: the stop ladder's stage timeouts sum to 90s (45 + 15 + 30), and
+    /// the declared grace period (100s) is at or above that total, which is what keeps
+    /// <c>ResolveDeferredChecks</c> in <c>GameDefinitionYamlParser.Semantics.cs</c> from rejecting the file.
+    /// Docker's own stop-timeout default is a mere 10 seconds — nowhere near enough to survive even the
+    /// first stage (RCON <c>shutdown</c>'s 30-second in-game countdown) before force-killing mid-save.
+    /// </summary>
+    [Fact]
+    public void Deployment_StopGracePeriod_CoversTheFullStopLadderWithHeadroom()
+    {
+        var deployment = Parse().Definition!.Deployments.Single(d => d.Id == "docker-thijsvanloef");
+        var stages = Parse().Definition!.Lifecycle.Stop.Stages;
+
+        deployment.StopGracePeriod.Should().Be(TimeSpan.FromSeconds(100));
+
+        var ladderTotal = stages.Aggregate(TimeSpan.Zero, (total, stage) => total + stage switch
+        {
+            StopStage.Rcon rcon => rcon.Timeout,
+            StopStage.Signal signal => signal.Timeout,
+            _ => TimeSpan.Zero,
+        });
+
+        ladderTotal.Should().Be(TimeSpan.FromSeconds(90));
+        deployment.StopGracePeriod!.Value.Should().BeGreaterThanOrEqualTo(ladderTotal);
     }
 
     [Fact]

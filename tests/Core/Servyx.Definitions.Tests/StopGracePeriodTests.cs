@@ -26,7 +26,13 @@ public class StopGracePeriodTests
 
     private const string SigIntStage = "- { kind: signal, signal: SIGINT, timeout: 30s }";
 
-    private const string StopTimeoutLine = "    stopTimeout: 60s";
+    /// <summary>
+    /// The real fixture's own declared grace period line, added once Palworld's shipped definition closed
+    /// the gap where it was the one shipped definition with no <c>stopGracePeriodSeconds</c> at all (its
+    /// ~90s ladder ran against Docker's bare 10s default). <see cref="WithGracePeriod"/> replaces this line
+    /// rather than inserting a second one, which would otherwise be a YAML duplicate-key error.
+    /// </summary>
+    private const string StopGracePeriodLine = "    stopGracePeriodSeconds: 100";
 
     /// <summary>
     /// The line separator the checked-out fixture actually uses, so a mutation that inserts a new YAML line
@@ -56,7 +62,11 @@ public class StopGracePeriodTests
     }
 
     private static string WithGracePeriod(string value, params (string Find, string Replace)[] extra) =>
-        Mutate([(StopTimeoutLine, $"{StopTimeoutLine}{Newline}    stopGracePeriodSeconds: {value}"), .. extra]);
+        Mutate([(StopGracePeriodLine, $"    stopGracePeriodSeconds: {value}"), .. extra]);
+
+    /// <summary>Removes the real fixture's own declared grace period line entirely, simulating a definition that declares none.</summary>
+    private static string WithoutGracePeriod(params (string Find, string Replace)[] extra) =>
+        Mutate([(StopGracePeriodLine + Newline, string.Empty), .. extra]);
 
     private static IReadOnlyList<ValidationIssue> ErrorsIn(string yaml) =>
         new GameDefinitionYamlParser().Parse(yaml).Report.Issues
@@ -76,7 +86,12 @@ public class StopGracePeriodTests
     [Fact]
     public void StopLadder_WithNoControlStage_ParsesWithNoErrors()
     {
+        // The reshaped ladder (SIGTERM 300s + the existing SIGINT 30s + kill) totals 330s, so the grace
+        // period is widened to match — this test is about a ladder with no control stage, not about the
+        // grace-period arithmetic, which StopGracePeriod_MeasuredAgainstTheDeclaredLadder_NotAFixedBudget
+        // already covers on its own.
         var yaml = Mutate(
+            (StopGracePeriodLine, "    stopGracePeriodSeconds: 400"),
             (ShutdownStage, "- { kind: signal, signal: SIGTERM, timeout: 300s }"),
             (DoExitStage, string.Empty));
 
@@ -95,11 +110,28 @@ public class StopGracePeriodTests
     [Fact]
     public void StopGracePeriod_NotDeclared_IsNullAndNotAnError()
     {
-        var result = new GameDefinitionYamlParser().Parse(DefinitionYamlFixture.RealYaml);
+        var result = new GameDefinitionYamlParser().Parse(WithoutGracePeriod());
 
         result.Definition.Should().NotBeNull();
         result.Definition!.Deployments.Should().OnlyContain(d => d.StopGracePeriod == null);
         result.Report.Issues.Should().NotContain(i => i.Severity == ValidationSeverity.Error);
+    }
+
+    /// <summary>
+    /// The real, shipped fixture itself now declares a grace period (100s) covering its 90s ladder — the gap
+    /// this field's whole feature exists to close, and the one shipped definition that used to be missing it.
+    /// </summary>
+    [Fact]
+    public void StopGracePeriod_RealFixture_DeclaresOneCoveringItsOwnLadder()
+    {
+        var result = new GameDefinitionYamlParser().Parse(DefinitionYamlFixture.RealYaml);
+
+        result.Definition.Should().NotBeNull();
+        result.Report.Issues.Should().NotContain(i => i.Severity == ValidationSeverity.Error);
+
+        var deployment = result.Definition!.Deployments.Single(d => d.Id == "docker-thijsvanloef");
+        deployment.StopGracePeriod.Should().Be(TimeSpan.FromSeconds(100));
+        deployment.StopGracePeriod!.Value.Should().BeGreaterThanOrEqualTo(TimeSpan.FromSeconds(RealLadderTotalSeconds));
     }
 
     [Fact]

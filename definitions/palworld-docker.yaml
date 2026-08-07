@@ -33,6 +33,16 @@ deployments:
     dataDir: /palworld
     stopTimeout: 60s
 
+    # Docker's own stop grace period defaults to just 10 SECONDS — nowhere near enough for the ladder
+    # below (RCON `shutdown` alone gives players 30s notice and is budgeted 45s; `doexit` and SIGINT add
+    # another 15s + 30s on top, for a 90s total). Without this field, Docker would SIGKILL the process at
+    # the 10s mark, almost certainly before the in-game shutdown countdown or the save it triggers has
+    # finished, corrupting world state. Set to the ladder's total (90s) plus headroom, mirroring the other
+    # three shipped definitions' own margin over their ladder totals; the parser hard-errors if this is
+    # ever less than the ladder's stage-timeout sum (see ResolveDeferredChecks in
+    # GameDefinitionYamlParser.Semantics.cs).
+    stopGracePeriodSeconds: 100
+
     config:
       surfaces:
         # THE source of truth for this image. ~150 keys.

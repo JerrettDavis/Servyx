@@ -103,7 +103,11 @@ public class DeployFormTests : BunitContext
         request.Parameters["jobId"].Should().StartWith("job-");
     }
 
-    /// <summary>The three Docker controls are still the three Docker controls, by the same test ids.</summary>
+    /// <summary>
+    /// The three original Docker controls are still the three original Docker controls, by the same test
+    /// ids — plus a fourth, newer one (stop grace period) that starts blank here because no game definition
+    /// is loaded in this composition (see <see cref="EnableBoth"/>) for a value to derive it from.
+    /// </summary>
     [Fact]
     public void Docker_renders_the_same_three_fields_with_the_same_defaults()
     {
@@ -116,8 +120,9 @@ public class DeployFormTests : BunitContext
         cut.Find("[data-testid='image']").GetAttribute("value")
             .Should().Be(ProvisionerFormCatalog.FallbackContainerImage);
         cut.Find("[data-testid='host-port']").GetAttribute("value").Should().Be("8211");
+        cut.Find("[data-testid='stop-grace-period-seconds']").GetAttribute("value").Should().BeEmpty();
 
-        cut.FindAll("[data-testid='provisioner-field']").Should().HaveCount(3);
+        cut.FindAll("[data-testid='provisioner-field']").Should().HaveCount(4);
         cut.FindAll("[data-testid='additional-parameters']").Should().BeEmpty();
     }
 

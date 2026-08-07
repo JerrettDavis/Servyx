@@ -209,6 +209,41 @@ public class DeployPageGameSelectionTests : BunitContext
         docker.LastRequest.Parameters.Should().ContainKey("port:25565/tcp");
     }
 
+    /// <summary>
+    /// <strong>The regression this feature never had.</strong> <c>definitions/palworld-docker.yaml</c>'s
+    /// Docker profile declares <c>stopGracePeriodSeconds: 100</c> — parsed and validated by
+    /// <c>GameDefinitionYamlParser</c>, but until now never actually reached a provisioned container: nothing
+    /// copied <c>DeploymentProfile.StopGracePeriod</c> into the <c>stopGracePeriodSeconds</c> provisioning
+    /// parameter <c>DockerContainerProvisioner.BuildSpec</c> reads. This test renders the real definition,
+    /// previews through the real form, and asserts the value is present in the request handed to the
+    /// provisioner — the same request <c>DockerContainerProvisionerTests</c> already proves
+    /// <c>BuildSpec</c> turns into <c>CreateContainerParameters.StopTimeout</c>, so together the two tests
+    /// cover the whole definition-to-Docker path.
+    /// </summary>
+    [Fact]
+    public async Task OneDefinition_DeclaredStopGracePeriodReachesTheProvisioningRequest()
+    {
+        using var dir = new TempDefinitionsDirectory();
+        var catalog = await BuildCatalogAsync(dir, ("palworld.yaml", RealDefinitionText("palworld-docker.yaml")));
+        catalog.DefinitionsById.Should().HaveCount(1);
+
+        var docker = EnableDocker();
+        Services.AddSingleton(catalog);
+
+        var cut = Render<DeployPage>();
+
+        // Reached the rendered field before any click — proving the derivation, not just the eventual
+        // request shape.
+        cut.Find("[data-testid='stop-grace-period-seconds']").GetAttribute("value").Should().Be("100");
+
+        cut.Find("[data-testid='preview-plan']").Click();
+        cut.WaitForAssertion(() => docker.LastRequest.Should().NotBeNull());
+
+        docker.LastRequest!.GameDefinitionId.Should().Be("palworld");
+        docker.LastRequest.Parameters.Should().ContainKey("stopGracePeriodSeconds")
+            .WhoseValue.Should().Be("100");
+    }
+
     // ── Three definitions ─────────────────────────────────────────────────────────────────────────────
 
     private static async Task<GameDefinitionCatalog> BuildThreeDefinitionCatalogAsync(TempDefinitionsDirectory dir) =>

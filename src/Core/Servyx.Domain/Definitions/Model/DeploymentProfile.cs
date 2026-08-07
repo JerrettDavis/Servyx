@@ -21,7 +21,17 @@ public enum DeploymentKind
 /// <param name="Detect">How adoption recognizes an existing deployment of this kind, if declared.</param>
 /// <param name="Image">The Docker image to run, for <see cref="DeploymentKind.Docker"/> profiles. Null for <see cref="DeploymentKind.Process"/> profiles.</param>
 /// <param name="DataDir">The workload's data root inside the deployment, e.g. <c>/palworld</c>.</param>
-/// <param name="StopTimeout">Maximum time to wait for the deployment itself (e.g. the container) to stop — distinct from the per-stage timeouts in <c>lifecycle.stop</c>.</param>
+/// <param name="StopTimeout">
+/// Declared purpose: the maximum time to wait for the deployment itself (e.g. the container) to stop —
+/// distinct from the per-stage timeouts in <c>lifecycle.stop</c> and from <see cref="StopGracePeriod"/>
+/// (the container <em>runtime's</em> own kill timer). <strong>Not currently read by any runtime code
+/// path</strong> — every shipped definition declares it, so the parser keeps accepting and carrying it
+/// rather than rejecting those files or silently discarding a value an author wrote deliberately, but no
+/// consumer exists to act on it today. Do not add new logic that assumes this field does anything; if you
+/// are looking for "how long Docker waits before force-killing", that is <see cref="StopGracePeriod"/>. See
+/// the "Known gaps" note on <c>deployments</c> in <c>docs/schema.md</c> for the full reasoning behind
+/// keeping an inert field rather than removing or renaming it.
+/// </param>
 /// <param name="StopGracePeriod">
 /// How long the container runtime itself must wait, after asking the workload to shut down, before it
 /// force-kills. Docker's own default is ten seconds, which truncates the save of any game whose graceful
