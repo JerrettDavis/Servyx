@@ -1,7 +1,7 @@
 using Servyx.Application.Servers;
 using Servyx.Definitions;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The composition root's <see cref="IBoundDefinitionLookup"/> implementation, backed by

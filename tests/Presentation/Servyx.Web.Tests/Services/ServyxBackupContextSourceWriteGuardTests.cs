@@ -7,6 +7,7 @@ using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Infrastructure.Process;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Documentation;
 
 namespace Servyx.Web.Tests.Services;

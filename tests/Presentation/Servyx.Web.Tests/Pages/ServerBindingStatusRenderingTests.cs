@@ -4,6 +4,7 @@ using Servyx.Domain.Lifecycle;
 using Servyx.Web.Components.Pages.Servers;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus;
 

@@ -1,3 +1,4 @@
+using Servyx.Composition;
 using Servyx.Domain.Transport;
 using Servyx.Web.Authentication;
 

@@ -1,4 +1,4 @@
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The single, explicit answer to "may this process provision infrastructure?", resolved once at startup

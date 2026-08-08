@@ -2,7 +2,7 @@ using Servyx.Application.Lifecycle;
 using Servyx.Application.Servers;
 using Servyx.Domain.Lifecycle;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Thin <see cref="IContainerStateProbe"/> adapter over <see cref="IServerQueryService"/> — the same

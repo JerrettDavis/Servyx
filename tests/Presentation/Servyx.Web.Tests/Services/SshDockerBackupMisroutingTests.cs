@@ -15,6 +15,7 @@ using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Infrastructure.Process;
 using Servyx.Infrastructure.Ssh.Docker;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Documentation;
 
 namespace Servyx.Web.Tests.Services;

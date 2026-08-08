@@ -8,6 +8,7 @@ using Servyx.Domain.Provisioning;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;

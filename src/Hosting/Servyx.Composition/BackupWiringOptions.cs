@@ -1,7 +1,7 @@
 using System.Globalization;
 using Servyx.Domain.Backups;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Where a server's backups are read from and written to, as the host understands it — the half of a

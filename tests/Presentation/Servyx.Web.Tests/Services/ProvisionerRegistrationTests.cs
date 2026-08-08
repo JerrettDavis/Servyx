@@ -11,6 +11,7 @@ using Servyx.Infrastructure.DigitalOcean.Provisioning;
 using Servyx.Infrastructure.Process.Provisioning;
 using Servyx.Infrastructure.Ssh.Provisioning;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;

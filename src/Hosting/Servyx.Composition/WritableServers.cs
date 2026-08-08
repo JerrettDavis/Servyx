@@ -1,6 +1,6 @@
 using Servyx.Domain.Transport;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The set of servers the operator has explicitly granted write access to, so a page can say "this server

@@ -4,7 +4,7 @@ using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Composes the ordered <see cref="RconReachabilityChain"/> the <c>chainFactory</c> delegate

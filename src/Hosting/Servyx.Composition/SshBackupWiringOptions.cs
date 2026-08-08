@@ -4,7 +4,7 @@ using Servyx.Domain.Backups;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// One SSH-hosted server, as the host understands it: which machine to reach, which credential opens it,

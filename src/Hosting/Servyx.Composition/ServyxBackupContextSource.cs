@@ -9,7 +9,7 @@ using Servyx.Infrastructure.Process;
 using GameDefinition = Servyx.Domain.Definitions.Model.GameDefinition;
 using DefinitionQuiesceStep = Servyx.Domain.Definitions.Model.QuiesceStep;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Turns a server id into the <see cref="DockerBackupContext"/> <c>DockerBackupProvider</c> needs: an

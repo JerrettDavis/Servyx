@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <PackageReference Include="YamlDotNet" />
+    <!-- Not part of any project this project references (Servyx.Infrastructure/.Docker/.Persistence
+         reference the DI/logging packages but not Configuration/Hosting Abstractions), and this project's
+         SDK is the plain Microsoft.NET.Sdk — Microsoft.NET.Sdk.Web's implicit ASP.NET Core shared
+         framework reference is what gave Servyx.Web these for free. AddServyxCore's own composition needs
+         IConfiguration, ILogger, IHostApplicationBuilder and BackgroundService directly, so they are
+         referenced explicitly here rather than relying on incidental transitive flow. -->
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" />
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Moved verbatim from Servyx.Web.csproj. Servyx.ServiceDefaults is deliberately NOT
+         referenced: it is host-shape-specific (AddAspNetCoreInstrumentation, MapDefaultEndpoints)
+         and each host opts into it itself. -->
+    <ProjectReference Include="..\..\Core\Servyx.Domain\Servyx.Domain.csproj" />
+    <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
+    <ProjectReference Include="..\..\Core\Servyx.Definitions\Servyx.Definitions.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Rcon\Servyx.Infrastructure.Rcon.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Process\Servyx.Infrastructure.Process.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.DigitalOcean\Servyx.Infrastructure.DigitalOcean.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Azure\Servyx.Infrastructure.Azure.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Aws\Servyx.Infrastructure.Aws.csproj" />
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
+  </ItemGroup>
+</Project>

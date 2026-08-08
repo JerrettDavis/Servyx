@@ -3,7 +3,7 @@ using Servyx.Domain.Backups;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Ssh.Backups;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Turns a server id into the <see cref="SshBackupContext"/> <c>SshBackupProvider</c> needs: a connected

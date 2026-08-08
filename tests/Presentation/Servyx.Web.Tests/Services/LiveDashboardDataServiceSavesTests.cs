@@ -6,6 +6,7 @@ using Servyx.Domain.Lifecycle;
 using Servyx.Domain.Transport;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 using ServerDetail = Servyx.Application.Servers.ServerDetail;
 using ServerSummary = Servyx.Application.Servers.ServerSummary;

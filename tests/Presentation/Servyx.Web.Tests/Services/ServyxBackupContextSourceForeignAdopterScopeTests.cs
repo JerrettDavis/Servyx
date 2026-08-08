@@ -5,6 +5,7 @@ using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Lifecycle;
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Documentation;
 
 namespace Servyx.Web.Tests.Services;

@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Components.Web;
 using Microsoft.Extensions.DependencyInjection;
 using Servyx.Web.Components.Shared;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Shared;
 

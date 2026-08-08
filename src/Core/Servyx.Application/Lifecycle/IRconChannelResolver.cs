@@ -9,7 +9,7 @@ namespace Servyx.Application.Lifecycle;
 /// <remarks>
 /// <para>
 /// <strong>Why this exists instead of <c>ServyxRconChannels</c> being injected directly.</strong>
-/// <c>ServyxRconChannels</c> is a composition-root type (<c>Servyx.Web.Services</c>) — it wires together
+/// <c>ServyxRconChannels</c> is a composition-root type (<c>Servyx.Composition</c>) — it wires together
 /// host configuration, the secret store, and the definition's declared reachability strategies.
 /// <c>Servyx.Application</c> only ever depends on <c>Servyx.Domain</c>, never on the presentation layer,
 /// so <see cref="ServerLifecycleService"/> depends on this small port instead. Its method signature is

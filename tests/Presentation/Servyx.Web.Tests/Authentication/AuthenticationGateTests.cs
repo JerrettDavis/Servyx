@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Authentication;
 

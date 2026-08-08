@@ -13,6 +13,7 @@ using Servyx.Infrastructure.Process.Provisioning;
 using Servyx.Infrastructure.Ssh.Provisioning;
 using Servyx.Web.Components.Pages.Deploy;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 using Servyx.Web.Tests.Services;
 

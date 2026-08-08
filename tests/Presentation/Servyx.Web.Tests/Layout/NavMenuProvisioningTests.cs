@@ -2,6 +2,7 @@ using Bunit;
 using Microsoft.Extensions.DependencyInjection;
 using Servyx.Web.Components.Layout;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Layout;
 

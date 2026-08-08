@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Servyx.Domain.Secrets;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;

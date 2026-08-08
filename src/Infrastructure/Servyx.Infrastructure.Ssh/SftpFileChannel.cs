@@ -92,8 +92,8 @@ public sealed class SftpFileChannel : IExecutionTarget
     /// <see cref="SftpPathNotFoundException"/> the same way <see cref="StatAsync"/> and
     /// <see cref="OpenReadAsync"/> already translate it for their own not-found cases — a caller that
     /// distinguishes "this path does not exist" from "this read otherwise failed" (see
-    /// <c>Servyx.Web.Services.LiveDashboardDataService.ReadSavesAsync</c>, which treats a missing world root
-    /// as a genuine empty result and anything else as a failure) needs that distinction to hold identically
+    /// <c>Servyx.Composition.ServerSavesReader</c>'s private <c>ReadSavesAsync</c>, which treats a missing
+    /// world root as a genuine empty result and anything else as a failure) needs that distinction to hold identically
     /// across every <see cref="IExecutionTarget"/> implementation, not just <see cref="Servyx.Infrastructure.Docker.DockerExecutionTarget"/>'s.
     /// Before this fix, this method alone let <see cref="SftpPathNotFoundException"/> propagate uncaught,
     /// which inverted that distinction for a missing directory specifically: a genuinely empty world root

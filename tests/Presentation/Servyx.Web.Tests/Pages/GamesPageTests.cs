@@ -4,6 +4,7 @@ using Servyx.Domain.Definitions;
 using Servyx.Web.Components.Pages.Games;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Pages;

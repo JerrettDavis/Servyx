@@ -43,11 +43,13 @@ namespace Servyx.Web.Tests.Documentation;
 /// adapter's type in DI. A second adapter is registered beside it, not instead of it.
 /// </item>
 /// <item>
-/// <c>Services/ServyxBackupContextSource.cs</c> — one line: the legacy fallback to
-/// <c>PalworldCronBackupAdopter.Id</c> used ONLY when no game definition has loaded at all (see that file's
-/// own remarks, tightened by this task's fix). Referencing the one designated adapter's id as the
-/// no-definition-loaded default is the documented, intentional behavior <c>docs/schema.md</c> describes for
-/// this exact case, not an ambient assumption about which game is running.
+/// <c>Hosting/Servyx.Composition/ServyxBackupContextSource.cs</c> (moved out of
+/// <c>Presentation/Servyx.Web/Services/</c> when the shared composition root was extracted into its own
+/// project) — one line: the legacy fallback to <c>PalworldCronBackupAdopter.Id</c> used ONLY when no game
+/// definition has loaded at all (see that file's own remarks, tightened by this task's fix). Referencing the
+/// one designated adapter's id as the no-definition-loaded default is the documented, intentional behavior
+/// <c>docs/schema.md</c> describes for this exact case, not an ambient assumption about which game is
+/// running.
 /// </item>
 /// <item>
 /// <c>Services/MockDashboardDataService.cs</c> — the offline demo/screenshot data path
@@ -92,7 +94,7 @@ public sealed class GameNameLiteralSourceScanTests
     [
         "Infrastructure/Servyx.Infrastructure.Docker/Backups/PalworldCronBackupAdopter.cs",
         "Infrastructure/Servyx.Infrastructure.Docker/Backups/DockerBackupServiceCollectionExtensions.cs",
-        "Presentation/Servyx.Web/Services/ServyxBackupContextSource.cs",
+        "Hosting/Servyx.Composition/ServyxBackupContextSource.cs",
         "Presentation/Servyx.Web/Services/MockDashboardDataService.cs",
         "Presentation/Servyx.Web/Services/ProvisionerFormSchema.cs",
     ];

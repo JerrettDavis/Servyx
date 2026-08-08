@@ -10,6 +10,7 @@ using Servyx.Web.Components.Layout;
 using Servyx.Web.Components.Pages;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Services;
 

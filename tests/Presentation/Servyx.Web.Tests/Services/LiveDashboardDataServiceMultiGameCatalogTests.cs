@@ -4,6 +4,7 @@ using Servyx.Application.Servers;
 using Servyx.Definitions;
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Definitions.Support;
 using Servyx.Web.Tests.Documentation;
 

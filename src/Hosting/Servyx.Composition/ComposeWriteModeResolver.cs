@@ -1,6 +1,6 @@
 using Servyx.Domain.Transport;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Resolves a compose-directory session's write posture from the same, per-server grants that already

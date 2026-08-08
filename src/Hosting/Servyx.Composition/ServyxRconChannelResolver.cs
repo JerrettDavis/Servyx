@@ -1,7 +1,7 @@
 using Servyx.Application.Lifecycle;
 using Servyx.Domain.Rcon;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Thin <see cref="IRconChannelResolver"/> adapter over <see cref="ServyxRconChannels"/>.

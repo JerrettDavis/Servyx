@@ -9,6 +9,7 @@ using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Services;
 

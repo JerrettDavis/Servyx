@@ -7,6 +7,7 @@ using Servyx.Domain.Transport;
 using Servyx.Web.Components.Pages.Servers;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Pages;
 

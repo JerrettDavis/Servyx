@@ -7,7 +7,7 @@ using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Turns a server id into the <see cref="IServerLifecycle"/> that server's Start/Restart/Stop/Kill

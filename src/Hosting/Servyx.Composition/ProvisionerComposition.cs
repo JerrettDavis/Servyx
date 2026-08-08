@@ -11,7 +11,7 @@ using Servyx.Infrastructure.Process.Provisioning;
 using Servyx.Infrastructure.Ssh;
 using Servyx.Infrastructure.Ssh.Provisioning;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Registers the provisioners <see cref="ProvisionerWiringOptions"/> found enabled, so /deploy can offer more

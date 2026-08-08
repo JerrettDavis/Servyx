@@ -6,6 +6,7 @@ using Servyx.Application.Provisioning;
 using Servyx.Domain.Provisioning;
 using Servyx.Web.Components;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Pages;

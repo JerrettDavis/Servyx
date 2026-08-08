@@ -8,6 +8,7 @@ using Servyx.Infrastructure.DigitalOcean.Provisioning;
 using Servyx.Infrastructure.Docker.Provisioning;
 using Servyx.Web.Components.Pages.Deploy;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Pages;

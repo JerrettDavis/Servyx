@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Components.Server;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Servyx.Infrastructure;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Authentication;
 

@@ -7,7 +7,7 @@ using Servyx.Infrastructure.DigitalOcean.Provisioning;
 using Servyx.Infrastructure.Process.Provisioning;
 using Servyx.Infrastructure.Ssh.Provisioning;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The SSH host <c>SshProcessProvisioner</c> installs onto, as the operator named it.

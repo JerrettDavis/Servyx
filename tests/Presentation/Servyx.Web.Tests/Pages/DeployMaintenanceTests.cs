@@ -6,6 +6,7 @@ using Servyx.Domain.Transport;
 using Servyx.Web.Components.Pages.Deploy;
 using Servyx.Web.Components.Shared;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Pages;

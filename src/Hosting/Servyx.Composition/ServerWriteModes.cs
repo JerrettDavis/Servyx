@@ -1,6 +1,6 @@
 using Servyx.Domain.Transport;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Turns the operator's per-server write-mode configuration into the <see cref="WriteModeGrant"/>s the

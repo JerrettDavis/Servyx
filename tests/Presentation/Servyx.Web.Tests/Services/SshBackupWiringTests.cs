@@ -10,6 +10,7 @@ using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 using Servyx.Infrastructure.Ssh.Backups;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;

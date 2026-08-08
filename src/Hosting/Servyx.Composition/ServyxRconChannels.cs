@@ -4,7 +4,7 @@ using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// Turns a server id into the write-guarded <see cref="IRconSession"/> the rest of the host uses as its

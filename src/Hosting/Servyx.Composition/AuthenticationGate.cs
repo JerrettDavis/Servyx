@@ -1,4 +1,4 @@
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The single, explicit answer to "must a caller prove who they are before this process serves them

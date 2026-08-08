@@ -2,7 +2,7 @@ using System.Globalization;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// One server's RCON control channel, as the host understands it: where the port is and where the

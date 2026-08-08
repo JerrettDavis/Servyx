@@ -1,7 +1,7 @@
 using System.Globalization;
 using Servyx.Domain.Backups;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>One server's scheduled-backup configuration.</summary>
 /// <param name="ServerId">The server (container name) to back up, as written in configuration.</param>

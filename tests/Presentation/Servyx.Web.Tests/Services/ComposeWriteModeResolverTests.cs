@@ -1,5 +1,6 @@
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Services;
 

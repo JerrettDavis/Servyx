@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Servyx.Domain.Transport;
 using Servyx.Web.Authentication;
 using Servyx.Web.Services;
+using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;

@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using Servyx.Application.Backups;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>What one scheduled run of one server did.</summary>
 public enum ScheduledBackupOutcome

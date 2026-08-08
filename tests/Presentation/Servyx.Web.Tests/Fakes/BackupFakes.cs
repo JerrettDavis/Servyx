@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Servyx.Application.Backups;
 using Servyx.Domain.Backups;
 using Servyx.Web.Services;
+using Servyx.Composition;
 
 namespace Servyx.Web.Tests.Fakes;
 

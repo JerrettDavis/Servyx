@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using Servyx.Domain.Backups;
 using Servyx.Infrastructure.Ssh.Backups;
 
-namespace Servyx.Web.Services;
+namespace Servyx.Composition;
 
 /// <summary>
 /// The single <see cref="IBackupProvider"/> <c>BackupDashboardService</c> is handed when this process hosts
