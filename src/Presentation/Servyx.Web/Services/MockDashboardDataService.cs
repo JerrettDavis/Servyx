@@ -188,12 +188,29 @@ public sealed class MockDashboardDataService : IDashboardDataService
         return Task.FromResult(new DashboardSummary(
             ServersOnline: servers.Count(s => s.State == ServerState.Running),
             ServersTotal: servers.Length,
-            TotalPlayers: servers.Sum(s => s.PlayersOnline ?? 0),
-            TotalPlayerCapacity: servers.Sum(s => s.PlayersMax ?? 0),
+            TotalPlayers: SumIfAnyKnown(servers.Select(s => s.PlayersOnline)),
+            TotalPlayerCapacity: SumIfAnyKnown(servers.Select(s => s.PlayersMax)),
             ForeignBackupsCount: Backups.Count,
             AlertsCount: servers.Count(s => s.Health == ContainerHealth.Unhealthy),
             CpuSparkline: BuildSparkline(now, seed: 11, baseline: 34, spread: 14),
             MemorySparkline: BuildSparkline(now, seed: 47, baseline: 62, spread: 8)));
+    }
+
+    /// <summary>
+    /// Aggregates a per-server nullable count (<see cref="ServerSummary.PlayersOnline"/> or
+    /// <see cref="ServerSummary.PlayersMax"/>) the same honest way the per-server field itself works: a
+    /// server's count is <see langword="null"/> when it was never sampled, not a fabricated <c>0</c> — see
+    /// <see cref="ServerSummary.PlayersOnline"/>'s remarks — and the aggregate must not conflate that
+    /// "unknown" into a real total either. If every server's value is <see langword="null"/> (nothing was
+    /// sampled anywhere), the aggregate is <see langword="null"/> too. Otherwise the aggregate is the sum of
+    /// whichever values ARE known, the same "sum what you have" convention
+    /// <c>LiveDashboardDataService.GetDashboardSummaryAsync</c> would need the day it reads a partial roster
+    /// (today it only ever has the all-or-nothing case, reporting <see langword="null"/> outright).
+    /// </summary>
+    internal static int? SumIfAnyKnown(IEnumerable<int?> values)
+    {
+        var list = values.ToList();
+        return list.All(v => v is null) ? null : list.Sum(v => v ?? 0);
     }
 
     public Task<IReadOnlyList<ServerSummary>> GetServersAsync(CancellationToken ct = default)

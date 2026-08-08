@@ -1,4 +1,5 @@
 using Servyx.Domain.Definitions.Model;
+using Servyx.Domain.Rcon;
 using Servyx.Infrastructure.Rcon.Tests.Support;
 
 namespace Servyx.Infrastructure.Rcon.Tests.PlayerParsing;
@@ -15,7 +16,10 @@ namespace Servyx.Infrastructure.Rcon.Tests.PlayerParsing;
 /// total — but the third, "a mis-parsed player list cannot reach anything that starts, stops, archives, or
 /// declares a server ready", is only true as long as nobody wires it there. This test is what makes that
 /// true: it scans the source of every lifecycle, readiness, and backup-execution file in the solution and
-/// fails the build if <see cref="PlayerListSnapshot"/> or <see cref="RconPlayerListParser"/> appears in one.
+/// fails the build if <see cref="PlayerListSnapshot"/>, <see cref="PlayerListFidelity"/>,
+/// <see cref="RconPlayerListParser"/>, or <see cref="PlayerListPlan"/> — the gateway to that surface, since
+/// resolving one is what a caller would need before it could invoke the quarantined parser at all — appears
+/// in one.
 /// </para>
 /// <para>
 /// Readiness comes from log-regex, control-probe, port, and health signals — never from a player count. A
@@ -31,12 +35,18 @@ namespace Servyx.Infrastructure.Rcon.Tests.PlayerParsing;
 /// </remarks>
 public class PlayerListIsolationArchitectureTests
 {
-    /// <summary>The types no lifecycle, readiness, or backup-execution source file may mention.</summary>
+    /// <summary>
+    /// The types no lifecycle, readiness, or backup-execution source file may mention:
+    /// <see cref="PlayerListSnapshot"/>, <see cref="PlayerListFidelity"/>, <see cref="RconPlayerListParser"/>,
+    /// and <see cref="PlayerListPlan"/> — the gateway to that surface, since resolving a plan is the step
+    /// that precedes invoking the quarantined parser.
+    /// </summary>
     private static readonly string[] QuarantinedTypeNames =
     [
         nameof(PlayerListSnapshot),
         nameof(PlayerListFidelity),
         nameof(RconPlayerListParser),
+        nameof(PlayerListPlan),
     ];
 
     /// <summary>

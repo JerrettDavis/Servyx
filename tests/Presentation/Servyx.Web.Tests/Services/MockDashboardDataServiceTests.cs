@@ -57,4 +57,34 @@ public class MockDashboardDataServiceTests
         summary.TotalPlayers.Should().NotBe(servers[0].PlayersOnline);
         summary.TotalPlayerCapacity.Should().NotBe(servers[0].PlayersMax);
     }
+
+    [Fact]
+    public void SumIfAnyKnown_reports_null_when_every_value_is_unsampled()
+    {
+        // Every server unsampled must aggregate to "unknown", never a fabricated 0 — the same convention
+        // LiveDashboardDataService.GetDashboardSummaryAsync pins for its own all-null TotalPlayers/
+        // TotalPlayerCapacity.
+        int?[] values = [null, null, null];
+
+        MockDashboardDataService.SumIfAnyKnown(values).Should().BeNull();
+    }
+
+    [Fact]
+    public void SumIfAnyKnown_sums_only_the_known_values_when_some_servers_are_unsampled()
+    {
+        // A mix of sampled and unsampled servers must sum the known ones rather than either conflating the
+        // unsampled server's "unknown" into a fabricated 0 (old `?? 0` behaviour) or losing the aggregate
+        // entirely just because one server hasn't been sampled.
+        int?[] values = [3, null, 7];
+
+        MockDashboardDataService.SumIfAnyKnown(values).Should().Be(10);
+    }
+
+    [Fact]
+    public void SumIfAnyKnown_sums_normally_when_every_value_is_known()
+    {
+        int?[] values = [3, 7];
+
+        MockDashboardDataService.SumIfAnyKnown(values).Should().Be(10);
+    }
 }
