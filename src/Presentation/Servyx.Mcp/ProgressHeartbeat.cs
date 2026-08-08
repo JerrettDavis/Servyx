@@ -39,10 +39,15 @@ internal sealed class ProgressHeartbeat : IAsyncDisposable
     /// rather than reporting to nothing.
     /// </param>
     /// <param name="message">A human-readable statement of what is in progress, repeated on every tick.</param>
-    /// <param name="worstCase">The worst-case duration this call is documented to take, reported as <see cref="ProgressNotificationValue.Total"/>.</param>
+    /// <param name="worstCase">
+    /// The worst-case duration this call is documented to take, reported as <see cref="ProgressNotificationValue.Total"/>.
+    /// Pass <see langword="null"/> when no such budget exists (e.g. a readiness wait bounded only by a
+    /// per-definition timeout the caller hasn't computed) — <see cref="ProgressNotificationValue.Total"/> is
+    /// itself nullable, and this heartbeat leaves it unset rather than inventing a number to report.
+    /// </param>
     /// <param name="ct">Cancelled when the guarded call's own token is cancelled.</param>
     public static ProgressHeartbeat Start(
-        IProgress<ProgressNotificationValue>? progress, string message, TimeSpan worstCase, CancellationToken ct)
+        IProgress<ProgressNotificationValue>? progress, string message, TimeSpan? worstCase, CancellationToken ct)
     {
         var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var loop = progress is null ? Task.CompletedTask : RunAsync(progress, message, worstCase, cts.Token);
@@ -50,7 +55,7 @@ internal sealed class ProgressHeartbeat : IAsyncDisposable
     }
 
     private static async Task RunAsync(
-        IProgress<ProgressNotificationValue> progress, string message, TimeSpan worstCase, CancellationToken ct)
+        IProgress<ProgressNotificationValue> progress, string message, TimeSpan? worstCase, CancellationToken ct)
     {
         var start = DateTimeOffset.UtcNow;
         try
@@ -63,7 +68,7 @@ internal sealed class ProgressHeartbeat : IAsyncDisposable
                 progress.Report(new ProgressNotificationValue
                 {
                     Progress = elapsedSeconds,
-                    Total = (float)worstCase.TotalSeconds,
+                    Total = worstCase.HasValue ? (float)worstCase.Value.TotalSeconds : null,
                     Message = message,
                 });
             }

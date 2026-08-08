@@ -32,12 +32,20 @@ public sealed class McpToolInventoryTests
         "servyx_server_saves_get",
         "servyx_rcon_commands_list",
         "servyx_rcon_players_list",
+        "servyx_rcon_invoke",
         "servyx_backups_list",
         "servyx_backup_inspect",
         "servyx_backup_restore_plan",
         "servyx_backup_prune_preview",
         "servyx_games_list",
         "servyx_game_definition_faults_list",
+        "servyx_server_start",
+        "servyx_server_stop_plan",
+        "servyx_server_stop_apply",
+        "servyx_server_restart_plan",
+        "servyx_server_restart_apply",
+        "servyx_server_kill_plan",
+        "servyx_server_kill_apply",
     ];
 
     private static IReadOnlyList<DiscoveredTool> DiscoverTools()

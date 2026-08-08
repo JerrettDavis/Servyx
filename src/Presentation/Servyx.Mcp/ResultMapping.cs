@@ -45,6 +45,12 @@ public sealed record RestorePlanToolResult(
 /// union's own remarks: "'these would go' and 'these are gone' must never be rendered by the same branch."
 /// An agent reading one field for both would report a dry run as a deletion.
 /// </summary>
+/// <param name="SkippedForeign">
+/// Only meaningful when <see cref="Outcome"/> indicates the backup dashboard was actually consulted. On an
+/// "unavailable" outcome no dashboard call was made, and this is forced to <c>0</c> because the underlying
+/// type is a non-nullable <c>int</c> — that zero means "not applicable," not "no foreign artifacts were
+/// skipped."
+/// </param>
 public sealed record BackupPruneToolResult(
     string Outcome,
     string Message,

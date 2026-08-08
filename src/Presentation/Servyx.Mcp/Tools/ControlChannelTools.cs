@@ -16,6 +16,26 @@ public sealed record RconCommandRow(string Id, string Template, bool ReadOnly, b
 /// <summary>The result of <see cref="ControlChannelTools.CommandsListAsync"/>.</summary>
 public sealed record RconCommandsListResult(string Outcome, IReadOnlyList<RconCommandRow>? Commands, Unavailable? Unavailable);
 
+/// <summary>
+/// The result of <see cref="ControlChannelTools.RconInvokeAsync"/>.
+/// </summary>
+/// <remarks>
+/// <see cref="GameReportedSuccess"/> maps <see cref="RconResponse.Success"/> and is deliberately never folded
+/// into <see cref="Outcome"/>: "Servyx delivered the command" (<see cref="Outcome"/> <c>"invoked"</c>) and "the
+/// game accepted it" (<see cref="GameReportedSuccess"/>) are different facts. A command Servyx delivered
+/// successfully can still be rejected by the game itself, and collapsing the two would hide that from a caller
+/// deciding whether to retry.
+/// </remarks>
+public sealed record RconInvokeResult(
+    string Outcome, // "invoked" | "unavailable" | "unknown-command" | "unreachable" | "refused-write-guard" | "server-not-found"
+    string? ResponseText,
+    bool? GameReportedSuccess,
+    IReadOnlyList<string>? DeclaredCommandIds,
+    string? WriteMode,
+    string? Remediation,
+    string? Detail,
+    Unavailable? Unavailable);
+
 /// <summary>One connected player, present only when the roster fidelity is names-and-count.</summary>
 public sealed record PlayerInfoDto(string Name, string PlayerUid, string? SteamId)
 {
@@ -38,9 +58,11 @@ public sealed record RconPlayersListResult(
     Unavailable? Unavailable);
 
 /// <summary>
-/// The read half of the control-channel surface: the definition's declared command catalogue, and the
-/// current player roster. No apply/invoke tool lives here — see <c>docs</c> on why raw RCON is withheld from
-/// this build entirely.
+/// The control-channel surface: the definition's declared command catalogue, the current player roster, and
+/// <see cref="RconInvokeAsync"/> — invoking one declared command by id. There is no raw-send tool:
+/// <see cref="IRconSession.SendRawAsync"/> bypasses the definition's catalogue and carries no declared
+/// <c>readOnly</c> classification, which is exactly the escape hatch the write guard exists to prevent — see
+/// <c>Inventory/McpWithheldOperationTests</c>, which proves by IL scan that this assembly never reaches it.
 /// </summary>
 [McpServerToolType]
 public static class ControlChannelTools
@@ -77,6 +99,94 @@ public static class ControlChannelTools
             .ToList();
 
         return new RconCommandsListResult("listed", rows, null);
+    }
+
+    [McpServerTool(Name = "servyx_rcon_invoke", UseStructuredContent = true)]
+    [Description(
+        "Invokes one control command from the loaded definition's declared catalogue, by its id — never a " +
+        "raw command string. A mutating command (readOnly: false in the catalogue) on a server without a " +
+        "write grant is refused before the control channel is even acquired, so no socket is opened for a " +
+        "refused call. GameReportedSuccess reflects only whether the game itself accepted the command; it is " +
+        "independent of Outcome, which reflects only whether Servyx delivered it.")]
+    public static async Task<RconInvokeResult> RconInvokeAsync(
+        [Description("The server's discovery id.")] string serverId,
+        [Description("The declared control command id to invoke, as returned by servyx_rcon_commands_list.")] string commandId,
+        ServyxCoreComposition composition,
+        IServerQueryService query,
+        ServyxRconChannels channels,
+        WritableServers writable,
+        CancellationToken cancellationToken,
+        [Description("Arguments to render into the command's template, keyed by placeholder name. Omit or leave empty for a command that takes none.")]
+        IReadOnlyDictionary<string, string>? args = null)
+    {
+        var catalogueStatus = composition.Capabilities.Get(ServyxCapability.ControlCommandCatalogue);
+        if (!catalogueStatus.Available)
+        {
+            return new RconInvokeResult("unavailable", null, null, null, null, null, null, DescribeCatalogueUnavailability(catalogueStatus));
+        }
+
+        var detail = await query.GetServerDetailAsync(serverId, cancellationToken).ConfigureAwait(false);
+        if (detail is null)
+        {
+            return new RconInvokeResult("server-not-found", null, null, null, null, null, null, null);
+        }
+
+        if (!channels.Catalog.TryGet(commandId, out var command))
+        {
+            var declared = channels.Catalog.Commands.Select(c => c.Id).ToList();
+            return new RconInvokeResult(
+                "unknown-command", null, null, declared, null, null,
+                $"'{commandId}' is not a control command this definition declares.", null);
+        }
+
+        return await ToolGuard.RunAsync(
+            async () =>
+            {
+                // Checked here, against the same WritableServers keyspace WriteGuardedRconSession's own mode
+                // is resolved from (RconChannel.ServerKey is the identical Servyx:Servers:<key> key
+                // WritableServers reads), so a refused mutating command never reaches GetSessionAsync at all —
+                // no reachability probe, no auth handshake, no socket. A read-only command always passes
+                // through untouched, exactly as WriteGuardedRconSession itself would decide.
+                if (!command.ReadOnly && !writable.IsWritable(detail.Summary.Id, detail.Summary.Name))
+                {
+                    var mode = writable.Mode(detail.Summary.Id, detail.Summary.Name);
+                    throw new WritesDisabledException(
+                        $"Refusing to run control command '{command.Id}' on '{detail.Summary.Name}': the " +
+                        $"definition declares it as mutating (readOnly: false) and the server's write mode is " +
+                        $"{mode}. Mutating control commands require {nameof(WriteMode)}.{nameof(WriteMode.Enabled)}, " +
+                        "set per server and never globally.");
+                }
+
+                IRconSession? session;
+                try
+                {
+                    session = await channels.GetSessionAsync(detail.Summary.Id, detail.Summary.Name, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (RconUnreachableException ex)
+                {
+                    // Configured but currently unreachable — distinct from "no channel configured" below, the
+                    // same distinction PlayersListAsync draws.
+                    return new RconInvokeResult("unreachable", null, null, null, null, null, ex.Message, null);
+                }
+
+                if (session is null)
+                {
+                    return new RconInvokeResult(
+                        "unavailable", null, null, null, null, null, null,
+                        new Unavailable(
+                            "control-command-catalogue", UnavailableReason.NotConfiguredForServer,
+                            $"No RCON control channel is configured for '{serverId}'.", []));
+                }
+
+                var response = await session.InvokeAsync(commandId, args, cancellationToken).ConfigureAwait(false);
+                return new RconInvokeResult("invoked", response.Text, response.Success, null, null, null, null, null);
+            },
+            ex =>
+            {
+                var refusal = ToolGuard.Refuse(writable.Mode(detail.Summary.Id, detail.Summary.Name), detail.Summary.Name, ex);
+                return new RconInvokeResult("refused-write-guard", null, null, null, refusal.WriteMode, refusal.Remediation, refusal.Message, null);
+            });
     }
 
     [McpServerTool(Name = "servyx_rcon_players_list", UseStructuredContent = true)]

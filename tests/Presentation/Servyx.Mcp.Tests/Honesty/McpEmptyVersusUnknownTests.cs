@@ -6,6 +6,7 @@ using Servyx.Composition;
 using Servyx.Domain.Backups;
 using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Lifecycle;
+using Servyx.Domain.Observability;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Transport;
 using Servyx.Mcp.Tests.Support;
@@ -82,6 +83,37 @@ public sealed class McpEmptyVersusUnknownTests
         result.Outcome.Should().Be("failed");
         result.ServyxOwned.Should().BeNull("a failed listing must never collapse to an empty (found-nothing) result");
         result.Detail.Should().Be("timed out");
+    }
+
+    /// <summary>
+    /// Of the nine honesty invariants this tool surface documents, <c>servyx_server_metrics_get</c> had
+    /// nothing pinning it before this test. "The server exists but no sample could be taken right now"
+    /// (<c>not-sampled</c>, <c>Sample == null</c>) must never collapse with, nor be confused for, "the server
+    /// does not exist at all" (<c>server-not-found</c>) — and a missing sample must never be synthesized as
+    /// a zero-valued one.
+    /// </summary>
+    [Fact]
+    public async Task A_server_with_no_metrics_sample_is_distinguishable_from_a_server_that_does_not_exist()
+    {
+        var summary = MakeSummary("srv-1", "my-container");
+        var query = Substitute.For<IServerQueryService>();
+        query.GetServerDetailAsync("srv-1", Arg.Any<CancellationToken>())
+            .Returns(new ServerDetail(summary, "image:latest", null, null, null, null, null, null, []));
+        query.GetMetricsSampleAsync("srv-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ResourceSample?>(null));
+        query.GetServerDetailAsync("srv-missing", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDetail?>(null));
+
+        var notSampled = await ServerReadTools.MetricsAsync("srv-1", query, CancellationToken.None);
+        notSampled.Outcome.Should().Be("not-sampled");
+        notSampled.Sample.Should().BeNull("a failed sample attempt must never be synthesized as a zero-valued sample");
+
+        var notFound = await ServerReadTools.MetricsAsync("srv-missing", query, CancellationToken.None);
+        notFound.Outcome.Should().Be("server-not-found");
+        notFound.Sample.Should().BeNull();
+
+        notSampled.Outcome.Should().NotBe(
+            notFound.Outcome, "'exists but unsampled' and 'does not exist' are different facts and must read as different outcomes");
     }
 
     [Fact]
