@@ -1,3 +1,4 @@
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon.Tests.Fakes;
 
@@ -107,7 +108,10 @@ public class WriteGuardedRconSessionTests
     {
         var (guarded, _) = Build(WriteMode.ReadOnly);
 
-        (await guarded.GetPlayersAsync()).Players.Should().BeEmpty();
+        var snapshot = await guarded.GetPlayersAsync();
+
+        snapshot.Players.Should().BeEmpty();
+        snapshot.Fidelity.Should().Be(PlayerListFidelity.NamesAndCount, "ScriptedRconSession's double answers a resolved, empty roster, not an unknown one");
     }
 
     [Fact]

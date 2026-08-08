@@ -1,4 +1,7 @@
+using System.Net;
+using System.Net.Sockets;
 using Servyx.Domain.Connectors;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
@@ -29,14 +32,29 @@ public class RconSessionTests
     [
         new RconCommand("info", "Info", ReadOnly: true),
         new RconCommand("players", "ShowPlayers", ReadOnly: true),
+        new RconCommand("list", "List", ReadOnly: true),
         new RconCommand("save", "Save", ReadOnly: false),
         new RconCommand("broadcast", "Broadcast {message}", ReadOnly: false),
         new RconCommand("shutdown", "Shutdown {seconds} \"{message}\"", ReadOnly: false),
     ]);
 
+    private static PlayerListPlan CsvPlan() => new(
+        "players",
+        new PlayerParserSpec.CsvWithHeader(["name", "playerUid", "steamId"], "name", null),
+        "test plan");
+
+    private static PlayerListPlan SummaryPlan() => new(
+        "list",
+        new PlayerParserSpec.SummaryLine(
+            CompiledPattern.TryCompile(
+                @"There are (?<count>\d+) of a max(?: of)? (?<max>\d+) players online:?(?<names>.*)", out _)!,
+            PlayerParserSpec.SummaryLine.DefaultNameSeparator),
+        "test plan");
+
     private static (RconSession Session, InMemorySecretStore Secrets) Build(
         FakeRconServer server,
-        IRconAuditSink? audit = null)
+        IRconAuditSink? audit = null,
+        PlayerListPlan? players = null)
     {
         var secrets = new InMemorySecretStore().With(PasswordUrn, Password);
         var session = new RconSession(
@@ -45,9 +63,20 @@ public class RconSessionTests
             Palworld(),
             secrets,
             PasswordUrn,
-            audit);
+            audit,
+            players: players);
 
         return (session, secrets);
+    }
+
+    /// <summary>An endpoint nothing is listening on: bound to grab a free ephemeral port, then released.</summary>
+    private static RconEndpoint UnusedEndpoint()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return new RconEndpoint("127.0.0.1", port);
     }
 
     [Fact]
@@ -187,7 +216,7 @@ public class RconSessionTests
         };
 
         await using var server = new FakeRconServer(password: Password, responseFragments: fragments);
-        var (session, _) = Build(server);
+        var (session, _) = Build(server, players: CsvPlan());
 
         var snapshot = await session.GetPlayersAsync();
 
@@ -201,9 +230,89 @@ public class RconSessionTests
     public async Task An_empty_player_list_yields_no_players_rather_than_a_phantom_one()
     {
         await using var server = new FakeRconServer(password: Password, responseFragments: ["name,playeruid,steamid"]);
-        var (session, _) = Build(server);
+        var (session, _) = Build(server, players: CsvPlan());
 
-        (await session.GetPlayersAsync()).Players.Should().BeEmpty();
+        var snapshot = await session.GetPlayersAsync();
+
+        snapshot.Players.Should().BeEmpty();
+        snapshot.Fidelity.Should().Be(PlayerListFidelity.NamesAndCount, "a well-formed header with no data rows is a genuine, trustworthy zero");
+        snapshot.List.Count.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_plan_naming_a_different_command_invokes_that_command_and_reads_its_own_reply_shape()
+    {
+        await using var server = new FakeRconServer(
+            password: Password,
+            responseFragments: ["There are 2 of a max of 20 players online: Alice, Bob"]);
+        var (session, _) = Build(server, players: SummaryPlan());
+
+        var snapshot = await session.GetPlayersAsync();
+
+        server.Commands.Should().ContainSingle().Which.Should().Be("List");
+        snapshot.Fidelity.Should().Be(PlayerListFidelity.NamesAndCount);
+        snapshot.Players.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task A_session_with_no_plan_reports_an_unknown_roster_and_sends_nothing()
+    {
+        await using var server = new FakeRconServer(password: Password);
+        var (session, secrets) = Build(server);
+
+        var snapshot = await session.GetPlayersAsync();
+
+        snapshot.Fidelity.Should().Be(PlayerListFidelity.Unknown);
+        snapshot.Players.Should().BeEmpty();
+        snapshot.List.Count.Should().BeNull();
+        snapshot.List.Diagnostic.Should().NotBeNullOrWhiteSpace();
+        server.Commands.Should().BeEmpty();
+        secrets.GetCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_reply_that_does_not_match_the_declared_shape_is_unknown_rather_than_a_confident_zero()
+    {
+        await using var server = new FakeRconServer(password: Password, responseFragments: ["gibberish"]);
+        var (session, _) = Build(server, players: SummaryPlan());
+
+        var snapshot = await session.GetPlayersAsync();
+
+        snapshot.Fidelity.Should().Be(PlayerListFidelity.Unknown);
+        snapshot.Players.Should().BeEmpty();
+        snapshot.List.Count.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task An_unreachable_endpoint_propagates_rather_than_reporting_that_nobody_is_connected()
+    {
+        var endpoint = UnusedEndpoint();
+        var secrets = new InMemorySecretStore().With(PasswordUrn, Password);
+        var session = new RconSession(
+            new SourceRconClient(Fast()),
+            endpoint,
+            Palworld(),
+            secrets,
+            PasswordUrn,
+            players: CsvPlan());
+
+        var act = async () => await session.GetPlayersAsync();
+
+        await act.Should().ThrowAsync<RconUnreachableException>();
+    }
+
+    [Fact]
+    public async Task A_plan_naming_a_command_the_catalogue_does_not_declare_is_refused_before_the_socket()
+    {
+        await using var server = new FakeRconServer(password: Password);
+        var plan = new PlayerListPlan("nonexistent", null, "test plan");
+        var (session, secrets) = Build(server, players: plan);
+
+        var act = async () => await session.GetPlayersAsync();
+
+        await act.Should().ThrowAsync<RconUnknownCommandException>();
+        secrets.GetCalls.Should().Be(0);
+        server.Commands.Should().BeEmpty();
     }
 
     [Fact]

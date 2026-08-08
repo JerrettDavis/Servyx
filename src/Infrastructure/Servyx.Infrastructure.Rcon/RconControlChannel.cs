@@ -1,3 +1,4 @@
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Provisioning;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
@@ -32,11 +33,18 @@ namespace Servyx.Infrastructure.Rcon;
 /// The owning server's write posture, enforced by <see cref="WriteGuardedRconSession"/>. Set per server and
 /// never globally.
 /// </param>
+/// <param name="Players">
+/// Which command the opened session's <c>GetPlayersAsync</c> invokes and how to read its reply, resolved
+/// from the definition's <c>control.players</c> block via <see cref="PlayerListPlan.Resolve"/>. Defaults to
+/// <see cref="PlayerListPlan.None"/> when omitted, so an existing caller that has not been updated to supply
+/// one keeps compiling and simply reports an unknown roster.
+/// </param>
 public sealed record RconControlChannelSpec(
     int Port,
     SecretUrn PasswordUrn,
     RconCommandCatalog Catalog,
-    WriteMode Mode);
+    WriteMode Mode,
+    PlayerListPlan? Players = null);
 
 /// <summary>
 /// Thrown when a control channel was asked for against a resource that has no address it may be pinned to.
@@ -252,7 +260,8 @@ public sealed class RconControlChannel
             _secrets,
             spec.PasswordUrn,
             _audit,
-            _timeProvider);
+            _timeProvider,
+            spec.Players);
 
         // Guarded by construction. There is no branch of this method that returns the inner session.
         return new WriteGuardedRconSession(session, spec.Catalog, spec.Mode, Describe(resource));

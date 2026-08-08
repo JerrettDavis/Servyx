@@ -1,3 +1,5 @@
+using Servyx.Domain.Definitions.Model;
+
 namespace Servyx.Domain.Rcon;
 
 /// <summary>Address of an RCON endpoint.</summary>
@@ -17,9 +19,32 @@ public sealed record RconResponse(string Text, bool Success);
 public sealed record PlayerInfo(string Name, string PlayerUid, string? SteamId);
 
 /// <summary>A point-in-time list of connected players.</summary>
+/// <remarks>
+/// <para>
+/// Wraps a <see cref="PlayerListSnapshot"/> instead of exposing a bare player list so fidelity survives the
+/// crossing from <c>Servyx.Infrastructure.Rcon</c> into the domain boundary this interface lives on. The
+/// shape this record replaced — <c>(DateTimeOffset Timestamp, IReadOnlyList&lt;PlayerInfo&gt; Players)</c> —
+/// made "nobody is connected" and "the reply could not be read" the same value: an empty list either way.
+/// A caller deciding whether to trust a zero needs to tell those two apart, which is exactly what
+/// <see cref="Fidelity"/> is for.
+/// </para>
+/// <para>
+/// Deliberately offers no <c>(DateTimeOffset, IReadOnlyList&lt;PlayerInfo&gt;)</c> convenience constructor:
+/// an implicit list-to-<see cref="PlayerListSnapshot.Roster"/> conversion would quietly re-introduce the same
+/// fidelity claim this type exists to remove — a caller must construct the <see cref="PlayerListSnapshot"/>
+/// itself and say, explicitly, how much of it can be trusted.
+/// </para>
+/// </remarks>
 /// <param name="Timestamp">When the snapshot was taken.</param>
-/// <param name="Players">The connected players.</param>
-public sealed record PlayerSnapshot(DateTimeOffset Timestamp, IReadOnlyList<PlayerInfo> Players);
+/// <param name="List">The parsed result, carrying both the roster (when trustworthy) and how much of it is.</param>
+public sealed record PlayerSnapshot(DateTimeOffset Timestamp, PlayerListSnapshot List)
+{
+    /// <summary>The connected players. Empty unless <see cref="Fidelity"/> is <see cref="PlayerListFidelity.NamesAndCount"/>.</summary>
+    public IReadOnlyList<PlayerInfo> Players => List.Players;
+
+    /// <summary>How much of <see cref="List"/> is actually trustworthy.</summary>
+    public PlayerListFidelity Fidelity => List.Fidelity;
+}
 
 /// <summary>Low-level RCON protocol client.</summary>
 public interface IRconClient

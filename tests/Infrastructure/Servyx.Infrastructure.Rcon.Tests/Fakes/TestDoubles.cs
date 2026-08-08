@@ -1,4 +1,5 @@
 using System.Text;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 
@@ -104,7 +105,7 @@ internal sealed class ScriptedRconSession : IRconSession
         throw new NotSupportedException("This double does not implement the raw escape hatch.");
 
     public Task<PlayerSnapshot> GetPlayersAsync(CancellationToken ct = default) =>
-        Task.FromResult(new PlayerSnapshot(DateTimeOffset.UnixEpoch, []));
+        Task.FromResult(new PlayerSnapshot(DateTimeOffset.UnixEpoch, PlayerListSnapshot.Roster([])));
 }
 
 /// <summary>A session that never answers, so a caller's own timeout is the thing under test.</summary>

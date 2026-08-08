@@ -840,7 +840,16 @@ public sealed record RconResponse(string Text, bool Success);
 public sealed record PlayerInfo(string Name, string PlayerUid, string? SteamId);
 
 /// <summary>A point-in-time list of connected players.</summary>
-public sealed record PlayerSnapshot(DateTimeOffset Timestamp, IReadOnlyList<PlayerInfo> Players);
+/// <remarks>
+/// Wraps a <c>PlayerListSnapshot</c> (§ the player-list parsing types) so fidelity survives the crossing into
+/// the domain boundary: <c>Players</c> and <c>Fidelity</c> are projected off it, and there is deliberately no
+/// convenience constructor that would let a caller claim a roster without also saying how trustworthy it is.
+/// </remarks>
+public sealed record PlayerSnapshot(DateTimeOffset Timestamp, PlayerListSnapshot List)
+{
+    public IReadOnlyList<PlayerInfo> Players => List.Players;
+    public PlayerListFidelity Fidelity => List.Fidelity;
+}
 
 /// <summary>Low-level RCON protocol client.</summary>
 public interface IRconClient
@@ -867,6 +876,12 @@ public interface IRconSession
     /// </summary>
     Task<RconResponse> SendRawAsync(string rawCommand, CancellationToken ct = default);
 
+    /// <summary>
+    /// Returns the current list of connected players. Both the command invoked and the shape its reply is
+    /// parsed in are resolved from the definition's <c>control.players</c> block (see <c>PlayerListPlan</c>),
+    /// never hardcoded — a session with no resolved plan sends nothing and reports
+    /// <c>PlayerListFidelity.Unknown</c> rather than inventing a command id.
+    /// </summary>
     Task<PlayerSnapshot> GetPlayersAsync(CancellationToken ct = default);
 }
 

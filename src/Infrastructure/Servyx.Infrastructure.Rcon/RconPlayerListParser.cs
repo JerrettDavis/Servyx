@@ -30,18 +30,6 @@ namespace Servyx.Infrastructure.Rcon;
 /// </remarks>
 public static class RconPlayerListParser
 {
-    /// <summary>
-    /// The shape assumed by <see cref="Parse(string?)"/>, which exists for callers that predate the
-    /// definition-driven overload: a three-column CSV with a header row, the shape the first shipped
-    /// definition declares for <c>rcon.players</c>.
-    /// </summary>
-    internal static readonly PlayerParserSpec.CsvWithHeader DefaultCsvShape =
-        new(["name", "playerUid", "steamId"], "name", null);
-
-    /// <summary>Parses a player-list reply in the default three-column CSV shape.</summary>
-    /// <param name="text">The raw reply text.</param>
-    internal static IReadOnlyList<PlayerInfo> Parse(string? text) => Parse(text, DefaultCsvShape).Players;
-
     /// <summary>Parses a player-list reply in the shape the definition declares. Never throws.</summary>
     /// <param name="text">The raw reply text.</param>
     /// <param name="spec">The declared reply shape.</param>

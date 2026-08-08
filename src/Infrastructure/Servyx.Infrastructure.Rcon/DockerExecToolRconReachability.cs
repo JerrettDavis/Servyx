@@ -1,3 +1,4 @@
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Transport;
 
@@ -49,6 +50,7 @@ public sealed class DockerExecToolRconReachability : IRconReachability
     private readonly IReadOnlyList<string> _argvTemplate;
     private readonly RconCommandCatalog _catalog;
     private readonly IRconAuditSink? _audit;
+    private readonly PlayerListPlan _players;
     private readonly string _probeTool;
     private string? _lastUnavailableReason;
 
@@ -75,12 +77,18 @@ public sealed class DockerExecToolRconReachability : IRconReachability
     /// unavailable and refuses outright, exactly as an unaudited <see cref="RconSession"/> does: see
     /// <see cref="DockerExecToolRconSession.SendRawAsync"/>.
     /// </param>
+    /// <param name="players">
+    /// Which command an acquired session's <c>GetPlayersAsync</c> invokes and how to read its reply, resolved
+    /// from the definition's <c>control.players</c> block. Defaults to <see cref="PlayerListPlan.None"/> when
+    /// omitted.
+    /// </param>
     public DockerExecToolRconReachability(
         IExecutionTarget target,
         string containerName,
         IReadOnlyList<string> argvTemplate,
         RconCommandCatalog catalog,
-        IRconAuditSink? audit = null)
+        IRconAuditSink? audit = null,
+        PlayerListPlan? players = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentException.ThrowIfNullOrWhiteSpace(containerName);
@@ -105,6 +113,7 @@ public sealed class DockerExecToolRconReachability : IRconReachability
         _argvTemplate = argvTemplate;
         _catalog = catalog;
         _audit = audit;
+        _players = players ?? PlayerListPlan.None;
         _probeTool = argvTemplate[0];
     }
 
@@ -171,7 +180,7 @@ public sealed class DockerExecToolRconReachability : IRconReachability
     {
         ArgumentNullException.ThrowIfNull(endpoint);
 
-        IRconSession session = new DockerExecToolRconSession(_target, _containerName, endpoint, _argvTemplate, _catalog, _audit);
+        IRconSession session = new DockerExecToolRconSession(_target, _containerName, endpoint, _argvTemplate, _catalog, _audit, _players);
         return Task.FromResult(session);
     }
 
@@ -215,6 +224,7 @@ public sealed class DockerExecToolRconSession : IRconSession
     private readonly IReadOnlyList<string> _argvTemplate;
     private readonly RconCommandCatalog _catalog;
     private readonly IRconAuditSink? _audit;
+    private readonly PlayerListPlan _players;
 
     internal DockerExecToolRconSession(
         IExecutionTarget target,
@@ -222,7 +232,8 @@ public sealed class DockerExecToolRconSession : IRconSession
         RconEndpoint endpoint,
         IReadOnlyList<string> argvTemplate,
         RconCommandCatalog catalog,
-        IRconAuditSink? audit = null)
+        IRconAuditSink? audit,
+        PlayerListPlan players)
     {
         _target = target;
         _containerName = containerName;
@@ -230,6 +241,7 @@ public sealed class DockerExecToolRconSession : IRconSession
         _argvTemplate = argvTemplate;
         _catalog = catalog;
         _audit = audit;
+        _players = players;
     }
 
     /// <inheritdoc />
@@ -295,11 +307,20 @@ public sealed class DockerExecToolRconSession : IRconSession
     }
 
     /// <inheritdoc />
-    /// <remarks>Invokes the catalogue's <c>players</c> command, the same id <see cref="RconSession"/> uses.</remarks>
+    /// <remarks>
+    /// Both the command invoked and the shape its reply is parsed in come from the definition, exactly as
+    /// <see cref="RconSession.GetPlayersAsync"/> does. When this session's <see cref="PlayerListPlan"/>
+    /// resolved no command, nothing is sent and the answer is <see cref="PlayerListFidelity.Unknown"/>.
+    /// </remarks>
     public async Task<PlayerSnapshot> GetPlayersAsync(CancellationToken ct = default)
     {
-        var response = await InvokeAsync(RconSession.PlayersCommandId, null, ct).ConfigureAwait(false);
-        return new PlayerSnapshot(DateTimeOffset.UtcNow, RconPlayerListParser.Parse(response.Text));
+        if (_players.CommandId is not { } commandId)
+        {
+            return new PlayerSnapshot(DateTimeOffset.UtcNow, PlayerListSnapshot.Unresolved(_players.Diagnostic));
+        }
+
+        var response = await InvokeAsync(commandId, null, ct).ConfigureAwait(false);
+        return new PlayerSnapshot(DateTimeOffset.UtcNow, RconPlayerListParser.Parse(response.Text, _players.Parser));
     }
 
     private async Task<RconResponse> ExecuteAsync(string renderedCommand, CommandIntent intent, CancellationToken ct)

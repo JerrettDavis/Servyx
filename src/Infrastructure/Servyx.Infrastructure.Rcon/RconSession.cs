@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 
@@ -50,6 +51,7 @@ public sealed class RconSession : IRconSession
     private readonly SecretUrn _passwordUrn;
     private readonly IRconAuditSink? _audit;
     private readonly TimeProvider _timeProvider;
+    private readonly PlayerListPlan _players;
 
     /// <summary>Creates a session.</summary>
     /// <param name="client">The protocol client every exchange goes through.</param>
@@ -64,6 +66,11 @@ public sealed class RconSession : IRconSession
     /// rather than sending an unrecorded command.
     /// </param>
     /// <param name="timeProvider">Clock used to stamp <see cref="PlayerSnapshot"/>s.</param>
+    /// <param name="players">
+    /// Which command <see cref="GetPlayersAsync"/> invokes and how to read its reply, resolved from the
+    /// definition's <c>control.players</c> block via <see cref="PlayerListPlan.Resolve"/>. Defaults to
+    /// <see cref="PlayerListPlan.None"/> — nothing invoked, an unknown roster reported — when omitted.
+    /// </param>
     public RconSession(
         IRconClient client,
         RconEndpoint endpoint,
@@ -71,7 +78,8 @@ public sealed class RconSession : IRconSession
         ISecretStore secrets,
         SecretUrn passwordUrn,
         IRconAuditSink? audit = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        PlayerListPlan? players = null)
     {
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNull(endpoint);
@@ -94,6 +102,7 @@ public sealed class RconSession : IRconSession
         _passwordUrn = passwordUrn;
         _audit = audit;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _players = players ?? PlayerListPlan.None;
     }
 
     /// <summary>The endpoint this session talks to.</summary>
@@ -140,18 +149,28 @@ public sealed class RconSession : IRconSession
 
     /// <inheritdoc />
     /// <remarks>
-    /// Invokes the catalogue's <c>players</c> command and parses its reply with the
-    /// <c>csv-with-header</c> shape the definition's <c>control.players.parsers</c> block declares for
-    /// <c>rcon.players</c>.
+    /// Both the command invoked and the shape its reply is parsed in come from the definition — neither is
+    /// assumed. When this session's <see cref="PlayerListPlan"/> resolved no command (see
+    /// <see cref="PlayerListPlan.IsResolved"/>), nothing is sent at all and the answer is
+    /// <see cref="PlayerListFidelity.Unknown"/> carrying the plan's own diagnostic. Transport, authentication,
+    /// and unknown-command failures from <see cref="InvokeAsync"/> still propagate out of this method rather
+    /// than being swallowed into a snapshot, so "nobody is connected" and "the control channel could not be
+    /// reached" remain distinguishable outcomes.
     /// </remarks>
     public async Task<PlayerSnapshot> GetPlayersAsync(CancellationToken ct = default)
     {
-        var response = await InvokeAsync(PlayersCommandId, null, ct).ConfigureAwait(false);
-        return new PlayerSnapshot(_timeProvider.GetUtcNow(), RconPlayerListParser.Parse(response.Text));
-    }
+        if (_players.CommandId is not { } commandId)
+        {
+            return new PlayerSnapshot(
+                _timeProvider.GetUtcNow(),
+                PlayerListSnapshot.Unresolved(_players.Diagnostic));
+        }
 
-    /// <summary>The catalogue id <see cref="GetPlayersAsync"/> invokes, as declared by the definition.</summary>
-    public const string PlayersCommandId = "players";
+        var response = await InvokeAsync(commandId, null, ct).ConfigureAwait(false);
+        return new PlayerSnapshot(
+            _timeProvider.GetUtcNow(),
+            RconPlayerListParser.Parse(response.Text, _players.Parser));
+    }
 
     private async Task<RconResponse> SendAsync(string command, CancellationToken ct)
     {

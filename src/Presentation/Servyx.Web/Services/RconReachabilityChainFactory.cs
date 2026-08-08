@@ -1,3 +1,4 @@
+using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
@@ -57,6 +58,11 @@ public static class RconReachabilityChainFactory
     /// The exec channel <c>docker-exec-tool</c> runs over. Required (non-null) whenever
     /// <paramref name="containerName"/> is non-null; the two are supplied together or not at all.
     /// </param>
+    /// <param name="players">
+    /// Which command an acquired session's <c>GetPlayersAsync</c> invokes and how to read its reply, resolved
+    /// from the definition's <c>control.players</c> block. Defaults to <see cref="PlayerListPlan.None"/> when
+    /// omitted.
+    /// </param>
     /// <exception cref="ArgumentException">
     /// Exactly one of <paramref name="containerName"/> and <paramref name="executionTarget"/> is
     /// <see langword="null"/>.
@@ -67,7 +73,8 @@ public static class RconReachabilityChainFactory
         RconCommandCatalog catalog,
         ISecretStore secrets,
         string? containerName,
-        IExecutionTarget? executionTarget)
+        IExecutionTarget? executionTarget,
+        PlayerListPlan? players = null)
     {
         ArgumentNullException.ThrowIfNull(channel);
         ArgumentNullException.ThrowIfNull(client);
@@ -86,12 +93,13 @@ public static class RconReachabilityChainFactory
         var strategies = new List<IRconReachability>
         {
             new DirectTcpRconReachability(endpoint =>
-                new RconSession(client, endpoint, catalog, secrets, channel.PasswordUrn)),
+                new RconSession(client, endpoint, catalog, secrets, channel.PasswordUrn, players: players)),
         };
 
         if (containerName is not null)
         {
-            strategies.Add(new DockerExecToolRconReachability(executionTarget!, containerName, DockerExecArgv, catalog));
+            strategies.Add(new DockerExecToolRconReachability(
+                executionTarget!, containerName, DockerExecArgv, catalog, audit: null, players: players));
         }
 
         strategies.Add(UnavailableRconReachability.DockerExecNetwork);

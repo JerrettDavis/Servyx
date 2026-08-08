@@ -468,7 +468,7 @@ if (provisioningGate.Enabled)
         // with no commands all degrade to RconCommandCatalog.Empty, exactly like TryLoadRconCommands'
         // null return: there is still no hardcoded fallback catalogue anywhere in this codebase.
         var rconChannel = singleDefinition?.Control.Channels
-            .FirstOrDefault(c => string.Equals(c.Id, "rcon", StringComparison.Ordinal));
+            .FirstOrDefault(c => string.Equals(c.Id, PlayerListPlan.RconChannelId, StringComparison.Ordinal));
         List<RconCommand>? rconCommands = rconChannel is not null && rconChannel.Commands.Count > 0
             ? rconChannel.Commands
                 .Select(kv => new RconCommand(kv.Key, kv.Value.Template, kv.Value.ReadOnly))
@@ -483,6 +483,21 @@ if (provisioningGate.Enabled)
         }
 
         var rconCatalog = rconCommands is null ? RconCommandCatalog.Empty : new RconCommandCatalog(rconCommands);
+
+        // Resolves which command GetPlayersAsync invokes on the rcon channel, and how to read its reply, from
+        // the same single loaded definition's control.players block. An unresolved plan is not a startup
+        // refusal — it degrades GetPlayersAsync to reporting an unknown roster rather than inventing a
+        // command id (e.g. "players") a particular game's dialect may not even declare.
+        var rconPlayers = PlayerListPlan.Resolve(singleDefinition?.Control.Players, PlayerListPlan.RconChannelId);
+
+        if (!rconPlayers.IsResolved)
+        {
+            rconStartupLogger.LogWarning(
+                "No player-list source resolved for the '{ChannelId}' control channel: {Reason} Player listing "
+                + "over this channel will report an unknown roster rather than an empty one.",
+                PlayerListPlan.RconChannelId,
+                rconPlayers.Diagnostic);
+        }
 
         builder.Services.AddServyxRcon();
         builder.Services.AddSingleton(sp => new ServyxRconChannels(
@@ -502,7 +517,8 @@ if (provisioningGate.Enabled)
                 rconCatalog,
                 sp.GetRequiredService<ISecretStore>(),
                 sshDockerWiring.Any ? sshDockerWiring.Hosts[0].ContainerName : null,
-                sshDockerWiring.Any ? sp.GetRequiredService<IExecutionTarget>() : null),
+                sshDockerWiring.Any ? sp.GetRequiredService<IExecutionTarget>() : null,
+                rconPlayers),
             audit: null));
     }
     else
