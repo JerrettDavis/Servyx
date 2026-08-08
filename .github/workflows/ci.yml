@@ -140,6 +140,10 @@ jobs:
       #   tests/Infrastructure/Servyx.Config.Tests
       #   tests/Servyx.Bdd.Tests
       #   tests/Presentation/Servyx.Web.Tests
+      #   tests/Presentation/Servyx.Mcp.Tests   (no Docker daemon, browser, or network access required or
+      #     attempted; every test either reflects/IL-walks the Servyx.Mcp assembly, source-scans Program.cs,
+      #     or drives a tool method against NSubstitute doubles / a composition built over a temp definitions
+      #     directory)
       #
       # Excluded (see header comment for why):
       #   tests/Servyx.E2E.Tests
@@ -165,6 +169,7 @@ jobs:
             "tests/Infrastructure/Servyx.Config.Tests"
             "tests/Servyx.Bdd.Tests"
             "tests/Presentation/Servyx.Web.Tests"
+            "tests/Presentation/Servyx.Mcp.Tests"
           )
           for project in "${projects[@]}"; do
             echo "::group::dotnet test $project"

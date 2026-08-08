@@ -58,6 +58,14 @@
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
 
+    <!-- MCP server. Pinned exactly: the 2.x line changed HttpServerTransportOptions.Stateless to
+         default true and made Tool.InputSchema deserialization required, so a floating version is a
+         behaviour change, not a patch. -->
+    <PackageVersion Include="ModelContextProtocol" Version="2.1.0" />
+    <!-- Host.CreateApplicationBuilder for the stdio host. Only Hosting.Abstractions was pinned
+         before, which is registration-only and has no builder. -->
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+
     <!-- Testing -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageVersion Include="xunit" Version="2.9.3" />

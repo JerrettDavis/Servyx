@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <!-- ModelContextProtocol (not .Core) brings the hosting/DI extensions the tool attributes need.
+         ModelContextProtocol.AspNetCore is deliberately absent: this assembly must stay
+         transport-agnostic so a future HTTP host reuses these exact classes unchanged. -->
+    <PackageReference Include="ModelContextProtocol" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\Hosting\Servyx.Composition\Servyx.Composition.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Lets the test project call a handful of internal, dependency-free mapping helpers (e.g.
+         KebabCase, ControlChannelTools.ToResult) directly, rather than re-deriving equivalent logic in the
+         test project or exercising them only indirectly through a fully wired session/channel. -->
+    <InternalsVisibleTo Include="Servyx.Mcp.Tests" />
+  </ItemGroup>
+</Project>

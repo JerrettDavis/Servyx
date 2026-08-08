@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="NSubstitute" />
+    <PackageReference Include="AwesomeAssertions" />
+    <PackageReference Include="TinyBDD" />
+    <PackageReference Include="TinyBDD.Xunit" />
+    <!-- Servyx.Composition only references Microsoft.Extensions.Hosting.Abstractions (for
+         IHostApplicationBuilder); the concrete Host.CreateApplicationBuilder() this test project's
+         Support/ComposedHost.cs uses (mirroring AddServyxCoreBootstrapLoggerTests.cs in Servyx.Web.Tests)
+         lives in the full Microsoft.Extensions.Hosting package, so it is referenced directly here. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <Using Include="AwesomeAssertions" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\src\Presentation\Servyx.Mcp\Servyx.Mcp.csproj" />
+  </ItemGroup>
+
+</Project>
