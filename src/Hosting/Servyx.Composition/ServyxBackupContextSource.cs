@@ -140,7 +140,7 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
             ?? throw new InvalidOperationException(
                 $"No container data root is known for '{serverId}': '{BackupWiringOptions.SectionKey}:ContainerDataRoot' "
                 + "is not configured, and the adopted container reports no mount path to fall back to."));
-        var target = await SessionAsync(containerName, root, ct).ConfigureAwait(false);
+        var target = await SessionAsync(containerName, detail.Summary.Id, root, ct).ConfigureAwait(false);
 
         // Null unless the operator configured an RCON channel for this server. The pair below is all-or-
         // nothing on purpose: a context carrying a quiesce step with no channel is refused by the provider,
@@ -233,6 +233,7 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
                     new Dictionary<string, string>(StringComparer.Ordinal)
                     {
                         [LocalProcessTransport.RootPathOption] = composeDirectory,
+                        [ComposeWriteModeResolver.ContainerIdOption] = detail.Summary.Id,
                         [ComposeWriteModeResolver.ContainerNameOption] = containerName,
                     }),
                 ct).ConfigureAwait(false);
@@ -405,13 +406,14 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
     /// <exception cref="ContainerScopedFilesNotSupportedException">
     /// The ambient transport does not provide container-scoped file operations.
     /// </exception>
-    private Task<IExecutionTarget> SessionAsync(string containerName, string root, CancellationToken ct)
+    private Task<IExecutionTarget> SessionAsync(string containerName, string containerId, string root, CancellationToken ct)
     {
         RequireContainerScopedFiles(containerName, root);
 
         var lazy = _sessions.GetOrAdd(
             containerName,
-            key => new Lazy<Task<IExecutionTarget>>(() => _transport.ConnectAsync(BuildDockerDescriptor(key, root), ct)));
+            key => new Lazy<Task<IExecutionTarget>>(
+                () => _transport.ConnectAsync(BuildDockerDescriptor(key, containerId, root), ct)));
 
         return lazy.Value;
     }
@@ -442,7 +444,7 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
     }
 
     /// <summary>Builds the <see cref="TargetDescriptor"/> a Docker session for <paramref name="containerName"/> is opened against.</summary>
-    private static TargetDescriptor BuildDockerDescriptor(string containerName, string root) =>
+    private static TargetDescriptor BuildDockerDescriptor(string containerName, string containerId, string root) =>
         new(
             "docker",
             DockerEndpointResolver.Resolve(explicitEndpoint: null).ToString(),
@@ -450,9 +452,13 @@ public sealed class ServyxBackupContextSource : IDockerBackupContextSource, IAsy
             DockerContext: null,
             new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                // The same key ServerWriteModes emits a grant for, so a server the operator enabled writes
-                // on is the server this session — and the compose session gated against the same server's
-                // grant in GetAsync — is allowed to write to.
+                // containerId is the identity the operator's per-server write grant is keyed on — a container
+                // name can be reassigned to a different workload outside Servyx at any time, so a grant is
+                // never honoured against one. Without it here, every backup session would resolve read-only
+                // and a genuinely-granted server could not be restored to. The name is carried alongside it
+                // because it is what refusal messages show an operator, and because the compose session in
+                // GetAsync is attributed to the same server through both.
+                ["containerId"] = containerId,
                 ["containerName"] = containerName,
                 ["rootPath"] = root,
             });

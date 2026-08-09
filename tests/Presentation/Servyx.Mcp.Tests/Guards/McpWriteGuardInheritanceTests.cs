@@ -1,4 +1,4 @@
-using System.Reflection;
+﻿using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -30,14 +30,15 @@ public sealed class McpWriteGuardInheritanceTests
     private const string ServerId = "srv-1";
     private const string ContainerName = "my-container";
 
-    private static WritableServers WritableFor(string key, Servyx.Domain.Transport.WriteMode mode)
-    {
-        var configuration = new ConfigurationBuilder()
-            .AddInMemoryCollection(new Dictionary<string, string?> { [$"Servyx:Servers:{key}:WriteMode"] = mode.ToString() })
-            .Build();
-
-        return WritableServers.FromConfiguration(configuration, new ProvisioningGate(enabled: true));
-    }
+    /// <summary>
+    /// A fixed writable set naming one server. Built directly rather than read from configuration: the
+    /// per-server grant now lives in the database and <c>Servyx:Servers:&lt;key&gt;:WriteMode</c> no longer
+    /// produces one, so reading it here would build an empty set and make every assertion below vacuous.
+    /// </summary>
+    private static WritableServers WritableFor(string key, Servyx.Domain.Transport.WriteMode mode) =>
+        mode == Servyx.Domain.Transport.WriteMode.ReadOnly
+            ? WritableServers.None
+            : new WritableServers([new KeyValuePair<string, Servyx.Domain.Transport.WriteMode>(key, mode)]);
 
     private static ServerSummary MakeSummary() =>
         new(ServerId, ContainerName, "unknown", ServerState.Running, ServerHealthStatus.Unknown, null, null, "local", []);

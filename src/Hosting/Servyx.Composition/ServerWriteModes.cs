@@ -3,33 +3,36 @@ using Servyx.Domain.Transport;
 namespace Servyx.Composition;
 
 /// <summary>
-/// Turns the operator's per-server write-mode configuration into the <see cref="WriteModeGrant"/>s the
-/// write guard consults.
+/// The <c>Servyx:Servers:&lt;key&gt;:WriteMode</c> configuration key: no longer a way to grant write access to
+/// an adopted server, and detected here only so an operator who still has one is told it is being ignored.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The configuration shape is one entry per server, never one switch for the process:
-/// </para>
-/// <code>
-/// Servyx:Servers:palworld-server:WriteMode = Enabled
-/// </code>
-/// <para>
-/// A server with no entry, an empty entry, or an unparseable one is <see cref="WriteMode.ReadOnly"/>. That
-/// is the same fail-closed rule <see cref="ProvisioningGate"/> follows and for the same reason: a
-/// misconfiguration must never widen what Servyx may change.
+/// <strong>This key used to be the only route to a write grant.</strong> It produced
+/// <see cref="WriteModeGrant"/>s that the composition root registered as startup singletons, which meant a
+/// fresh install was inert (nothing at runtime could add a grant) and a grant could not be revoked without
+/// restarting the process. The per-server grant now lives on the <c>Server.WriteMode</c> column, is flipped
+/// from the UI with attribution, and takes effect on the next command — see
+/// <see cref="DbBackedWriteModeResolver"/>.
 /// </para>
 /// <para>
-/// <b>Nothing here is read unless <see cref="ProvisioningGate"/> is open.</b> With
-/// <c>Servyx:Provisioning:Enabled</c> absent or false — the default — this returns an empty list no matter
-/// what the configuration says, so a read-only host cannot be talked into a write grant by an edit to a
-/// different key. Turning writes on takes two deliberate decisions, not one.
+/// <strong>The old key is ignored, not migrated.</strong> Not honoured as an override, because two sources
+/// of truth for one decision is exactly the ambiguity this change exists to remove. And not honoured as a
+/// seed, for a correctness reason and a security one. Correctness: this key is keyed by container
+/// <em>name</em> while the grant is keyed by container <em>id</em>, so importing it would attach a grant to
+/// whatever container currently answers to that name — not necessarily the one the operator was thinking
+/// of when they wrote it. Security: a configuration file can be stale, copied from another host, or
+/// committed to a repository, and silently re-granting write access nobody consciously re-affirmed is the
+/// wrong direction for a safety property. Failing closed and making the operator click once is the correct
+/// trade.
 /// </para>
 /// <para>
-/// Each configured server yields one grant per container-option spelling a
-/// <see cref="TargetDescriptor"/> may use (<c>containerId</c>, <c>containerName</c>, <c>container</c> —
-/// the same three keys <c>DockerTransport.ResolveContainerRef</c> reads, in that order). They all name the
-/// same single container; emitting all three is what stops a grant from silently failing to apply because
-/// the caller spelled the descriptor differently than the operator spelled the configuration key.
+/// <strong>Scope of "ignored".</strong> This applies to servers reached over the local <c>docker</c>
+/// transport — the ones Servyx's adoption path mints <c>Server</c> rows for. The same configuration key is
+/// still read by <see cref="SshDockerWriteModes"/> and <see cref="SshBackupWiringOptions"/> for containers
+/// and endpoints an operator declared explicitly under <c>Servyx:Hosts</c> / <c>Servyx:Servers:&lt;name&gt;:Ssh</c>;
+/// no adoption path produces a row for those, so there is nothing for a database grant to replace there yet.
+/// The warning text below says so rather than overclaiming.
 /// </para>
 /// </remarks>
 public static class ServerWriteModes
@@ -40,36 +43,25 @@ public static class ServerWriteModes
     /// <summary>The key, within a server's section, holding its write mode.</summary>
     public const string WriteModeKey = "WriteMode";
 
-    /// <summary>The transport these grants apply to.</summary>
+    /// <summary>The transport the database-backed per-server grant applies to.</summary>
     public const string DockerTransportId = "docker";
 
-    /// <summary>The descriptor option keys that can name a container, mirroring the Docker transport's own order.</summary>
-    private static readonly string[] ContainerOptionKeys = ["containerId", "containerName", "container"];
-
     /// <summary>
-    /// Reads every per-server write grant the configuration declares, or an empty list when
-    /// <paramref name="gate"/> is closed.
+    /// Returns the full configuration key of every <c>Servyx:Servers:&lt;key&gt;:WriteMode</c> entry present in
+    /// <paramref name="configuration"/>, in configuration order, so startup can name each one it is ignoring.
     /// </summary>
+    /// <remarks>
+    /// Every present entry is reported, including one spelled <c>ReadOnly</c> and one that does not parse at
+    /// all. The old code stayed silent about both — correctly, since it granted nothing either way — but
+    /// silence means something different now: an operator reading a key that says <c>Enabled</c> and seeing a
+    /// read-only server deserves to be told the key stopped being consulted, whatever it says.
+    /// </remarks>
     /// <param name="configuration">The application configuration.</param>
-    /// <param name="gate">The provisioning gate; a closed gate yields no grants at all.</param>
-    /// <param name="logger">
-    /// Where a misspelled <see cref="WriteModeKey"/> value is reported. Naming the key and the offending
-    /// value turns a silent fail-closed into a diagnosable one — the server is still read-only either way,
-    /// but the operator finds out why without guessing.
-    /// </param>
-    public static IReadOnlyList<WriteModeGrant> ReadGrants(
-        IConfiguration configuration, ProvisioningGate gate, ILogger logger)
+    public static IReadOnlyList<string> FindIgnoredLegacyKeys(IConfiguration configuration)
     {
         ArgumentNullException.ThrowIfNull(configuration);
-        ArgumentNullException.ThrowIfNull(gate);
-        ArgumentNullException.ThrowIfNull(logger);
 
-        if (!gate.Enabled)
-        {
-            return [];
-        }
-
-        var grants = new List<WriteModeGrant>();
+        var keys = new List<string>();
 
         foreach (var server in configuration.GetSection(SectionKey).GetChildren())
         {
@@ -78,42 +70,12 @@ public static class ServerWriteModes
                 continue;
             }
 
-            var rawMode = server[WriteModeKey];
-            if (!Enum.TryParse<WriteMode>(rawMode, ignoreCase: true, out var mode))
+            if (server[WriteModeKey] is not null)
             {
-                // Absent or empty is the ordinary, silent shape of "not writable"; anything else present is
-                // a typo the operator deserves to be told about, even though the outcome — read-only — is
-                // identical either way.
-                if (!string.IsNullOrWhiteSpace(rawMode))
-                {
-                    logger.LogWarning(
-                        "'{SectionKey}:{Server}:{WriteModeKey}' is not a recognized WriteMode (was '{Value}'); " +
-                        "'{Server}' stays ReadOnly.",
-                        SectionKey, server.Key, WriteModeKey, rawMode, server.Key);
-                }
-
-                continue;
-            }
-
-            if (mode == WriteMode.ReadOnly)
-            {
-                // Explicitly read-only — a legitimate, intentional value, not a misconfiguration to warn about.
-                continue;
-            }
-
-            foreach (var optionKey in ContainerOptionKeys)
-            {
-                grants.Add(new WriteModeGrant(
-                    mode,
-                    DockerTransportId,
-                    endpoint: null,
-                    requiredOptions: new Dictionary<string, string>(StringComparer.Ordinal)
-                    {
-                        [optionKey] = server.Key,
-                    }));
+                keys.Add($"{SectionKey}:{server.Key}:{WriteModeKey}");
             }
         }
 
-        return grants;
+        return keys;
     }
 }

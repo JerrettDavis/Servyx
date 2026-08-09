@@ -15,7 +15,7 @@ Container lifecycle (Start/Restart/Stop/Kill) goes through the same guard by a d
 Turning writes on for a server requires **both** of these, and Servyx will not act on just one:
 
 1. **`Servyx:Provisioning:Enabled`** — a process-wide flag, defaulting to `false`. With it off, nothing below it is even read: no per-server write grants exist in the running process at all, regardless of what else the configuration says.
-2. **A per-server write mode** — `Servyx:Servers:<container-name>:WriteMode`, set individually for each server you want to grant. A server with no entry, an empty entry, or a misspelled value stays read-only.
+2. **A per-server write mode** — set from the server's own page in the UI, individually for each server you want to grant, and recorded in Servyx's database against that server's row. A server you have not granted anything stays read-only, and so does a container Servyx does not track at all.
 
 There is deliberately **no single global "enable writes" switch**. Both gates exist so that turning on the capability process-wide (step 1) and deciding which specific server may actually use it (step 2) are two separate, deliberate decisions — an operator can't end up writable "by accident" from one flag flip.
 
@@ -25,8 +25,9 @@ A write grant is never open-ended. It is matched against a specific target by **
 
 Practical consequences of that narrowness:
 
-- **Renaming a container** doesn't carry the grant with it — the grant is keyed on the container name it was written for, so a rename silently returns that server to read-only rather than silently keeping it writable under a name nobody granted.
-- **Re-pointing a host** (changing which endpoint a server label resolves to) has the same effect — the grant is bound to the endpoint it was written for.
+- **Recreating a container returns it to read-only.** The grant is bound to the container's durable identity — the id its own daemon assigned it — not to its name. Destroying a container and creating a new one produces a workload you never granted anything to, even if it answers to the same name, and Servyx refuses it until you grant it again.
+- **Renaming a container keeps the grant**, because a rename does not change the identity the grant was written against. That is deliberate: a cosmetic rename is the same workload, and revoking on one would be a surprise with no safety payoff.
+- **Re-pointing a host** is *not* currently checked. Servyx does not yet model which host a server runs on — the column exists but nothing populates it — so a grant is not bound to a host today, and this page does not claim it is. In practice a container id is a 64-hex value assigned by one daemon and is not portable between hosts, so re-pointing a host will usually fail the identity check anyway; that is a consequence of how container ids work, not a check Servyx performs, and it would not hold for a container migrated with its id preserved.
 - **"Enable writes for everything this daemon can see" is not an expressible configuration.** There is no shape of grant that means that.
 
 ## The three write-mode tiers
@@ -53,7 +54,7 @@ See [Control tiers](control-tiers.md) for the fuller picture of why Servyx alway
 
 Servyx logs its write posture out loud at startup, not just in the UI:
 
-- **Any server granted a write mode above `ReadOnly` is logged at Warning**, naming every such server and the mode it was granted — a process running with quiet write access to a server is never silent about it in its own logs.
+- **Any server granted a write mode above `ReadOnly` is logged at Warning**, naming every such server and the mode it was granted — a process running with quiet write access to a server is never silent about it in its own logs. Every later change to a grant is logged the same way, at the moment it is made, with the operator identity it was attributed to.
 - **If authentication is off (`Servyx:Authentication:Enabled = false`) and at least one server is granted `WriteMode.Enabled`, that combination is logged at Critical.** With no login and no session, write access belongs to anyone who can reach the web port, not just to you — and Servyx says so as loudly as it says the equivalent combination for provisioning itself (creating infrastructure with no authentication).
 
 ![The provisioning gate explaining its own configuration key, and warning that authentication is off](../images/provisioning-gate-closed.png)
@@ -62,35 +63,31 @@ The screenshot above is from the Deploy page, which surfaces the same provisioni
 
 ## Example configuration
 
-Placeholder names only — substitute your own server's container name for `my-palworld-server`:
+Only the process-wide master switch lives in configuration. It is host-owned on purpose: nothing in the UI can change it, so a web-tier compromise cannot turn a read-only host into a writable one.
 
 ```json
 {
   "Servyx": {
-    "Provisioning": { "Enabled": true },
-    "Servers": {
-      "my-palworld-server": {
-        "WriteMode": "PreviewOnly"
-      }
-    }
+    "Provisioning": { "Enabled": true }
   }
 }
 ```
 
-Once you've reviewed what `PreviewOnly` would do and you're ready to let Servyx actually act on the server, change the value to `"Enabled"`:
+Restart Servyx after changing it. Then grant individual servers from their own pages: open a server, go to **Overview**, and use the **Write access** card. Granting is a two-step confirmation, and the change is recorded on the server's row with who made it and when.
 
-```json
-{
-  "Servyx": {
-    "Provisioning": { "Enabled": true },
-    "Servers": {
-      "my-palworld-server": {
-        "WriteMode": "Enabled"
-      }
-    }
-  }
-}
-```
+A grant takes effect on the **next command** — including on connections that are already open — and so does a revocation. You do not need to restart Servyx to grant or revoke.
+
+### If you have an old `Servyx:Servers:<name>:WriteMode` key
+
+That key **no longer grants anything** to a server Servyx tracks. It is not imported and it is not honoured as an override, and Servyx logs a warning at startup naming every such key it found. Re-grant those servers from the UI.
+
+The key was not migrated for you on purpose. It names a container by *name*, while a grant is bound to a container *id*, so importing it could attach write access to a different workload than you had in mind — and a configuration file can be stale, copied from another host, or committed to a repository. Failing closed and asking you to click once is the safer trade.
+
+(The same key is still read for containers you declared explicitly under `Servyx:Hosts` — reached over `ssh+docker` — and for SSH backup endpoints. Servyx does not yet adopt those into its database, so there is nothing there for a database grant to replace.)
+
+### A note on multiple Servyx processes
+
+If you also run the stdio MCP host, it keeps its own copy of the grants and does not see changes made in the web UI until it restarts. The dangerous direction is revocation: an agent driving a server over MCP would keep writing to a server you believe you just locked. **Restart the MCP host after changing a grant.**
 
 ---
 **Next:** [Lifecycle control](lifecycle-control.md) · **See also:** [Control tiers](control-tiers.md)

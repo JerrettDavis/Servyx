@@ -399,7 +399,7 @@ public sealed class ProvisionerWiringOptions
         OptionalUrn(section, "SessionTokenUrn"));
 
     /// <summary>
-    /// Fail-closed, exactly like <see cref="ServerWriteModes.ReadGrants"/>, <see cref="RconWiringOptions"/>
+    /// Fail-closed, exactly like <see cref="SshDockerWriteModes.ReadGrants"/>, <see cref="RconWiringOptions"/>
     /// and <see cref="SshBackupWiringOptions"/>: absent, empty, misspelled and explicitly false all mean "not
     /// enabled", and are all spelled the same way here.
     /// </summary>

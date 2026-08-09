@@ -51,13 +51,19 @@ public sealed class WriteGuardedTransport : ITransport
         _inner.ProbeAsync(target, ct);
 
     /// <inheritdoc />
+    /// <remarks>
+    /// The guard is handed the <see cref="IWriteModeResolver"/> and the <see cref="TargetDescriptor"/> rather
+    /// than a mode resolved here, so the session it returns re-asks on every gated call instead of carrying a
+    /// connect-time snapshot. Sessions in this codebase are memoized for the process lifetime and never
+    /// evicted on success, so a snapshot taken here would survive an operator revoking the grant — see
+    /// <see cref="WriteGuardedExecutionTarget"/>'s remarks.
+    /// </remarks>
     public async Task<IExecutionTarget> ConnectAsync(TargetDescriptor target, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(target);
 
-        var mode = _writeModes.Resolve(target);
         var session = await _inner.ConnectAsync(target, ct).ConfigureAwait(false);
-        return new WriteGuardedExecutionTarget(session, mode, DescribeTarget(target));
+        return new WriteGuardedExecutionTarget(session, _writeModes, target, DescribeTarget(target));
     }
 
     /// <summary>

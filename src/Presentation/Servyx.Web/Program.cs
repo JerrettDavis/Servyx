@@ -81,15 +81,25 @@ await core.ImportSecretsAsync(app.Services);
 // billable infrastructure" is not, and an operator who arrives in that state by editing one line of
 // configuration deserves to be told so at Critical rather than to discover it from a bill.
 //
-// Every WriteModeGrant registered by the shared composition root — from ServerWriteModes, SshDockerWriteModes
-// and SshBackupWiringOptions.WriteGrants alike — was added as its own AddSingleton(WriteModeGrant) instance,
-// so resolving IEnumerable<WriteModeGrant> here is the complete, transport-agnostic set: exactly what the
-// write guard itself would see, with nothing here re-deriving it from configuration a second time.
+// This enumeration covers the CONFIG-SOURCED grants only. SshDockerWriteModes and
+// SshBackupWiringOptions.WriteGrants each add their grants as their own AddSingleton(WriteModeGrant)
+// instance, so resolving IEnumerable<WriteModeGrant> here reads exactly what the shared composition root
+// already built for those transports, with nothing re-deriving it from configuration a second time. It is
+// NOT the whole picture: the local docker path no longer emits a WriteModeGrant at all — an adopted server's
+// grant is a database row — and those arrive through the WritableServers argument below.
 StartupSafetyWarnings.LogDangerousCombinations(
     app.Services.GetRequiredService<ILoggerFactory>().CreateLogger(OperatorAuthentication.AuditLogCategory),
     authenticationGate,
     core.Provisioning,
-    [.. app.Services.GetServices<WriteModeGrant>()]);
+    [.. app.Services.GetServices<WriteModeGrant>()],
+    // The per-server grant for an adopted server is a database row, not a registered WriteModeGrant, so the
+    // line above no longer sees it. Reading the live view the composition root already built is what keeps
+    // the "unauthenticated with write access" Critical warning from going quiet on exactly the hosts that
+    // need it. GetRequiredService, not GetService: AddServyxCore always registers this, so the nullable form
+    // would protect against nothing while turning a dropped registration into a silently-blinded alarm — a
+    // clean startup log that no longer sees any database grant at all. (MainLayout and NavMenu resolve it
+    // optionally on purpose; an unregistered service degrades them closed. This one is required.)
+    app.Services.GetRequiredService<WritableServers>());
 
 await core.MigrateDatabaseAsync(app.Services);
 

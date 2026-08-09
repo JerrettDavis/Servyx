@@ -157,10 +157,12 @@ public sealed class SshBackupWiringOptions
     /// <c>WriteMode = Enabled</c>, scoped to that server's endpoint and nothing wider.
     /// </summary>
     /// <remarks>
-    /// <see cref="ServerWriteModes"/> emits grants for the <c>docker</c> transport only, and correctly so:
-    /// its grants are keyed on container-name descriptor options no SSH target carries. This is the SSH
-    /// half, read from the same <c>Servyx:Servers:&lt;name&gt;:WriteMode</c> key, so one server cannot be
-    /// writable over one transport and not the other by accident. A server without a grant can still be
+    /// No <see cref="WriteModeGrant"/> is emitted for the local <c>docker</c> transport any more — an
+    /// adopted server's grant is a database row resolved live by <see cref="DbBackedWriteModeResolver"/>,
+    /// keyed on container id, and <see cref="ServerWriteModes"/> now only <em>detects</em> the legacy key so
+    /// startup can name it as ignored. This is the SSH half, still read from that same
+    /// <c>Servyx:Servers:&lt;name&gt;:WriteMode</c> key, because no adoption path mints a row for an SSH
+    /// backup endpoint. A server without a grant can still be
     /// listed, inspected, previewed and dry-run pruned; only <c>CreateAsync</c> and <c>RestoreAsync</c> are
     /// refused, at the transport, with <see cref="WritesDisabledException"/>.
     /// </remarks>
@@ -206,7 +208,7 @@ public sealed class SshBackupWiringOptions
 
             var ssh = server.GetSection(SshKey);
 
-            // Fail-closed, exactly like ServerWriteModes.ReadGrants and RconWiringOptions: absent,
+            // Fail-closed, exactly like SshDockerWriteModes.ReadGrants and RconWiringOptions: absent,
             // misspelled and explicitly false all mean "not an SSH-hosted server", and are all spelled the
             // same way here.
             if (!bool.TryParse(ssh["Enabled"], out var enabled) || !enabled)

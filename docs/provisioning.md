@@ -387,6 +387,8 @@ One thing is better than every other adapter's plan: Fargate's CPU/memory matrix
 
 **The `readOnly` discipline is not reimplemented.** Every session `RconControlChannel` hands back is a `WriteGuardedRconSession` over an `RconSession`, applied by construction — there is no branch that returns the inner session. Read-only commands pass on a `ReadOnly` server; mutating ones and the raw escape hatch do not, and the refusal happens before the secret store or the socket is touched. The credential remains a `SecretUrn` resolved at the point of use.
 
+`RconControlChannelSpec.Mode` is a `Func<WriteMode>`, not a `WriteMode`, and the guard is built over `WriteGuardedRconSession`'s live-source constructor. That matters because "guarded by construction" and "guarded against the posture the operator holds *now*" are different promises, and only the second one survives a revocation: an operator's per-server grant is a database row that can be flipped while a session is open, and a channel that had captured its posture at `Open()` would go on accepting `save`/`broadcast`/`shutdown` afterwards. The container-hosted exec path and `ServyxRconChannels` both re-resolve per command; this path now does too, so the parity claimed in the paragraph above holds for revocation as well as for classification.
+
 **Only `direct-tcp` can apply, so no reachability chain is consulted.** Of the four strategies `IRconReachability` names, `docker-exec-tool` and `docker-exec-network` need a Docker daemon and `ssh-tunnel` needs an sshd — precisely the three things each adapter's own `NoTransport` reason says the provider does not have. Running a chain here would probe three strategies that cannot succeed for a reason already known before the first probe.
 
 **Verdict per adapter.**

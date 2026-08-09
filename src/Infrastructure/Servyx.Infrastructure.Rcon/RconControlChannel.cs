@@ -32,6 +32,15 @@ namespace Servyx.Infrastructure.Rcon;
 /// <param name="Mode">
 /// The owning server's write posture, enforced by <see cref="WriteGuardedRconSession"/>. Set per server and
 /// never globally.
+/// <para>
+/// A <em>live source</em>, invoked per gated command rather than a value captured when the channel was
+/// opened — the same shape the exec path's <c>IWriteModeResolver</c> and <c>ServyxRconChannels</c> now use.
+/// It has to be: an operator's grant lives in Servyx's database and can be revoked while a session is open,
+/// and a session that had baked in its posture at <c>Open()</c> would keep accepting <c>save</c>,
+/// <c>broadcast</c> and <c>shutdown</c> after the revoke landed. Expected to be a cache lookup, not a
+/// round-trip. A caller with a genuinely fixed posture passes <c>() =&gt; WriteMode.ReadOnly</c> (or
+/// whichever constant) and says so explicitly.
+/// </para>
 /// </param>
 /// <param name="Players">
 /// Which command the opened session's <c>GetPlayersAsync</c> invokes and how to read its reply, resolved
@@ -43,7 +52,7 @@ public sealed record RconControlChannelSpec(
     int Port,
     SecretUrn PasswordUrn,
     RconCommandCatalog Catalog,
-    WriteMode Mode,
+    Func<WriteMode> Mode,
     PlayerListPlan? Players = null);
 
 /// <summary>
@@ -133,6 +142,16 @@ public sealed class ControlChannelUnavailableException : RconException
 /// escape hatch do not, and the refusal happens before the secret store or the socket is touched. There is
 /// no unguarded return path from this type: the guard is applied by construction rather than by a caller
 /// remembering to wrap.
+/// </para>
+/// <para>
+/// <strong>And the posture is live, not captured at <see cref="Open"/>.</strong> That parity claim above
+/// used to be only half true: <c>RconControlChannelSpec.Mode</c> was a plain <see cref="WriteMode"/> value,
+/// so a channel opened while a server was writable stayed writable for its whole life, while a
+/// container-hosted server re-resolved per command and followed a revocation immediately. Nothing in this
+/// file caused that — the per-command re-resolution landed on the exec and channel paths and simply left
+/// this one behind, which is exactly the way a comment goes stale without being edited. The spec now carries
+/// a <see cref="Func{TResult}"/> and this type uses <see cref="WriteGuardedRconSession"/>'s live-source
+/// constructor, so "exactly as it does for a container-hosted server" now includes revocation.
 /// </para>
 /// <para>
 /// <strong>Only <c>direct-tcp</c> can apply, so no reachability chain is consulted.</strong> Of the four
@@ -231,6 +250,7 @@ public sealed class RconControlChannel
         ArgumentNullException.ThrowIfNull(address);
         ArgumentNullException.ThrowIfNull(spec);
         ArgumentNullException.ThrowIfNull(spec.Catalog);
+        ArgumentNullException.ThrowIfNull(spec.Mode);
 
         if (spec.Port is <= 0 or > 65535)
         {
@@ -263,7 +283,8 @@ public sealed class RconControlChannel
             _timeProvider,
             spec.Players);
 
-        // Guarded by construction. There is no branch of this method that returns the inner session.
+        // Guarded by construction, over a LIVE posture source. There is no branch of this method that
+        // returns the inner session, and no branch that freezes the mode at open time.
         return new WriteGuardedRconSession(session, spec.Catalog, spec.Mode, Describe(resource));
     }
 

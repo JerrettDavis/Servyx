@@ -126,7 +126,7 @@ public sealed class ServyxServerLifecycles : IAsyncDisposable
         }
 
         var containerName = detail.Summary.Name;
-        var session = await SessionAsync(containerName, ct).ConfigureAwait(false);
+        var session = await SessionAsync(containerName, detail.Summary.Id, ct).ConfigureAwait(false);
         if (session is not IContainerLifecycle containerLifecycle)
         {
             return null;
@@ -143,7 +143,15 @@ public sealed class ServyxServerLifecycles : IAsyncDisposable
             serverName: containerName);
     }
 
-    private Task<IExecutionTarget> SessionAsync(string containerName, CancellationToken ct)
+    /// <remarks>
+    /// The descriptor carries the container's <em>id</em> as well as its name. The id is what the per-server
+    /// write grant is keyed on — a name can be reassigned to a different workload outside Servyx at any time,
+    /// so honouring a grant against one would let a recreated container inherit the previous container's
+    /// write access. Without the id on the descriptor, every lifecycle session would resolve read-only and
+    /// Start/Stop/Restart would refuse on a server the operator had genuinely granted. The name is kept
+    /// alongside it because it is what refusal messages and log lines show an operator.
+    /// </remarks>
+    private Task<IExecutionTarget> SessionAsync(string containerName, string containerId, CancellationToken ct)
     {
         var lazy = _sessions.GetOrAdd(
             containerName,
@@ -155,8 +163,7 @@ public sealed class ServyxServerLifecycles : IAsyncDisposable
                     DockerContext: null,
                     new Dictionary<string, string>(StringComparer.Ordinal)
                     {
-                        // The same key ServerWriteModes emits a grant for, so a server the operator enabled
-                        // writes on is the server this lifecycle session is allowed to write to.
+                        ["containerId"] = containerId,
                         ["containerName"] = key,
                     }),
                 ct)));

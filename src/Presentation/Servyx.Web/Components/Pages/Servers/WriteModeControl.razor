@@ -1,0 +1,328 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using Servyx.Composition
+@using Servyx.Domain.Entities
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
+@* The per-server write grant, and the only control in the product that creates one. Everything here is
+   deliberately noisy: granting write access is itself a mutating, consequential act, so it gets the same
+   two-step confirmation the stop/kill controls get, and the copy says plainly what it permits rather than
+   leaving the operator to infer it from a tier name. *@
+
+<div class="svx-card" data-testid="write-mode-card">
+    <h3>Write access</h3>
+
+    @if (_loading)
+    {
+        <Skeleton Variant="card" Rows="1" Label="Loading write access" />
+    }
+    else if (_service is null)
+    {
+        <p class="svx-page-description" data-testid="write-mode-unavailable">
+            This process did not compose a write-grant service, so write access cannot be read or changed here.
+            Every server stays read-only.
+        </p>
+    }
+    else if (_state is null)
+    {
+        <p class="svx-page-description" data-testid="write-mode-untracked">
+            Servyx does not track this container, so there is no server record to hold a write grant. Adopt it
+            from the servers list first. Until then it is read-only, which is also what the write guard enforces.
+        </p>
+    }
+    else
+    {
+        <p class="svx-page-description" data-testid="write-mode-current">
+            Current posture: <strong>@Describe(_state.Mode)</strong>
+        </p>
+
+        <p class="write-mode-attribution" data-testid="write-mode-attribution">
+            @if (_state.ChangedAt is { } changedAt)
+            {
+                @($"Last changed by \"{_state.ChangedBy}\" at {changedAt:u}.")
+                <br />
+            }
+            else
+            {
+                @("Never changed — this server has held its adopted default since it was adopted.")
+                <br />
+            }
+            Servyx has one shared operator password and no per-operator accounts, so this field records the
+            single operator identity and cannot tell two people apart.
+        </p>
+
+        @if (!_gate.Enabled)
+        {
+            <p class="svx-page-description" data-testid="write-mode-master-switch-note">
+                Write access cannot be granted in this process at all: <code>@ProvisioningGate.ConfigurationKey</code>
+                is not enabled. Set it to <code>true</code> in <code>appsettings.json</code> (or the equivalent
+                environment variable) on the host and restart Servyx. That switch is deliberately not reachable
+                from this UI.
+            </p>
+        }
+
+        <GatedControl Enabled="@CanChange" Reason="@LockReason" Label="Write access tier">
+            <div class="write-mode-tiers" role="radiogroup" aria-label="Write access tier">
+                @foreach (var tier in Tiers)
+                {
+                    <label class="write-mode-tier" data-testid="@($"write-mode-tier-{tier.ToString().ToLowerInvariant()}")">
+                        <input type="radio" name="write-mode-tier"
+                               value="@tier"
+                               checked="@(_selected == tier)"
+                               @onchange="() => Select(tier)" />
+                        <span class="write-mode-tier-label">@Describe(tier)</span>
+                        <span class="write-mode-tier-detail">@Explain(tier)</span>
+                    </label>
+                }
+            </div>
+        </GatedControl>
+
+        @if (!_confirming)
+        {
+            <GatedButton TestId="write-mode-review"
+                         Label="Review write-access change"
+                         Enabled="@(CanChange && _selected != _state.Mode && !_busy)"
+                         Reason="@LockReason"
+                         OnClick="() => _confirming = true">
+                Review change
+            </GatedButton>
+        }
+        else
+        {
+            <div class="svx-deploy-confirm" data-testid="write-mode-confirm-step">
+                <p data-testid="write-mode-confirm-body">
+                    Nothing has changed yet. Confirming sets <strong>@_state.Name</strong> to
+                    <strong>@Describe(_selected)</strong>.
+                    @Consequence(_selected)
+                </p>
+                <p data-testid="write-mode-confirm-scope">
+                    The grant is bound to this container's identity (<code>@Short(_state.ContainerId)</code>), not
+                    its name: recreating the container returns it to read-only, while renaming it keeps the grant.
+                    It takes effect on the next command in this process, including on sessions that are already
+                    open. Other Servyx processes — a separate MCP host, for instance — keep their own copy and
+                    must be restarted before they observe this change.
+                </p>
+                <button type="button" class="svx-btn @(_selected == ServerWriteMode.Enabled ? "svx-btn-danger" : "svx-btn-primary")"
+                        data-testid="write-mode-confirm" disabled="@_busy" @onclick="ApplyAsync">
+                    @(_busy ? "Working…" : $"Yes, set write access to {Describe(_selected)}")
+                </button>
+                <button type="button" class="svx-btn" data-testid="write-mode-cancel" disabled="@_busy" @onclick="Cancel">
+                    Cancel
+                </button>
+            </div>
+        }
+
+        @if (_error is not null)
+        {
+            <p class="svx-deploy-error" data-testid="write-mode-error">@_error</p>
+        }
+
+        @if (_applied is not null)
+        {
+            <p class="svx-deploy-applied" data-testid="write-mode-applied">@_applied</p>
+        }
+    }
+</div>
+
+@code {
+    private static readonly ServerWriteMode[] Tiers =
+        [ServerWriteMode.ReadOnly, ServerWriteMode.PreviewOnly, ServerWriteMode.Enabled];
+
+    /// <summary>The container this control grants against — the durable identity a grant is keyed on.</summary>
+    [Parameter, EditorRequired]
+    public string ContainerId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Raised after a grant is applied, so the hosting page can re-read the server's posture. The control
+    /// deliberately does not mutate its parent's state itself.
+    /// </summary>
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Optional: a bUnit
+    /// render (or a host with authentication switched off) has none, and falls back to the same single
+    /// operator identity the authentication endpoints issue.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private IWriteGrantService? _service;
+    private ProvisioningGate _gate = ProvisioningGate.Closed;
+    private WriteGrantState? _state;
+    private ServerWriteMode _selected = ServerWriteMode.ReadOnly;
+
+    private bool _loading = true;
+    private bool _confirming;
+    private bool _busy;
+    private string? _error;
+    private string? _applied;
+
+    /// <summary>
+    /// Whether the tier selector and its review button are live. False whenever the process-level master
+    /// switch is closed — which is a host-admin decision this UI cannot make — so the control renders
+    /// visible but locked rather than vanishing, and the reason names the exact key to set.
+    /// </summary>
+    private bool CanChange => _gate.Enabled && _service is not null && _state is not null;
+
+    private string LockReason => _gate.Enabled
+        ? GatedButton.DefaultReason
+        : $"Write access cannot be granted in this process: {ProvisioningGate.ConfigurationKey} is not enabled. "
+            + "Set it on the host (appsettings.json or the matching environment variable) and restart Servyx.";
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching
+    /// <c>ServerDetailPage</c>: a host — or a bUnit test rendering this control directly — that never
+    /// composed these services must still render, degrading closed rather than throwing at render time.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _service = Services.GetService(typeof(IWriteGrantService)) as IWriteGrantService;
+        _gate = Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate ?? ProvisioningGate.Closed;
+
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_service is null || string.IsNullOrWhiteSpace(ContainerId))
+        {
+            _state = null;
+            return;
+        }
+
+        try
+        {
+            _state = await _service.DescribeAsync(ContainerId);
+        }
+        catch (Exception ex)
+        {
+            // Degrade the same way every other backend read on this page does — visibly, and closed.
+            _state = null;
+            _error = $"Could not read this server's write access: {ex.Message}";
+        }
+
+        _selected = _state?.Mode ?? ServerWriteMode.ReadOnly;
+    }
+
+    private void Select(ServerWriteMode tier)
+    {
+        _selected = tier;
+        _confirming = false;
+        _applied = null;
+    }
+
+    private void Cancel()
+    {
+        _confirming = false;
+        _selected = _state?.Mode ?? ServerWriteMode.ReadOnly;
+    }
+
+    private async Task ApplyAsync()
+    {
+        if (_busy || _service is null || _state is null)
+        {
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        _applied = null;
+
+        try
+        {
+            var result = await _service.SetWriteModeAsync(_state.Id, _selected, await ResolveActorAsync());
+
+            _applied = result.Outcome switch
+            {
+                WriteGrantOutcome.Applied =>
+                    $"Write access for {_state.Name} is now {Describe(result.Mode)}, recorded against "
+                    + $"\"{result.ChangedBy}\" at {result.ChangedAt:u}.",
+                WriteGrantOutcome.MasterSwitchClosed => null,
+                _ => null,
+            };
+
+            _error = result.Outcome switch
+            {
+                WriteGrantOutcome.MasterSwitchClosed =>
+                    $"Nothing was changed: {ProvisioningGate.ConfigurationKey} is not enabled in this process.",
+                WriteGrantOutcome.ServerNotFound =>
+                    "Nothing was changed: Servyx no longer tracks this server. It may have been forgotten in "
+                    + "another session.",
+                _ => null,
+            };
+
+            await ReloadAsync();
+
+            if (result.Applied && OnChanged.HasDelegate)
+            {
+                await OnChanged.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not change write access: {ex.Message}";
+        }
+        finally
+        {
+            _confirming = false;
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Who the change is attributed to. Reads the signed-in principal when one is cascading, and otherwise
+    /// falls back to the same single operator identity the sign-in endpoint issues. Either way this is one
+    /// constant value in practice — see the copy rendered above, which says so rather than implying that
+    /// <c>WriteModeChangedBy</c> distinguishes between people.
+    /// </summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
+    }
+
+    private static string Describe(ServerWriteMode mode) => mode switch
+    {
+        ServerWriteMode.ReadOnly => "Read-only",
+        ServerWriteMode.PreviewOnly => "Preview only",
+        ServerWriteMode.Enabled => "Writes enabled",
+        _ => mode.ToString(),
+    };
+
+    private static string Explain(ServerWriteMode mode) => mode switch
+    {
+        ServerWriteMode.ReadOnly =>
+            "Servyx may only observe this server. Every mutating command is refused at the transport.",
+        ServerWriteMode.PreviewOnly =>
+            "Servyx may compute and show what a change would do. Applying is still refused at the transport.",
+        ServerWriteMode.Enabled =>
+            "Servyx may apply changes: write and delete files in the container, run mutating commands, "
+            + "start/stop/restart/kill it, and issue mutating RCON commands such as save, broadcast and shutdown.",
+        _ => string.Empty,
+    };
+
+    private static string Consequence(ServerWriteMode mode) => mode switch
+    {
+        ServerWriteMode.Enabled =>
+            "Anyone who can sign in to this Servyx instance will then be able to write and delete files inside "
+            + "the container, stop or kill it, and issue mutating control commands to it. Data loss is possible.",
+        ServerWriteMode.PreviewOnly =>
+            "Servyx will be able to compute and render changes for this server. It still cannot apply any of them.",
+        _ =>
+            "Servyx will refuse every mutating command for this server again, from the next command onward — "
+            + "including on sessions that are already open.",
+    };
+
+    /// <summary>A container id is 64 hex characters; the first 12 is what Docker itself shows an operator.</summary>
+    private static string Short(string containerId) =>
+        containerId.Length <= 12 ? containerId : containerId[..12];
+}

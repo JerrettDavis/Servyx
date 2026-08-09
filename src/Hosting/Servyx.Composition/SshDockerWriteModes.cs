@@ -9,12 +9,17 @@ namespace Servyx.Composition;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <see cref="ServerWriteModes"/> emits grants for the <c>docker</c> transport only — correctly so, since
-/// its grants are keyed on container-option spellings no <c>ssh+docker</c> descriptor carries (that
-/// transport's <see cref="TargetDescriptor.Options"/> only ever has <c>containerName</c>, never
-/// <c>containerId</c> or <c>container</c> — see <see cref="SshDockerWiringOptions"/>). This is the
-/// <c>ssh+docker</c> half, read from the exact same <c>Servyx:Servers:&lt;key&gt;:WriteMode</c> key so one
-/// server cannot be writable over one transport and read-only over the other by accident.
+/// <strong>This is now the only half of that key that still grants anything.</strong> The local
+/// <c>docker</c> transport's grants used to come from the same configuration via
+/// <see cref="ServerWriteModes"/>; they are database rows now, keyed on container id and resolved live by
+/// <see cref="DbBackedWriteModeResolver"/>, and that type only <em>detects</em> the legacy key so startup
+/// can name it as ignored. Nothing replaced this half, because an <c>ssh+docker</c> container is one the
+/// operator declared explicitly under <c>Servyx:Hosts</c> and no adoption path mints a <c>Server</c> row for
+/// it. The two sources stay disjoint per target, never merged — see
+/// <see cref="DbBackedWriteModeResolver"/>'s remarks. Note also that an <c>ssh+docker</c> descriptor's
+/// <see cref="TargetDescriptor.Options"/> only ever has <c>containerName</c>, never <c>containerId</c> or
+/// <c>container</c> (see <see cref="SshDockerWiringOptions"/>), so a database grant could not match one even
+/// if it were consulted.
 /// </para>
 /// <para>
 /// <b>Resolved against the OUTER descriptor.</b> <see cref="WriteGuardedTransport.ConnectAsync"/> resolves a
@@ -30,7 +35,7 @@ namespace Servyx.Composition;
 /// </para>
 /// <para>
 /// <b>Nothing here is read unless <see cref="ProvisioningGate"/> is open</b>, for the same reason
-/// <see cref="ServerWriteModes.ReadGrants"/> gates on it: with <c>Servyx:Provisioning:Enabled</c> off, this
+/// <see cref="WriteGrantCache"/> short-circuits on it: with <c>Servyx:Provisioning:Enabled</c> off, this
 /// returns an empty list no matter what configuration says.
 /// </para>
 /// </remarks>

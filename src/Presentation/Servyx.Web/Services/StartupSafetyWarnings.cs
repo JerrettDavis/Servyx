@@ -68,11 +68,20 @@ public static class StartupSafetyWarnings
     /// Every <see cref="WriteModeGrant"/> registered in this process, across every transport — <see langword="null"/>
     /// or empty means no server was granted anything beyond the default <see cref="WriteMode.ReadOnly"/>.
     /// </param>
+    /// <param name="databaseGrants">
+    /// The live, database-backed per-server grants (<see cref="WritableServers"/>) the composition root
+    /// registered. Passed in as well as <paramref name="writeGrants"/> because the per-server grant for an
+    /// adopted server is no longer a registered <see cref="WriteModeGrant"/> at all — it is a row — so
+    /// resolving only the grant singletons would report "no server is writable" on a host where several
+    /// are. That would silently lose the Critical "unauthenticated with write access" warning, which is the
+    /// single loudest thing this method exists to say.
+    /// </param>
     public static void LogDangerousCombinations(
         ILogger logger,
         AuthenticationGate authentication,
         ProvisioningGate provisioning,
-        IReadOnlyList<WriteModeGrant>? writeGrants = null)
+        IReadOnlyList<WriteModeGrant>? writeGrants = null,
+        WritableServers? databaseGrants = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(authentication);
@@ -80,25 +89,39 @@ public static class StartupSafetyWarnings
 
         var grants = writeGrants ?? [];
 
-        if (grants.Count > 0)
+        // Container ids the operator has granted a non-read-only posture, read at startup. A grant flipped
+        // later in the process's life is recorded by WriteGrantService's own audit entry, not here — this is
+        // a startup snapshot and is described as one.
+        List<string> databaseGranted = databaseGrants is null ? [] : [.. databaseGrants.Keys];
+        var databaseEnabled = databaseGrants is null
+            ? []
+            : databaseGranted.Where(id => databaseGrants.IsWritable(id)).ToList();
+
+        var totalGrants = grants.Count + databaseGranted.Count;
+
+        if (totalGrants > 0)
         {
-            var described = string.Join(", ", grants.Select(DescribeGrant));
+            var described = string.Join(
+                ", ",
+                grants.Select(DescribeGrant).Concat(databaseGranted.Select(id => $"{id} (database grant)")));
 
             logger.LogWarning(
                 AuthenticationAudit.WriteModeGranted,
                 WriteModeGrantedMessage,
-                grants.Count,
+                totalGrants,
                 described);
 
-            if (!authentication.Enabled && grants.Any(g => g.Mode == WriteMode.Enabled))
-            {
-                var enabledOnly = string.Join(", ", grants.Where(g => g.Mode == WriteMode.Enabled).Select(DescribeGrant));
+            var enabledGrants = grants.Where(g => g.Mode == WriteMode.Enabled).Select(DescribeGrant)
+                .Concat(databaseEnabled.Select(id => $"{id} (database grant)"))
+                .ToList();
 
+            if (!authentication.Enabled && enabledGrants.Count > 0)
+            {
                 logger.LogCritical(
                     AuthenticationAudit.UnauthenticatedWriteAccess,
                     UnauthenticatedWriteAccessMessage,
                     AuthenticationGate.ConfigurationKey,
-                    enabledOnly);
+                    string.Join(", ", enabledGrants));
             }
         }
 

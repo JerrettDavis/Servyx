@@ -11,11 +11,12 @@ using Servyx.Mcp.Contracts;
 namespace Servyx.Mcp.Tools;
 
 /// <summary>
-/// The write mode a server carries, sourced from the same <see cref="WritableServers"/> instance the
-/// transport's own <c>WriteModeGrant</c>s are read from (<c>ServerWriteModes.SectionKey</c> /
-/// <c>SshDockerWriteModes</c> both read the exact same <c>Servyx:Servers:&lt;key&gt;:WriteMode</c>
-/// configuration this reads) — so this label can never disagree with what the write guard would actually
-/// resolve. See <see cref="For"/>.
+/// The write mode a server carries, sourced from the same <see cref="WritableServers"/> instance the write
+/// guard itself resolves through — a live view over the operator's per-server grant rows, not a second read
+/// of configuration — so this label can never disagree with what the guard would actually resolve. (The
+/// legacy <c>Servyx:Servers:&lt;key&gt;:WriteMode</c> key is still read by <c>SshDockerWriteModes</c> and
+/// <c>SshBackupWiringOptions</c> for explicitly-declared remote hosts, which mint no row; it grants nothing
+/// to a server Servyx tracks.) See <see cref="For"/>.
 /// </summary>
 public sealed record WriteModeInfo(string WriteMode, bool MutationsAllowed)
 {

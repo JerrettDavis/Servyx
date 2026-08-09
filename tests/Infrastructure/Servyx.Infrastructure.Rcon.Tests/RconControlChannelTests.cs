@@ -100,7 +100,7 @@ public class RconControlChannelTests
     }
 
     private static RconControlChannelSpec Spec(int port, WriteMode mode = WriteMode.Enabled) =>
-        new(port, PasswordUrn, Palworld(), mode);
+        new(port, PasswordUrn, Palworld(), () => mode);
 
     private static ControlChannelAddress Durable(string host) => new ControlChannelAddress.Durable(host, DnsLabelJustification);
 
@@ -227,6 +227,39 @@ public class RconControlChannelTests
 
         await act.Should().ThrowAsync<WritesDisabledException>();
         server.Commands.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task A_grant_revoked_after_the_channel_was_opened_is_honoured_on_the_next_command()
+    {
+        // RconControlChannelSpec.Mode used to be a plain WriteMode, captured at Open(). That made this path
+        // the odd one out: the exec path and ServyxRconChannels both re-resolve per command, so a container-
+        // hosted server followed a revocation immediately while a provisioned-resource channel opened while
+        // writable stayed writable for the rest of its life. The spec now carries a live source, so the
+        // posture the guard enforces is the one the operator holds NOW.
+        await using var server = new FakeRconServer(password: Password, responseFragments: ["Complete Save"]);
+        var (channel, _) = Build();
+
+        var mode = WriteMode.Enabled;
+
+        var session = channel.Open(
+            UnreachableResource(),
+            Durable(server.Endpoint.Host),
+            new RconControlChannelSpec(server.Endpoint.Port, PasswordUrn, Palworld(), () => mode));
+
+        // Opened and used FIRST, while the grant still stands — the assertion below is against this same,
+        // already-open session, which is the only shape that can distinguish live from captured.
+        (await session.InvokeAsync("save", null)).Text.Should().Be("Complete Save");
+
+        mode = WriteMode.ReadOnly;
+
+        var act = () => session.InvokeAsync("save", null);
+
+        await act.Should().ThrowAsync<WritesDisabledException>(
+            because: "a posture captured at Open() would keep save/broadcast/shutdown flowing after the " +
+                "operator revoked the grant");
+
+        server.Commands.Should().ContainSingle("the refused command never reached the wire");
     }
 
     [Fact]
@@ -399,7 +432,7 @@ public class RconControlChannelTests
         var act = () => channel.Open(
             UnreachableResource(),
             Durable("palworld.eastus.azurecontainer.io"),
-            new RconControlChannelSpec(25575, default, Palworld(), WriteMode.Enabled));
+            new RconControlChannelSpec(25575, default, Palworld(), () => WriteMode.Enabled));
 
         act.Should().Throw<ArgumentException>().WithMessage("*URN*");
     }

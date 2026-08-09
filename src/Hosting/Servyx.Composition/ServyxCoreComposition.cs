@@ -184,9 +184,13 @@ public sealed class ServyxCoreComposition
     public string PersistenceConnectionString { get; }
 
     /// <summary>
-    /// Whether this process registered <c>ServyxDbContext</c> at all — true when the provisioning gate is
-    /// open, or when more than one game definition loaded (server-definition bindings need somewhere durable
-    /// to live). <see cref="RunStartupTasksAsync"/> only migrates the schema when this is true.
+    /// Whether this process registered <c>ServyxDbContext</c> at all. Always <see langword="true"/>: since
+    /// persistence is now registered unconditionally by <c>AddServyxCore</c> (server adoption/forget needs
+    /// somewhere durable to live regardless of the provisioning gate or how many game definitions loaded —
+    /// see that method's remarks), every process needs its schema migrated. Kept as a named property, rather
+    /// than inlining <see langword="true"/> at its one call site, so a future host reading this composition's
+    /// result does not have to know that fact independently. <see cref="MigrateDatabaseAsync"/> catches and
+    /// logs (rather than throws) a migration failure regardless of this value — see its own remarks.
     /// </summary>
     public bool RequiresDatabaseMigration { get; }
 
@@ -215,26 +219,70 @@ public sealed class ServyxCoreComposition
 
     /// <summary>
     /// Applies the EF migration when (and only when) this process actually registered persistence — see
-    /// <see cref="RequiresDatabaseMigration"/>.
+    /// <see cref="RequiresDatabaseMigration"/> (always <see langword="true"/> today).
     /// </summary>
     /// <remarks>
+    /// <para>
     /// Migrations are applied here — called only after <c>Build()</c> — rather than inside
     /// <c>AddServyxPersistence()</c>. Registration stays side-effect-free and testable in isolation (a test
     /// fixture can compose the container without anything touching disk); migrating the schema is an
-    /// explicit, startup-time action that should only ever happen once persistence was actually registered —
-    /// either because provisioning is enabled, or because multi-definition mode registered it for the
-    /// server-definition binding store. With <see cref="RequiresDatabaseMigration"/> false, this method
-    /// returns without touching the database file.
+    /// explicit, startup-time action. With <see cref="RequiresDatabaseMigration"/> false, this method returns
+    /// without touching the database file.
+    /// </para>
+    /// <para>
+    /// <strong>A migration failure must never prevent the host from starting.</strong> Persistence is now
+    /// registered unconditionally (see <c>AddServyxCore</c>'s remarks), which means a process that previously
+    /// never touched a database file at all — a fresh, single-bundled-definition, provisioning-gate-closed
+    /// install — now creates/migrates a SQLite file on every startup. Converting a working read-only
+    /// deployment into one that crashes at boot because its data directory happens to be unwritable would be
+    /// strictly worse than the "adoption is unreachable" bug this unconditional registration fixes. A
+    /// migration failure is therefore caught and logged at <see cref="LogLevel.Error"/>, never rethrown:
+    /// startup proceeds, and any feature that actually needs the database degrades honestly on its own next
+    /// call. <c>ServerAdoptionService.ListCandidatesAsync</c>/<c>ListTrackedAsync</c> and
+    /// <c>ServerQueryService</c>'s own multi-definition binding reads catch and degrade a persistence
+    /// exception on their read paths rather than propagating it into a Blazor error boundary — critically,
+    /// <c>ListTrackedAsync</c> reports that degradation through <c>TrackedServersResult.Failed</c> rather
+    /// than a silently-empty list, so a broken database still reads as "tracking is unavailable", never as
+    /// "nothing is tracked". <c>ServerAdoptionService.AdoptAsync</c>/<c>ForgetAsync</c> are the deliberate
+    /// exception to this: they let a persistence fault propagate as a genuine exception rather than
+    /// modelling it as a result variant — see <c>IServerAdoptionService</c>'s own remarks for why a mutating
+    /// call is held to a different contract than a read.
+    /// </para>
     /// </remarks>
-    public Task MigrateDatabaseAsync(IServiceProvider services, CancellationToken ct = default)
+    public async Task MigrateDatabaseAsync(IServiceProvider services, CancellationToken ct = default)
     {
-        if (RequiresDatabaseMigration)
+        if (!RequiresDatabaseMigration)
         {
-            using var migrationScope = services.CreateScope();
-            migrationScope.ServiceProvider.GetRequiredService<ServyxDbContext>().Database.Migrate();
+            return;
         }
 
-        return Task.CompletedTask;
+        try
+        {
+            using var migrationScope = services.CreateScope();
+            await migrationScope.ServiceProvider.GetRequiredService<ServyxDbContext>().Database.MigrateAsync(ct)
+                .ConfigureAwait(false);
+
+            // Load the per-server write grants now that the schema exists, rather than leaving the first
+            // guarded command to pay for it — and so a database that cannot be read is reported here, at
+            // startup, instead of at the operator's first click. Priming is a read: it never widens a grant,
+            // and a failure inside Prime is logged and swallowed by the cache itself (see WriteGrantCache),
+            // leaving every server read-only until a later read succeeds.
+            services.GetService<WriteGrantCache>()?.Prime();
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            var logger = services.GetRequiredService<ILoggerFactory>().CreateLogger("Servyx.Composition.Startup");
+            logger.LogError(
+                ex,
+                "Failed to migrate the Servyx database at '{ConnectionString}'. Startup will continue, but " +
+                "server adoption, forget, and definition-binding persistence will be unavailable until this " +
+                "is resolved (e.g. an unwritable data directory).",
+                PersistenceConnectionString);
+        }
     }
 
     /// <summary>

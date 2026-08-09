@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -39,7 +39,9 @@ public class BackupCompositionTests
 
         var services = new ServiceCollection();
         services.AddLogging();
-        services.AddSingleton(WritableServers.FromConfiguration(configuration, gate));
+        // The live, database-backed view is what a real host registers; these tests only need the label to
+        // resolve, so a fixed set stands in for it.
+        services.AddSingleton(gate.Enabled ? new WritableServers(["palworld-server"]) : WritableServers.None);
 
         // Stands in for AddServyxDockerBackups(), which needs a Docker daemon and a context source.
         // Everything below it is the real registration.
@@ -82,7 +84,9 @@ public class BackupCompositionTests
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(gate);
-        services.AddSingleton(WritableServers.FromConfiguration(configuration, gate));
+        // The live, database-backed view is what a real host registers; these tests only need the label to
+        // resolve, so a fixed set stands in for it.
+        services.AddSingleton(gate.Enabled ? new WritableServers(["palworld-server"]) : WritableServers.None);
 
         using var provider = services.BuildServiceProvider(new ServiceProviderOptions
         {

@@ -41,6 +41,22 @@ namespace Servyx.Domain.Transport;
 /// two modes are identical by construction.
 /// </para>
 /// <para>
+/// <b><see cref="Mode"/> is re-resolved per command, not captured at connect.</b> When this guard is built
+/// from an <see cref="IWriteModeResolver"/> and a <see cref="TargetDescriptor"/> (the shape
+/// <see cref="WriteGuardedTransport.ConnectAsync"/> always uses), every gate below asks the resolver again
+/// on each call rather than trusting a value frozen when the session opened. That is what makes a revoked
+/// grant take effect on the very next command: sessions in this codebase are memoized for the life of the
+/// process and are never evicted on success, so a connect-time snapshot would keep an already-open session
+/// writable indefinitely after an operator revoked it — and a revocation that only applies to future
+/// connections is not a revocation. The resolver is backed by an in-memory cache, so the added cost per
+/// guarded command is a dictionary lookup against a docker exec measured in milliseconds.
+/// </para>
+/// <para>
+/// The <see cref="WriteGuardedExecutionTarget(IExecutionTarget, WriteMode, string?)"/> constructor keeps the
+/// original fixed-mode behaviour for callers that genuinely hold one posture for the object's lifetime
+/// (tests, and provisioning hand-offs that mint a session for a target they just created).
+/// </para>
+/// <para>
 /// Disposal delegates to the inner target: the guard owns no resources of its own, and swallowing the
 /// inner disposal would leak whatever the transport opened.
 /// </para>
@@ -57,26 +73,66 @@ namespace Servyx.Domain.Transport;
 public sealed class WriteGuardedExecutionTarget : IExecutionTarget, IContainerLifecycle
 {
     private readonly IExecutionTarget _inner;
+    private readonly WriteMode _fixedMode;
+    private readonly IWriteModeResolver? _writeModes;
+    private readonly TargetDescriptor? _target;
 
-    /// <summary>Creates a guard over <paramref name="inner"/> for a server in <paramref name="mode"/>.</summary>
+    /// <summary>Creates a guard over <paramref name="inner"/> for a server fixed in <paramref name="mode"/>.</summary>
     /// <param name="inner">The target every permitted call delegates to.</param>
-    /// <param name="mode">The owning server's write posture.</param>
+    /// <param name="mode">The owning server's write posture, held for this object's whole lifetime.</param>
     /// <param name="targetDescription">
     /// A human-readable identifier for the guarded target (a container name, an endpoint) used only in
     /// refusal messages, so an operator reading a <see cref="WritesDisabledException"/> can tell which
     /// server refused. Optional; never used for any decision.
     /// </param>
+    /// <remarks>
+    /// A guard built this way cannot observe a grant that changed after it was constructed. Prefer the
+    /// resolver-backed overload for any session that outlives the operator's next click — see this type's
+    /// own remarks on per-command re-resolution.
+    /// </remarks>
     public WriteGuardedExecutionTarget(IExecutionTarget inner, WriteMode mode, string? targetDescription = null)
     {
         ArgumentNullException.ThrowIfNull(inner);
 
         _inner = inner;
-        Mode = mode;
+        _fixedMode = mode;
         TargetDescription = targetDescription;
     }
 
-    /// <summary>The write posture this guard enforces.</summary>
-    public WriteMode Mode { get; }
+    /// <summary>
+    /// Creates a guard that asks <paramref name="writeModes"/> for <paramref name="target"/>'s posture on
+    /// every gated call, so a grant revoked after this session opened is honoured on the next command.
+    /// </summary>
+    /// <param name="inner">The target every permitted call delegates to.</param>
+    /// <param name="writeModes">
+    /// Resolves the target's current write posture. Consulted per gated call, never cached here — this type
+    /// holds no opinion about how fresh the resolver's own answer is, which is deliberately the resolver's
+    /// problem and not the guard's.
+    /// </param>
+    /// <param name="target">The descriptor whose posture is resolved. Also the identity the grant is matched against.</param>
+    /// <param name="targetDescription">A human-readable identifier used only in refusal messages.</param>
+    public WriteGuardedExecutionTarget(
+        IExecutionTarget inner,
+        IWriteModeResolver writeModes,
+        TargetDescriptor target,
+        string? targetDescription = null)
+    {
+        ArgumentNullException.ThrowIfNull(inner);
+        ArgumentNullException.ThrowIfNull(writeModes);
+        ArgumentNullException.ThrowIfNull(target);
+
+        _inner = inner;
+        _writeModes = writeModes;
+        _target = target;
+        _fixedMode = WriteMode.ReadOnly;
+        TargetDescription = targetDescription;
+    }
+
+    /// <summary>
+    /// The write posture this guard enforces <em>right now</em>. Re-resolved on every read when this guard
+    /// was built over an <see cref="IWriteModeResolver"/>; a constant when it was built over a fixed mode.
+    /// </summary>
+    public WriteMode Mode => _writeModes is null ? _fixedMode : _writeModes.Resolve(_target!);
 
     /// <summary>A human-readable identifier for the guarded target, used only in refusal messages.</summary>
     public string? TargetDescription { get; }
@@ -169,11 +225,24 @@ public sealed class WriteGuardedExecutionTarget : IExecutionTarget, IContainerLi
                 $"The underlying transport does not implement {nameof(IContainerLifecycle)}.");
     }
 
+    /// <remarks>
+    /// The read-only short circuit is evaluated FIRST, before <see cref="Mode"/> is touched at all: a command
+    /// the caller declared <see cref="CommandIntent.ReadOnly"/> passes in every posture, so there is nothing
+    /// for a resolver to decide and no reason to make a read-only probe depend on the grant store being
+    /// reachable. The mode is then resolved exactly once, so the refusal message names the same posture the
+    /// decision was taken against even if a concurrent flip lands mid-call.
+    /// </remarks>
     private void ThrowIfMutatingCommandIsDisabled(CommandSpec spec)
     {
         ArgumentNullException.ThrowIfNull(spec);
 
-        if (spec.Intent == CommandIntent.ReadOnly || WritesPermitted)
+        if (spec.Intent == CommandIntent.ReadOnly)
+        {
+            return;
+        }
+
+        var mode = Mode;
+        if (mode == WriteMode.Enabled)
         {
             return;
         }
@@ -182,21 +251,22 @@ public sealed class WriteGuardedExecutionTarget : IExecutionTarget, IContainerLi
         throw new WritesDisabledException(
             $"Refusing to run command '{spec.Executable}'{where}: it is declared {nameof(CommandIntent)}." +
             $"{nameof(CommandIntent.Mutating)} — the default for a command that declares nothing — and the " +
-            $"server's write mode is {Mode}. Mutating commands require {nameof(WriteMode)}." +
+            $"server's write mode is {mode}. Mutating commands require {nameof(WriteMode)}." +
             $"{nameof(WriteMode.Enabled)}, set per server and never globally. A command the caller declares " +
             $"{nameof(CommandIntent)}.{nameof(CommandIntent.ReadOnly)} runs in every mode.");
     }
 
     private void ThrowIfWritesDisabled(string operation, TargetPath path)
     {
-        if (WritesPermitted)
+        var mode = Mode;
+        if (mode == WriteMode.Enabled)
         {
             return;
         }
 
         var where = TargetDescription is null ? string.Empty : $" on '{TargetDescription}'";
         throw new WritesDisabledException(
-            $"Refusing to {operation} '{path.Value}'{where}: the server's write mode is {Mode}. " +
+            $"Refusing to {operation} '{path.Value}'{where}: the server's write mode is {mode}. " +
             $"Writes require {nameof(WriteMode)}.{nameof(WriteMode.Enabled)}, set per server and never globally.");
     }
 }

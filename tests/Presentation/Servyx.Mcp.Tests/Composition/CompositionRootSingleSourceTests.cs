@@ -1,4 +1,4 @@
-using Servyx.Mcp.Tests.Support;
+﻿using Servyx.Mcp.Tests.Support;
 
 namespace Servyx.Mcp.Tests.Composition;
 
@@ -40,6 +40,12 @@ public sealed class CompositionRootSingleSourceTests
         "ProvisioningGate.FromConfiguration(",
         "WritableServers.FromConfiguration(",
         "ServerWriteModes.ReadGrants(",
+        // Phase 2's grant-related additions. ServerWriteModes.ReadGrants no longer exists — the entry above is
+        // kept so a future revival of that name cannot quietly reappear in a host — and these replace it:
+        // FindIgnoredLegacyKeys is the legacy-key detection AddServyxCoreCore alone is responsible for warning
+        // about, and WritableServers.Live is the live grant view exactly one place may construct.
+        "ServerWriteModes.FindIgnoredLegacyKeys(",
+        "WritableServers.Live(",
         "SshDockerWriteModes.ReadGrants(",
         "SshDockerWiringOptions.FromConfiguration(",
         "RconWiringOptions.FromConfiguration(",
@@ -59,6 +65,12 @@ public sealed class CompositionRootSingleSourceTests
         "new ServyxBackupContextSource(",
         "new ServyxSshBackupContextSource(",
         "new ProvisioningDashboardService(",
+        // Phase 2. The write grant now comes from the database, so a host that built its own cache, resolver or
+        // grant service would be a second source of truth for the single most safety-critical decision in the
+        // product — strictly worse than the configuration duplication this test was written to prevent.
+        "new WriteGrantCache(",
+        "new DbBackedWriteModeResolver(",
+        "new WriteGrantService(",
     ];
 
     public static TheoryData<string> BothProgramFiles()

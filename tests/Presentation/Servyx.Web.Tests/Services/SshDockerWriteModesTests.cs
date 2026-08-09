@@ -1,4 +1,4 @@
-using Microsoft.Extensions.Configuration;
+﻿using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -206,9 +206,11 @@ public class SshDockerWriteModesTests
     [Fact]
     public void The_shipped_appsettings_grants_no_write_modes()
     {
-        // The production-safety regression guard: whatever ServerWriteModes, SshDockerWriteModes and
+        // The production-safety regression guard: whatever SshDockerWriteModes and
         // SshBackupWiringOptions.WriteGrants derive from the REAL, deployed appsettings.json must be empty,
-        // and a resolver built over all three together must refuse to write anywhere at all.
+        // and a resolver built over both together must refuse to write anywhere at all. ServerWriteModes no
+        // longer contributes grants at all — the local-docker per-server grant is a database row now — so
+        // this asserts instead that the shipped file declares no legacy WriteMode key for one to be ignored.
         var path = Path.Combine(AppContext.BaseDirectory, "appsettings.json");
         File.Exists(path).Should().BeTrue("this test asserts against the real, deployed appsettings.json");
 
@@ -218,16 +220,15 @@ public class SshDockerWriteModesTests
 
         var hosts = SshDockerWiringOptions.FromConfiguration(configuration, logger);
 
-        var serverGrants = ServerWriteModes.ReadGrants(configuration, gate, logger);
         var sshDockerGrants = SshDockerWriteModes.ReadGrants(configuration, gate, hosts, logger);
         var sshBackupGrants = SshBackupWiringOptions.FromConfiguration(configuration, gate).WriteGrants;
 
-        serverGrants.Should().BeEmpty();
+        ServerWriteModes.FindIgnoredLegacyKeys(configuration).Should().BeEmpty();
         sshDockerGrants.Should().BeEmpty();
         sshBackupGrants.Should().BeEmpty();
 
         var services = new ServiceCollection();
-        foreach (var grant in serverGrants.Concat(sshDockerGrants).Concat(sshBackupGrants))
+        foreach (var grant in sshDockerGrants.Concat(sshBackupGrants))
         {
             services.AddSingleton(grant);
         }

@@ -18,13 +18,15 @@ namespace Servyx.Composition;
 /// grant). The protocol assembly deliberately composes none of that for itself.
 /// </para>
 /// <para>
-/// <strong>Every session is write-guarded.</strong> The inner <see cref="RconSession"/> is never handed out
-/// bare — it is always wrapped in <see cref="WriteGuardedRconSession"/> with the same
-/// <see cref="WriteMode"/> the operator granted the server's transport, so a server without
-/// <c>Servyx:Servers:&lt;name&gt;:WriteMode = Enabled</c> can run <c>info</c> and <c>players</c> and is
-/// refused <c>save</c>, <c>broadcast</c> and <c>shutdown</c>. A read-only server therefore cannot be
-/// quiesced, which means it cannot produce a quiesced backup either — the refusal surfaces as a failed
-/// backup rather than as a silently un-flushed archive.
+/// <strong>Every session is write-guarded, against a live posture.</strong> The inner
+/// <see cref="RconSession"/> is never handed out bare — it is always wrapped in
+/// <see cref="WriteGuardedRconSession"/> reading the same per-server grant the server's transport resolves
+/// through, so a server the operator has not granted <c>WriteMode.Enabled</c> can run <c>info</c> and
+/// <c>players</c> and is refused <c>save</c>, <c>broadcast</c> and <c>shutdown</c>. A read-only server
+/// therefore cannot be quiesced, which means it cannot produce a quiesced backup either — the refusal
+/// surfaces as a failed backup rather than as a silently un-flushed archive. Because the posture is read per
+/// command rather than captured when the session was acquired, revoking a grant is honoured on the next
+/// control command even on a session that is already open and memoized.
 /// </para>
 /// <para>
 /// <strong>Sessions are memoized per channel, once acquisition succeeds.</strong> Acquiring one means running
@@ -158,7 +160,9 @@ public sealed class ServyxRconChannels
             return null;
         }
 
-        var lazy = _sessions.GetOrAdd(channel.ServerKey, _ => new Lazy<Task<IRconSession>>(() => BuildAsync(channel, ct)));
+        var lazy = _sessions.GetOrAdd(
+            channel.ServerKey,
+            _ => new Lazy<Task<IRconSession>>(() => BuildAsync(channel, serverId, serverName, ct)));
 
         try
         {
@@ -180,15 +184,41 @@ public sealed class ServyxRconChannels
         }
     }
 
-    private async Task<IRconSession> BuildAsync(RconChannel channel, CancellationToken ct)
+    /// <remarks>
+    /// <para>
+    /// <strong>The write posture is handed to the guard as a live source, never as a value.</strong> This is
+    /// the second, entirely independent place a server's posture is captured — the first being
+    /// <c>WriteGuardedTransport.ConnectAsync</c> on the exec path — and the two fail independently, so fixing
+    /// only one would leave mutating RCON commands (<c>save</c>, <c>broadcast</c>, <c>shutdown</c>) flowing
+    /// on a grant the operator already revoked. Sessions here are memoized per channel for the life of the
+    /// process and are never evicted once acquisition succeeds, so a value baked in at this point would
+    /// outlive any number of grant changes. Re-reading per command is what lets those caches stay exactly as
+    /// they are.
+    /// </para>
+    /// <para>
+    /// The posture is read against the caller's own <paramref name="serverId"/>/<paramref name="serverName"/>
+    /// rather than <c>channel.ServerKey</c>, because the channel key is the operator's configuration spelling
+    /// (a container name) while a grant is keyed on the container's durable id — see
+    /// <see cref="WritableServers"/>. Resolving against the configuration key would have made every RCON
+    /// grant miss.
+    /// </para>
+    /// </remarks>
+    private async Task<IRconSession> BuildAsync(
+        RconChannel channel,
+        string? serverId,
+        string? serverName,
+        CancellationToken ct)
     {
         var chain = _chainFactory!(channel);
         var inner = await chain.AcquireAsync(channel.Endpoint, ct).ConfigureAwait(false);
 
-        // Derived from the same Servyx:Servers:<name>:WriteMode configuration the transport's write grants
-        // are, so the control channel and the filesystem cannot disagree about whether a server is writable.
-        var mode = _writable.IsWritable(channel.ServerKey) ? WriteMode.Enabled : WriteMode.ReadOnly;
-
-        return new WriteGuardedRconSession(inner, _catalog, mode, channel.ServerKey);
+        // Reads the same live grant view the transport's write guard resolves through, so the control channel
+        // and the filesystem cannot disagree about whether a server is writable — at any moment, not just at
+        // the moment this session happened to be acquired.
+        return new WriteGuardedRconSession(
+            inner,
+            _catalog,
+            () => _writable.Mode(serverId, serverName),
+            channel.ServerKey);
     }
 }

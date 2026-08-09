@@ -25,7 +25,7 @@ public sealed record ServerBackupSchedule(
 /// <para>
 /// <strong>Defaults to disabled, twice over.</strong> A server with no <c>Backup</c> section is not
 /// scheduled, and no server at all is scheduled unless <see cref="ProvisioningGate"/> is open — the same
-/// fail-closed rule <see cref="ServerWriteModes.ReadGrants"/> and <see cref="WritableServers"/> follow.
+/// fail-closed rule <see cref="SshDockerWriteModes.ReadGrants"/> and <see cref="WritableServers"/> follow.
 /// Creating a backup writes an archive and applying retention deletes archives; neither may become
 /// reachable because someone edited a key in a different section.
 /// </para>

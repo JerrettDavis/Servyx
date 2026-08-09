@@ -1,0 +1,73 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-confirm/.svx-deploy-error/.svx-deploy-applied exactly (same
+   tokens, same shape) — CSS isolation scopes each .razor.css to its own component, so the class names have
+   to be redefined here rather than inherited from that other page's scoped sheet. */
+
+.svx-deploy-confirm {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}
+
+.svx-deploy-applied {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-text-muted);
+}
+
+/* Attribution is secondary information, so it is de-emphasised with a muted foreground token rather than
+   with opacity — opacity would also fade the focus ring and dim the text below the contrast floor. */
+.write-mode-attribution {
+    margin-bottom: 0.9rem;
+    font-size: 0.8rem;
+    color: var(--svx-text-muted);
+    line-height: var(--svx-leading-relaxed);
+}
+
+.write-mode-tiers {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 0.9rem;
+}
+
+.write-mode-tier {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-areas:
+        "radio label"
+        ".     detail";
+    gap: 0.15rem 0.55rem;
+    align-items: baseline;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--svx-border-subtle);
+    border-radius: var(--svx-radius-md);
+    background: var(--svx-bg-subtle);
+}
+
+.write-mode-tier input[type="radio"] {
+    grid-area: radio;
+}
+
+.write-mode-tier-label {
+    grid-area: label;
+    font-weight: var(--svx-weight-semibold);
+    color: var(--svx-text-primary);
+}
+
+.write-mode-tier-detail {
+    grid-area: detail;
+    font-size: 0.8rem;
+    color: var(--svx-text-muted);
+    line-height: var(--svx-leading-normal);
+}

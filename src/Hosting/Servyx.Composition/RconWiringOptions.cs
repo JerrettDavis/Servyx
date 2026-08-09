@@ -140,7 +140,7 @@ public sealed class RconWiringOptions
 
             var rcon = server.GetSection(RconKey);
 
-            // Fail-closed, exactly like ServerWriteModes.ReadGrants: absent, misspelled and explicitly
+            // Fail-closed, exactly like SshDockerWriteModes.ReadGrants: absent, misspelled and explicitly
             // false all mean "no control channel", and are all spelled the same way here.
             if (!bool.TryParse(rcon["Enabled"], out var enabled) || !enabled)
             {

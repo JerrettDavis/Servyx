@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
@@ -18,11 +19,13 @@ using Servyx.Domain.Backups;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
+using Servyx.Domain.Servers;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Docker.Provisioning;
 using Servyx.Infrastructure.Persistence;
+using Servyx.Infrastructure.Persistence.Servers;
 using Servyx.Infrastructure.Ssh;
 using Servyx.Infrastructure.Ssh.Backups;
 using Servyx.Infrastructure.Ssh.Docker;
@@ -298,30 +301,153 @@ public static class ServyxCoreCompositionExtensions
         var provisioningGate = ProvisioningGate.FromConfiguration(builder.Configuration);
         builder.Services.AddSingleton(provisioningGate);
 
-        // Registered on both sides of the gate because it is a *label*, not a capability: with the gate closed it
-        // is WritableServers.None and every page that asks gets "read-only", which is exactly true — no write
-        // grant exists in the container at all. Pages inject it unconditionally, so it must always resolve.
-        builder.Services.AddSingleton(WritableServers.FromConfiguration(builder.Configuration, provisioningGate));
-
-        // ── Server-definition binding persistence ───────────────────────────────────────────────────────
+        // ── Per-server write grants: database-backed, live, revocable ────────────────────────────────────
         //
-        // Needed only in multi-definition mode (see useSingleCriteriaMode above) — the single-definition case has
-        // no ambiguity to resolve and nothing to pin, so it never touches this. Registered here, independent of
-        // the provisioning gate below (which may register the same ServyxDbContext a second time over, for the
-        // provisioning ledger, if it is also enabled — AddServyxPersistence's own DbContext/factory registrations
-        // are idempotent-safe to call twice with the same connection string): resolving which definition governs
-        // a server is core adoption/read-path functionality, not a provisioning capability, so a read-only host
-        // with more than one definition loaded still needs its bindings to survive a restart or an image retag.
-        // persistenceConnectionString is reused, not recomputed, by the provisioning gate's own persistence
-        // wiring further below.
+        // The per-server grant lives on the Server.WriteMode column and is flipped from the UI with
+        // attribution (WriteModeChangedBy/At). Everything below reads from one place — WriteGrantCache — so
+        // the write guard, the UI label, and the RCON control channel cannot disagree about one server.
+        //
+        // This replaces three separate frozen-at-startup snapshots that used to be built here:
+        //   1. `foreach (grant in ServerWriteModes.ReadGrants(...)) AddSingleton(grant)` — a grant set nothing
+        //      at runtime could add to or revoke from, which is why a fresh install was inert and why
+        //      revoking a grant needed a process restart.
+        //   2. `AddSingleton(WritableServers.FromConfiguration(...))` — the label every page reads, frozen the
+        //      same way, so the READ-ONLY / WRITES ENABLED badge and every GatedButton reported the world as
+        //      of process start.
+        //   3. ServyxRconChannels' captured WritableServers (see its registration further below) — the same
+        //      snapshot again, on an independent path.
+        // Fixing only the first would have left the UI lying about the state of the second and third.
+        //
+        // The cache holds no context: ServyxDbContext is Scoped and this is a process-lifetime singleton
+        // consumed by other singletons, so it takes IDbContextFactory<ServyxDbContext> and opens a
+        // short-lived context per load — the same shape EfServerDefinitionBindingStore and EfServerRepository
+        // already use. Do NOT reach for AddDbContext here; AddDbContext + AddDbContextFactory for the same
+        // context type is a bug this project already hit (see AddServyxPersistence's own remarks).
+        //
+        // With the gate closed the cache is handed no factory at all, so a read-only host resolves every
+        // target to ReadOnly without the database being opened even once. That is not an optimisation — it
+        // is what keeps a read-only host's behaviour independent of whether its database is reachable.
+        builder.Services.AddSingleton(sp => new WriteGrantCache(
+            provisioningGate,
+            provisioningGate.Enabled ? sp.GetRequiredService<IDbContextFactory<ServyxDbContext>>() : null,
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<WriteGrantCache>()));
+
+        // Registered on both sides of the gate because it is a *label*, not a capability: with the gate closed
+        // every server reports read-only, which is exactly true — no write grant exists in the container at
+        // all. Pages resolve it unconditionally, so it must always resolve.
+        builder.Services.AddSingleton(sp => WritableServers.Live(sp.GetRequiredService<WriteGrantCache>()));
+
+        // The single IWriteModeResolver every transport in this process is guarded by. Registered with
+        // Replace rather than Add: AddServyxDocker() above already TryAdd'ed a GrantedWriteModeResolver over
+        // the registered WriteModeGrants, and AddServyxSshDocker()/AddServyxSsh() TryAdd the same thing, so
+        // exactly one registration exists at this point and this swaps it for the database-backed one.
+        // Grants for targets that are NOT on the local docker transport (ssh+docker containers, SSH backup
+        // endpoints) still come from those WriteModeGrants — see DbBackedWriteModeResolver's remarks for why
+        // the two sources are kept disjoint per target rather than merged.
+        builder.Services.Replace(ServiceDescriptor.Singleton<IWriteModeResolver>(sp => new DbBackedWriteModeResolver(
+            provisioningGate,
+            sp.GetRequiredService<WriteGrantCache>(),
+            new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>()))));
+
+        // The only sanctioned way a grant is created, changed, or revoked. Registered on both sides of the
+        // gate so the UI can resolve it and render an honest refusal, rather than failing to resolve a
+        // service; with the gate closed every call is refused before the database is touched.
+        builder.Services.AddSingleton<IWriteGrantService>(sp => new WriteGrantService(
+            provisioningGate,
+            sp.GetRequiredService<IServerRepository>(),
+            sp.GetRequiredService<WriteGrantCache>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger(WriteGrantAudit.LogCategory),
+            sp.GetService<TimeProvider>()));
+
+        // The old Servyx:Servers:<key>:WriteMode key is now IGNORED for adopted (local docker) servers —
+        // neither honoured as an override nor imported as a seed. It is keyed by container NAME while the
+        // grant is keyed by container ID, so importing it would attach write access to whatever container
+        // currently answers to that name; and a config file can be stale, copied from another host, or
+        // committed to a repository. Failing closed and making the operator re-grant once, in the UI, with
+        // attribution, is the correct trade. Naming every ignored key is what turns that from a silent
+        // behaviour change into a diagnosable one. Logged here rather than from either Program.cs so BOTH
+        // hosts report it — see ServerWriteModes' own remarks for the precise scope of "ignored".
+        var ignoredLegacyWriteModeKeys = ServerWriteModes.FindIgnoredLegacyKeys(builder.Configuration);
+        if (ignoredLegacyWriteModeKeys.Count > 0)
+        {
+            sshDockerLogger.LogWarning(
+                "{Count} '{SectionKey}:<server>:{WriteModeKey}' configuration key(s) are present and are NO "
+                + "LONGER honoured as a write grant for adopted servers: {Keys}. The per-server grant now "
+                + "lives in Servyx's database and is set from the server's page in the UI, with attribution. "
+                + "These keys were deliberately not imported: they name a container by NAME, while a grant is "
+                + "bound to a container's ID, so importing one could grant write access to a different "
+                + "workload than the operator intended. Every server named here is READ-ONLY until it is "
+                + "re-granted in the UI. (Explicitly-configured ssh+docker hosts and SSH backup endpoints "
+                + "still read this key — no adoption path mints a database row for those yet.)",
+                ignoredLegacyWriteModeKeys.Count,
+                ServerWriteModes.SectionKey,
+                ServerWriteModes.WriteModeKey,
+                string.Join(", ", ignoredLegacyWriteModeKeys));
+        }
+
+        // ── Persistence, server-definition binding, and server adoption/forget ─────────────────────────────
+        //
+        // Registered UNCONDITIONALLY — on both sides of useSingleCriteriaMode and, further below, on both
+        // sides of the provisioning gate. This used to be conditional (multi-definition mode only, or
+        // single-definition mode only once the provisioning gate opened it a second way), which meant a
+        // fresh, single-bundled-definition, gate-closed install — Servyx's own default configuration — never
+        // registered ServyxDbContext, IServerDefinitionBindingStore, or anywhere for an adopted server to
+        // live at all. That made the whole point of this phase (adopt an existing container, view it, forget
+        // it) unreachable on exactly the install shape it exists for. Adoption writes ONLY to Servyx's own
+        // database — it never issues a mutating command to a container — so it needs no write grant and is
+        // registered here, outside the `if (provisioningGate.Enabled)` block below, on purpose.
+        //
+        // AddServyxPersistence's own DbContext/factory registrations are safe to call more than once with
+        // the same connection string (see its own remarks); this is nonetheless now the ONLY call site for
+        // it in this method — the two call sites that used to exist further below (one keyed on
+        // !useSingleCriteriaMode, one nested inside the provisioning-gate block) were removed rather than
+        // left as redundant duplicate calls, so there is exactly one place in this file that decides
+        // "persistence is registered" and nothing to keep in sync between them.
         var persistenceConnectionString = builder.Configuration["Servyx:Persistence:ConnectionString"]
             ?? $"Data Source={Path.Combine(AppContext.BaseDirectory, "servyx-data", "servyx.db")}";
 
-        if (!useSingleCriteriaMode)
-        {
-            builder.Services.AddServyxPersistence(persistenceConnectionString);
-            builder.Services.AddServyxServerDefinitionBindingStore();
-        }
+        builder.Services.AddServyxPersistence(persistenceConnectionString);
+        builder.Services.AddServyxServerDefinitionBindingStore();
+        builder.Services.AddServyxServerRepository();
+
+        // Desired-value persistence for the settings tab (Phase 4a). Registered unconditionally, alongside
+        // the rest of this block and for the same reason: IServerSettingsService writes ONLY to Servyx's own
+        // database — it never issues a command to a container (see its own remarks) — so it needs no write
+        // grant and must work with the provisioning gate closed, exactly like adoption above.
+        builder.Services.AddServyxServerSettingsService();
+
+        // Every Server-row write drops the grant cache, structurally rather than by convention.
+        //
+        // AddServyxServerRepository() above registers IServerRepository -> EfServerRepository; this Replace
+        // swaps that for the durable one wrapped in GrantInvalidatingServerRepository, so the ONLY
+        // IServerRepository anything in this process can resolve is the invalidating one. That closes a real
+        // gap rather than tidying one: ServerAdoptionService.ForgetAsync calls RemoveAsync directly, so
+        // forgetting a server that held WriteMode: Enabled deleted the row while the cache went on answering
+        // Enabled for that container id — and re-adopting the same container then produced a freshly-adopted,
+        // never-granted server that was writable. Invalidation living in WriteGrantService alone was a
+        // convention, and it had already been broken by the second caller. See
+        // GrantInvalidatingServerRepository's remarks for why this is a decorator rather than a call moved
+        // behind IWriteGrantService.
+        //
+        // EfServerRepository is named explicitly here (rather than resolved) because the interface
+        // registration is the thing being replaced; it takes the same singleton-safe context factory
+        // AddServyxServerRepository would have handed it.
+        builder.Services.Replace(ServiceDescriptor.Singleton<IServerRepository>(sp => new GrantInvalidatingServerRepository(
+            new EfServerRepository(sp.GetRequiredService<IDbContextFactory<ServyxDbContext>>()),
+            sp.GetRequiredService<WriteGrantCache>())));
+
+        // IAdoptionDefinitionCatalog is the adoption-path sibling of IBoundDefinitionLookup just below: it
+        // lets ServerAdoptionService (Servyx.Application) consume the game-definition catalog without
+        // Servyx.Application referencing Servyx.Definitions directly. Registered unconditionally, same as
+        // the persistence block above and for the same reason.
+        builder.Services.AddSingleton<IAdoptionDefinitionCatalog>(
+            sp => new CatalogAdoptionDefinitionLookup(sp.GetRequiredService<GameDefinitionCatalog>()));
+
+        // The adoption/forget surface itself. Singleton, matching IServerDefinitionBindingStore's own
+        // lifetime — both of its store dependencies (EfServerRepository, EfServerDefinitionBindingStore) are
+        // themselves singleton-safe (a short-lived DbContext per call via the factory, never a held scoped
+        // dependency — see their own remarks).
+        builder.Services.AddSingleton<IServerAdoptionService, ServerAdoptionService>();
 
         // ── Server lifecycle (Start/Restart/Stop/Kill) ──────────────────────────────────────────────────
         //
@@ -354,27 +480,21 @@ public static class ServyxCoreCompositionExtensions
         {
             // ── Per-server write mode ────────────────────────────────────────────────────────────────────
             //
-            // The only thing in this process that can make a transport session's WriteFileAsync/DeleteAsync do
-            // anything other than throw WritesDisabledException. Each grant names ONE server, read from
-            // Servyx:Servers:<container>:WriteMode; a server with no entry stays ReadOnly, and there is
-            // deliberately no key that enables writes for everything the daemon can see — WriteModeGrant refuses
-            // to construct such a thing. Registered inside this block, so with the provisioning flag off the
-            // container holds no grants and the write guard refuses everywhere, exactly as it did before M4.
+            // The local-docker half of this used to live here as a loop registering one WriteModeGrant
+            // singleton per Servyx:Servers:<container>:WriteMode entry. It is gone: an adopted server's grant
+            // is now a database row, resolved live by DbBackedWriteModeResolver (registered above, outside
+            // this block, because the resolver must exist even on a read-only host so it can answer
+            // "ReadOnly" without touching the database). Nothing about enforcement moved — the guard still
+            // refuses every mutating call whose target does not resolve to WriteMode.Enabled.
             //
-            // Reuses sshDockerLogger — the bootstrap logger already stood up for the ssh+docker wiring above —
-            // rather than creating another LoggerFactory for the same startup phase.
-            foreach (var writeGrant in ServerWriteModes.ReadGrants(builder.Configuration, provisioningGate, sshDockerLogger))
-            {
-                builder.Services.AddSingleton(writeGrant);
-            }
-
-            // The ssh+docker half of Servyx:Servers:<container>:WriteMode. ServerWriteModes above emits grants keyed
-            // on the docker-transport container-option spellings; a container observed over ssh+docker is reached
+            // The ssh+docker half of Servyx:Servers:<container>:WriteMode. It is still configuration-driven:
+            // it names a container on a host the operator declared explicitly under Servyx:Hosts, and no
+            // adoption path mints a Server row for one, so there is no database grant to replace it with yet.
+            // A container observed over ssh+docker is reached
             // through a different transport id ("ssh+docker") and a different, single option spelling
             // ("containerName" only) — see SshDockerWriteModes' remarks for why the grant must still name
             // "ssh+docker" and not "ssh", even though SshDockerTransport rewrites the descriptor to "ssh" one layer
-            // further in. With no ssh+docker host configured, this returns empty exactly like ServerWriteModes does
-            // with no Servyx:Servers configured.
+            // further in. With no ssh+docker host configured, this returns empty.
             foreach (var writeGrant in SshDockerWriteModes.ReadGrants(
                 builder.Configuration, provisioningGate, sshDockerWiring, sshDockerLogger))
             {
@@ -410,19 +530,14 @@ public static class ServyxCoreCompositionExtensions
             builder.Services.AddSingleton(configuredProvisioners);
             builder.Services.AddServyxConfiguredProvisioners(configuredProvisioners);
 
-            // Durable storage for the provisioning ledger. persistenceConnectionString and (when multi-definition
-            // mode already needed it) the AddServyxPersistence call itself come from the "Server-definition binding
-            // persistence" block above — registered here only if that block did not already run, so this never
-            // registers ServyxDbContext a second time over. A read-only, single-definition host still never gets a
-            // ServyxDbContext, a SQLite file, or an IProvisioningLedger in its container. Servyx:Persistence:
-            // ConnectionString lets an operator point at a different file (or a different provider-compatible
-            // connection string) without touching code; the default keeps the database alongside the other on-disk
-            // state under servyx-data/, matching the convention SecretsOptions already uses for secrets/host-keys
-            // (see Servyx.Infrastructure.Secrets.SecretsOptions).
-            if (useSingleCriteriaMode)
-            {
-                builder.Services.AddServyxPersistence(persistenceConnectionString);
-            }
+            // Durable storage (ServyxDbContext) is already registered unconditionally above — see the
+            // "Persistence, server-definition binding, and server adoption/forget" block. Nothing here needs
+            // to register it a second time; IProvisioningLedger only needs binding below, over the context
+            // that already exists. Servyx:Persistence:ConnectionString lets an operator point at a different
+            // file (or a different provider-compatible connection string) without touching code; the default
+            // keeps the database alongside the other on-disk state under servyx-data/, matching the
+            // convention SecretsOptions already uses for secrets/host-keys (see
+            // Servyx.Infrastructure.Secrets.SecretsOptions).
 
             // Binds IProvisioningLedger to the durable EfProvisioningLedger. A separate call from
             // AddServyxPersistence() on purpose — see that method's own remarks in
@@ -619,8 +734,8 @@ public static class ServyxCoreCompositionExtensions
 
             if (sshBackups.Any)
             {
-                // The SSH half of Servyx:Servers:<name>:WriteMode. ServerWriteModes above emits grants keyed on
-                // container-name descriptor options, which no SSH target carries; these are scoped to the exact
+                // The SSH half of Servyx:Servers:<name>:WriteMode. The local docker half of that key emits no
+                // grant at all any more (it is a database row); these are scoped to the exact
                 // endpoint the session connects to, and to nothing wider. Without one, an SSH server can still be
                 // listed, inspected and dry-run pruned — only creating and restoring are refused.
                 foreach (var sshGrant in sshBackups.WriteGrants)
@@ -687,7 +802,11 @@ public static class ServyxCoreCompositionExtensions
             provisioningGate,
             sshDockerWiring,
             persistenceConnectionString,
-            requiresDatabaseMigration: provisioningGate.Enabled || !useSingleCriteriaMode,
+            // Always true now that persistence is registered unconditionally (see the block above) — every
+            // process needs its schema migrated so server adoption/forget has somewhere durable to live, not
+            // only the provisioning-enabled or multi-definition cases this used to be limited to. See
+            // ServyxCoreComposition.MigrateDatabaseAsync for why a failure here still does not stop startup.
+            requiresDatabaseMigration: true,
             capabilities);
     }
 
