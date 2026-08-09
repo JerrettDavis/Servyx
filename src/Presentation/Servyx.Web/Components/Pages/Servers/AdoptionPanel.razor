@@ -1,0 +1,378 @@
+@using Servyx.Application.Servers
+@using Servyx.Definitions
+@using Servyx.Domain.Common
+@using Servyx.Domain.Definitions.Model
+@inject IServiceProvider Services
+
+@* Adoption touches only Servyx's own database — it never issues a command to a container — so, unlike the
+   lifecycle controls on the server detail page, these controls are plain .svx-btn/.svx-btn-primary/
+   .svx-btn-danger rather than <GatedButton>. There is nothing here for the write guard to gate. *@
+
+@if (_adoption is not null)
+{
+    <div class="svx-card" data-testid="adopt-section">
+        <h3>Adopt a server</h3>
+        <p class="svx-page-description">
+            Adopting brings an already-running container under Servyx's management so it appears in this
+            app. Servyx never creates a container on your behalf — adopting only attaches to one you already
+            run. Provisioning a brand-new server is a separate, opt-in capability elsewhere in this app.
+        </p>
+
+        @if (_loadingCandidates)
+        {
+            <Skeleton Rows="2" Label="Looking for containers to adopt" />
+        }
+        else if (_candidatesFailed)
+        {
+            @* Visually and semantically distinct from "no containers available" below — an empty list here
+               would be a lie: there may well be an adoptable container running, Servyx just could not reach
+               discovery to find out. Mirrors ServersList.razor's _discoveryFailed handling and this same
+               component's tracked-side _trackedFailed handling below. *@
+            <div class="svx-empty-state svx-empty-state-degraded" data-testid="adopt-unavailable">
+                <h4>Adoption candidates could not be read</h4>
+                <p data-testid="adopt-unavailable-detail">
+                    <strong>This may not be accurate.</strong> Servyx could not discover containers to
+                    offer for adoption@(string.IsNullOrWhiteSpace(_candidatesFailureDetail) ? "." : $": {_candidatesFailureDetail}")
+                    There may be adoptable containers Servyx cannot currently see — this is not the same as
+                    "no containers available to adopt".
+                </p>
+            </div>
+        }
+        else if (_candidates.Count == 0)
+        {
+            <div class="svx-empty-state" data-testid="adopt-empty-state">
+                <h4>No containers available to adopt</h4>
+                @if (_catalogDefinitions.Count == 0)
+                {
+                    <p>No game definitions are loaded, so Servyx has no adoption criteria to match containers against.</p>
+                }
+                else
+                {
+                    <p>
+                        Servyx found no running container matching a loaded game definition's adoption
+                        criteria that Servyx is not already tracking.
+                    </p>
+                }
+            </div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Adoption candidates">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.4fr 1fr;" aria-hidden="true">
+                    <span>Name</span>
+                    <span>Image</span>
+                    <span>State</span>
+                    <span>Game definition</span>
+                    <span></span>
+                </div>
+
+                @foreach (var candidate in _candidates)
+                {
+                    <div class="svx-row-link" role="listitem" data-testid="adopt-candidate-row"
+                         data-container-id="@candidate.ContainerId"
+                         style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.4fr 1fr;">
+                        <span data-col-label="Name"><strong>@candidate.Name</strong></span>
+                        <span data-col-label="Image">@candidate.Image</span>
+                        <span data-col-label="State">@candidate.State</span>
+                        <span data-col-label="Game definition">
+                            <select class="svx-select" data-testid="adopt-definition-select"
+                                    data-container-id="@candidate.ContainerId"
+                                    value="@GetSelectedDefinitionId(candidate)"
+                                    @onchange="e => SetSelectedDefinitionId(candidate, e.Value?.ToString())">
+                                @foreach (var definition in _catalogDefinitions)
+                                {
+                                    <option value="@definition.Metadata.Id">@definition.Metadata.Name</option>
+                                }
+                            </select>
+                        </span>
+                        <span>
+                            <button type="button" class="svx-btn svx-btn-primary" data-testid="adopt-button"
+                                    data-container-id="@candidate.ContainerId"
+                                    disabled="@(_busyContainerId == candidate.ContainerId)"
+                                    @onclick="() => AdoptAsync(candidate)">
+                                @(_busyContainerId == candidate.ContainerId ? "Adopting…" : "Adopt")
+                            </button>
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_adoptError is not null)
+        {
+            <p class="svx-deploy-error" data-testid="adopt-error">@_adoptError</p>
+        }
+    </div>
+
+    <div class="svx-card" data-testid="tracked-section">
+        <h3>Tracked by Servyx</h3>
+        <p class="svx-page-description">
+            Servers Servyx is tracking in its own database. Every adopted server starts read-only — Servyx
+            observes it but cannot change anything about it until an operator deliberately grants write
+            access.
+        </p>
+
+        @if (_loadingTracked)
+        {
+            <Skeleton Rows="2" Label="Loading tracked servers" />
+        }
+        else if (_trackedFailed)
+        {
+            @* Visually and semantically distinct from "nothing tracked yet" below — an empty list here would
+               be a lie: Servyx may well have adopted servers, it just could not read its own records to say
+               so. See ServersList.razor's identical _discoveryFailed handling for the same distinction on
+               the read side. *@
+            <div class="svx-empty-state svx-empty-state-degraded" data-testid="tracked-unavailable">
+                <h4>Server tracking is unavailable</h4>
+                <p data-testid="tracked-unavailable-detail">
+                    <strong>This may not be accurate.</strong> Servyx could not read its own adopted-server
+                    records@(string.IsNullOrWhiteSpace(_trackedFailureDetail) ? "." : $": {_trackedFailureDetail}")
+                    There may be tracked servers Servyx cannot currently show — this is not the same as
+                    "nothing tracked yet".
+                </p>
+            </div>
+        }
+        else if (_tracked.Count == 0)
+        {
+            <div class="svx-empty-state" data-testid="tracked-empty-state">
+                <h4>Nothing tracked yet</h4>
+                <p>Adopt a container above to start tracking it here.</p>
+            </div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Tracked servers">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.4fr 1.4fr 1fr 1.8fr;" aria-hidden="true">
+                    <span>Name</span>
+                    <span>Game</span>
+                    <span>Write mode</span>
+                    <span></span>
+                </div>
+
+                @foreach (var server in _tracked)
+                {
+                    <div class="svx-row-link" role="listitem" data-testid="tracked-server-row"
+                         data-server-id="@server.Id" style="grid-template-columns: 1.4fr 1.4fr 1fr 1.8fr;">
+                        <span data-col-label="Name"><strong>@server.Name</strong></span>
+                        <span data-col-label="Game">@server.GameDefinitionId</span>
+                        <span data-col-label="Write mode"><span class="svx-badge">@server.WriteMode</span></span>
+                        <span>
+                            @if (_forgetConfirmingId != server.Id)
+                            {
+                                <button type="button" class="svx-btn svx-btn-danger svx-btn-sm" data-testid="forget-button"
+                                        data-server-id="@server.Id"
+                                        @onclick="() => _forgetConfirmingId = server.Id">
+                                    Forget
+                                </button>
+                            }
+                            else
+                            {
+                                <div class="svx-deploy-confirm" data-testid="forget-confirm-step">
+                                    <p>
+                                        Nothing has happened to the container yet. Forgetting only removes
+                                        <strong>@server.Name</strong> from Servyx's own records — it does
+                                        <strong>not</strong> stop, delete, or otherwise touch the container,
+                                        which keeps running exactly as it is.
+                                    </p>
+                                    <button type="button" class="svx-btn svx-btn-danger" data-testid="forget-confirm"
+                                            disabled="@_forgetBusy"
+                                            @onclick="() => ForgetAsync(server.Id)">
+                                        @(_forgetBusy ? "Working…" : "Yes, forget this server")
+                                    </button>
+                                    <button type="button" class="svx-btn" data-testid="forget-cancel"
+                                            disabled="@_forgetBusy"
+                                            @onclick="() => _forgetConfirmingId = null">
+                                        Cancel
+                                    </button>
+                                </div>
+                            }
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_forgetError is not null)
+        {
+            <p class="svx-deploy-error" data-testid="forget-error">@_forgetError</p>
+        }
+    </div>
+}
+
+@code {
+    private IServerAdoptionService? _adoption;
+    private GameDefinitionCatalog? _catalog;
+
+    private bool _loadingCandidates = true;
+    private bool _loadingTracked = true;
+
+    private IReadOnlyList<AdoptionCandidate> _candidates = [];
+    private bool _candidatesFailed;
+    private string? _candidatesFailureDetail;
+    private IReadOnlyList<TrackedServer> _tracked = [];
+    private bool _trackedFailed;
+    private string? _trackedFailureDetail;
+    private IReadOnlyList<GameDefinition> _catalogDefinitions = [];
+    private readonly Dictionary<string, string> _selectedDefinitionByContainer = new(StringComparer.Ordinal);
+
+    private string? _busyContainerId;
+    private string? _adoptError;
+
+    private ServerId? _forgetConfirmingId;
+    private bool _forgetBusy;
+    private string? _forgetError;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // Resolved via IServiceProvider, not @@inject: IServerAdoptionService is registered unconditionally
+        // in a real host (see AddServyxCore), but this component must still render gracefully wherever it is
+        // not — most notably a bUnit harness that has not registered it — matching the fail-closed "optional
+        // collaborator" pattern MainLayout/NavMenu/DeployPage already use.
+        _adoption = Services.GetService(typeof(IServerAdoptionService)) as IServerAdoptionService;
+        _catalog = Services.GetService(typeof(GameDefinitionCatalog)) as GameDefinitionCatalog;
+
+        if (_catalog is not null)
+        {
+            _catalogDefinitions =
+            [
+                .. _catalog.DefinitionsById.Values
+                    .Select(loaded => loaded.Document as GameDefinition)
+                    .OfType<GameDefinition>()
+                    .OrderBy(d => d.Metadata.Name, StringComparer.OrdinalIgnoreCase)
+                    .ThenBy(d => d.Metadata.Id, StringComparer.Ordinal),
+            ];
+        }
+
+        if (_adoption is null)
+        {
+            _loadingCandidates = false;
+            _loadingTracked = false;
+            return;
+        }
+
+        await ReloadCandidatesAsync();
+        await ReloadTrackedAsync();
+    }
+
+    private async Task ReloadCandidatesAsync()
+    {
+        if (_adoption is null)
+        {
+            return;
+        }
+
+        _loadingCandidates = true;
+        var result = await _adoption.ListCandidatesAsync();
+        _candidates = result.Candidates;
+        _candidatesFailed = result.DiscoveryFailed;
+        _candidatesFailureDetail = result.FailureDetail;
+
+        // Preselect: the candidate's own suggested definition (from discovery-criteria matching) wins; with
+        // none, the first loaded definition (alphabetically) is offered instead of an unusable blank option —
+        // the same "pick the first and let the operator change it" policy DeployPage's own game select uses.
+        foreach (var candidate in _candidates)
+        {
+            if (!_selectedDefinitionByContainer.ContainsKey(candidate.ContainerId))
+            {
+                _selectedDefinitionByContainer[candidate.ContainerId] =
+                    candidate.SuggestedDefinitionIds.FirstOrDefault()
+                    ?? _catalogDefinitions.FirstOrDefault()?.Metadata.Id
+                    ?? string.Empty;
+            }
+        }
+
+        _loadingCandidates = false;
+    }
+
+    private async Task ReloadTrackedAsync()
+    {
+        if (_adoption is null)
+        {
+            return;
+        }
+
+        _loadingTracked = true;
+        var result = await _adoption.ListTrackedAsync();
+        _tracked = result.Servers;
+        _trackedFailed = result.TrackingFailed;
+        _trackedFailureDetail = result.FailureDetail;
+        _loadingTracked = false;
+    }
+
+    private string GetSelectedDefinitionId(AdoptionCandidate candidate) =>
+        _selectedDefinitionByContainer.TryGetValue(candidate.ContainerId, out var id) ? id : string.Empty;
+
+    private void SetSelectedDefinitionId(AdoptionCandidate candidate, string? definitionId) =>
+        _selectedDefinitionByContainer[candidate.ContainerId] = definitionId ?? string.Empty;
+
+    private async Task AdoptAsync(AdoptionCandidate candidate)
+    {
+        if (_adoption is null)
+        {
+            return;
+        }
+
+        var definitionId = GetSelectedDefinitionId(candidate);
+        if (string.IsNullOrWhiteSpace(definitionId))
+        {
+            _adoptError = "Choose a game definition before adopting.";
+            return;
+        }
+
+        _busyContainerId = candidate.ContainerId;
+        _adoptError = null;
+        try
+        {
+            var result = await _adoption.AdoptAsync(candidate.ContainerId, definitionId);
+            if (result.Outcome != AdoptionOutcome.Adopted)
+            {
+                _adoptError = result.Detail;
+            }
+
+            await ReloadCandidatesAsync();
+            await ReloadTrackedAsync();
+        }
+        catch (Exception ex)
+        {
+            // Degrades honestly rather than letting a persistence fault surface as a Blazor error boundary —
+            // matches LiveDashboardDataService's own try/catch-and-degrade posture for every other backend
+            // call this page makes.
+            _adoptError = $"Could not adopt this container: {ex.Message}";
+        }
+        finally
+        {
+            _busyContainerId = null;
+        }
+    }
+
+    private async Task ForgetAsync(ServerId id)
+    {
+        if (_adoption is null)
+        {
+            return;
+        }
+
+        _forgetBusy = true;
+        _forgetError = null;
+        try
+        {
+            var result = await _adoption.ForgetAsync(id);
+            if (result.Outcome != ForgetOutcome.Forgotten)
+            {
+                _forgetError = result.Detail;
+            }
+
+            await ReloadTrackedAsync();
+            await ReloadCandidatesAsync();
+        }
+        catch (Exception ex)
+        {
+            _forgetError = $"Could not forget this server: {ex.Message}";
+        }
+        finally
+        {
+            _forgetBusy = false;
+            _forgetConfirmingId = null;
+        }
+    }
+}

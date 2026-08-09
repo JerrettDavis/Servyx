@@ -22,6 +22,7 @@ public class EntityRoundTripTests
             {
                 Id = id,
                 Name = "palworld-eu-1",
+                ContainerId = "abc123containerid",
                 GameDefinitionId = "palworld",
                 DefinitionContentHash = "sha256:4f2c",
                 HostId = hostId,
@@ -41,6 +42,7 @@ public class EntityRoundTripTests
         loaded.Id.Should().Be(id);
         loaded.HostId.Should().Be(hostId);
         loaded.Name.Should().Be("palworld-eu-1");
+        loaded.ContainerId.Should().Be("abc123containerid");
         loaded.GameDefinitionId.Should().Be("palworld");
         loaded.DefinitionContentHash.Should().Be("sha256:4f2c");
         loaded.AdoptionMode.Should().Be(AdoptionMode.Provisioned);
@@ -48,6 +50,77 @@ public class EntityRoundTripTests
         loaded.WriteModeChangedBy.Should().Be("operator@servyx");
         loaded.WriteModeChangedAt.Should().Be(changedAt);
         loaded.CreatedAt.Should().Be(createdAt);
+    }
+
+    [Fact]
+    public void Server_HostId_RoundTripsNull_WhenNoHostIsModeled()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var id = ServerId.New();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Servers.Add(new Server
+            {
+                Id = id,
+                Name = "adopted-server",
+                ContainerId = "def456containerid",
+                GameDefinitionId = "palworld",
+                DefinitionContentHash = "sha256:4f2c",
+                HostId = null,
+                AdoptionMode = AdoptionMode.Adopted,
+                WriteMode = ServerWriteMode.ReadOnly,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+            });
+
+            write.SaveChanges().Should().Be(1);
+        }
+
+        using var read = fixture.CreateContext();
+        var loaded = read.Servers.Single();
+
+        // Honest "no Host row exists for this yet" — not a fabricated id, see Server.HostId's own remarks.
+        loaded.HostId.Should().BeNull();
+    }
+
+    [Fact]
+    public void Server_ContainerId_IsUnique()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Servers.Add(new Server
+            {
+                Id = ServerId.New(),
+                Name = "first",
+                ContainerId = "shared-container-id",
+                GameDefinitionId = "palworld",
+                DefinitionContentHash = "sha256:4f2c",
+                AdoptionMode = AdoptionMode.Adopted,
+                WriteMode = ServerWriteMode.ReadOnly,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+            });
+            write.SaveChanges();
+        }
+
+        using var write2 = fixture.CreateContext();
+        write2.Servers.Add(new Server
+        {
+            Id = ServerId.New(),
+            Name = "second",
+            ContainerId = "shared-container-id",
+            GameDefinitionId = "palworld",
+            DefinitionContentHash = "sha256:4f2c",
+            AdoptionMode = AdoptionMode.Adopted,
+            WriteMode = ServerWriteMode.ReadOnly,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        // Enforced at the database, not only in ServerAdoptionService's own pre-check — see
+        // ServerConfiguration's unique index on ContainerId.
+        var act = () => write2.SaveChanges();
+        act.Should().Throw<DbUpdateException>();
     }
 
     [Fact]
@@ -204,6 +277,7 @@ public class EntityRoundTripTests
     {
         Id = id,
         Name = "server-" + id,
+        ContainerId = "container-" + id,
         GameDefinitionId = "palworld",
         DefinitionContentHash = "sha256:0000",
         HostId = hostId,

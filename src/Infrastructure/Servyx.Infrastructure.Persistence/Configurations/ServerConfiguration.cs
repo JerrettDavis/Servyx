@@ -28,6 +28,12 @@ public sealed class ServerConfiguration : IEntityTypeConfiguration<Server>
             .IsRequired()
             .HasMaxLength(200);
 
+        // Matches ServerDefinitionBindingRecord.ServerId's own maxLength — both columns hold the same kind
+        // of value (a discovery-native container id), so they share the same bound.
+        builder.Property(server => server.ContainerId)
+            .IsRequired()
+            .HasMaxLength(256);
+
         builder.Property(server => server.GameDefinitionId)
             .IsRequired()
             .HasMaxLength(128);
@@ -36,8 +42,18 @@ public sealed class ServerConfiguration : IEntityTypeConfiguration<Server>
             .IsRequired()
             .HasMaxLength(128);
 
-        builder.Property(server => server.HostId)
-            .IsRequired();
+        // Nullable: no Host row exists to reference yet for any server adopted today — see Server.HostId's
+        // own remarks. Not .IsRequired(); the EF convention already leaves a nullable value-type property
+        // optional, this line just makes the "no .IsRequired() here" absence a deliberate, documented one
+        // rather than a silent omission.
+        builder.Property(server => server.HostId);
+
+        // The durable identity adoption correlates "already tracked" on. One container can be adopted at
+        // most once — a second AdoptAsync call for the same container id must land on AlreadyAdopted, never
+        // a second row — so this is enforced at the database, not only in ServerAdoptionService's own
+        // pre-check.
+        builder.HasIndex(server => server.ContainerId)
+            .IsUnique();
 
         // Enums are stored as their names, not their ordinals: the ordinal of a value in a hand-maintained
         // enum is an accident of source order, and a reordering would silently reinterpret every existing

@@ -63,4 +63,12 @@ public interface IServerDefinitionBindingStore
 
     /// <summary>Writes (creating or overwriting) the binding for <paramref name="binding"/>'s server id.</summary>
     Task SaveAsync(ServerDefinitionBinding binding, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the binding for <paramref name="serverId"/>, if one exists. A no-op — not an error — when
+    /// none does. Used by Servyx's own adoption "forget" path to clean up the binding it recorded at
+    /// adoption time once the <c>Server</c> row it belonged to is itself removed, now that the two can be
+    /// correlated deterministically by container id (see <c>Servyx.Domain.Entities.Server.ContainerId</c>).
+    /// </summary>
+    Task RemoveAsync(string serverId, CancellationToken ct = default);
 }

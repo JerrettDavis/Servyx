@@ -224,5 +224,11 @@ public class ServerQueryServiceMultiDefinitionTests
             _byServerId[binding.ServerId] = binding;
             return Task.CompletedTask;
         }
+
+        public Task RemoveAsync(string serverId, CancellationToken ct = default)
+        {
+            _byServerId.Remove(serverId);
+            return Task.CompletedTask;
+        }
     }
 }

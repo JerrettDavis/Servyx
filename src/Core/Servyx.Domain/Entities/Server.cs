@@ -47,7 +47,32 @@ public sealed class Server
     public required ServerId Id { get; set; }
 
     /// <summary>A human-readable name for the server.</summary>
+    /// <remarks>
+    /// Display only. A container's name can be reassigned to a different workload outside Servyx at any
+    /// time, and is not unique across hosts, so nothing may correlate or authorise on it — see
+    /// <see cref="ContainerId"/>.
+    /// </remarks>
     public required string Name { get; set; }
+
+    /// <summary>
+    /// The discovery-native identifier of the workload this row tracks — a Docker container id for an
+    /// adopted container.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is the durable identity everything about this row keys on</strong>: adoption's
+    /// "already tracked?" check, the per-server write grant, and the definition binding all use it, and the
+    /// database enforces it unique. A container id is assigned once by its own daemon and never changes for
+    /// that workload's lifetime; <see cref="Name"/> is neither of those things.
+    /// </para>
+    /// <para>
+    /// The write grant's key semantics follow directly: renaming a container keeps its grant, and recreating
+    /// one returns it to read-only, because the new workload has a new id and therefore no row. That is the
+    /// fail-closed direction and it is the reason this column exists rather than the grant being keyed on a
+    /// name.
+    /// </para>
+    /// </remarks>
+    public required string ContainerId { get; set; }
 
     /// <summary>The game definition this server runs.</summary>
     public required string GameDefinitionId { get; set; }
@@ -58,8 +83,20 @@ public sealed class Server
     /// </summary>
     public required string DefinitionContentHash { get; set; }
 
-    /// <summary>The host this server runs on.</summary>
-    public required HostId HostId { get; set; }
+    /// <summary>
+    /// The host this server runs on, or <see langword="null"/> when Servyx does not model one for it.
+    /// </summary>
+    /// <remarks>
+    /// Nullable, and <see langword="null"/> for every server adopted today: nothing in this codebase creates
+    /// a <c>Host</c> row, so there is nothing for an adopted server to point at. Null is the honest "not
+    /// modeled" state; a fabricated <c>HostId.New()</c> would be a foreign key to a row that does not exist,
+    /// and would make host-scoped queries look answerable when they are not. Wiring adoption to a real
+    /// <c>Hosts</c> row is later-phase scope. Note the consequence for grant matching: a
+    /// (<c>HostId</c>, <c>ContainerId</c>) pair would compare null to null for every adopted server and
+    /// contribute nothing while appearing to check more, which is why <see cref="ContainerId"/> alone is the
+    /// grant key.
+    /// </remarks>
+    public HostId? HostId { get; set; }
 
     /// <summary>Whether this server was adopted from an existing workload or provisioned by Servyx.</summary>
     public required AdoptionMode AdoptionMode { get; set; }

@@ -75,6 +75,26 @@ public sealed class EfServerDefinitionBindingStore : IServerDefinitionBindingSto
         await context.SaveChangesAsync(ct).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task RemoveAsync(string serverId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var existing = await context.ServerDefinitionBindings
+            .SingleOrDefaultAsync(row => row.ServerId == serverId, ct)
+            .ConfigureAwait(false);
+
+        if (existing is null)
+        {
+            return;
+        }
+
+        context.ServerDefinitionBindings.Remove(existing);
+        await context.SaveChangesAsync(ct).ConfigureAwait(false);
+    }
+
     private static ServerDefinitionBindingRecord ToRecord(ServerDefinitionBinding binding) => new()
     {
         ServerId = binding.ServerId,
