@@ -1,3 +1,11 @@
+@using Microsoft.AspNetCore.Components.Authorization
+@using System.Security.Claims
+@using Servyx.Domain.Configuration
+@using Servyx.Domain.Definitions.Model
+@using Servyx.Domain.Transport
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
 @if (Settings.Count == 0)
 {
     <div class="svx-empty-state">
@@ -7,12 +15,32 @@
 }
 else
 {
-    <p class="svx-page-description" style="margin-bottom:1rem;">
+    <p class="svx-page-description" style="margin-bottom:0.5rem;">
         Every setting shows four columns, mirroring <code>Servyx.Domain.Configuration.SettingState</code>:
-        <strong>Desired</strong> (Servyx's intent), <strong>Authoritative</strong> (the current <code>.env</code>),
-        <strong>Rendered</strong> (the generated INI), and <strong>Runtime</strong> (the live server). All fields
-        are disabled — Milestone 1 is strictly read-only.
+        <strong>Desired</strong> (Servyx's recorded intent), <strong>Authoritative</strong> (the current
+        <code>.env</code>), <strong>Rendered</strong> (the generated INI), and <strong>Runtime</strong> (the
+        live server).
     </p>
+
+    <p class="svx-page-description settings-honesty-notice" data-testid="settings-desired-not-applied-notice" style="margin-bottom:1rem;">
+        Editing and saving <strong>Desired</strong> records what you want, in Servyx's own database — it does
+        <strong>not</strong> change the running server. Nothing in this codebase can apply a desired value
+        yet (see Phase 4b in <code>docs/plans/ui-management-surface.md</code>); the Authoritative/Rendered/
+        Runtime columns only ever change by reading the real server, never by a save here.
+    </p>
+
+    @if (_untracked)
+    {
+        <p class="svx-page-description" data-testid="settings-untracked">
+            Servyx does not track this container as an adopted server, so there is nowhere to record a
+            desired value. Adopt it from the servers list first.
+        </p>
+    }
+
+    @if (_loadError is not null)
+    {
+        <p class="svx-deploy-error" data-testid="settings-load-error">@_loadError</p>
+    }
 
     @foreach (var group in Settings.GroupBy(s => s.Group))
     {
@@ -30,6 +58,9 @@ else
 
             @foreach (var row in group)
             {
+                var descriptor = Descriptors.TryGetValue(row.Key, out var found) ? found : SyntheticDescriptor(row);
+                var enabled = RowEnabled(descriptor);
+
                 <div class="settings-row @(row.HasDrift ? "has-drift" : "")" data-testid="setting-row" data-setting-key="@row.Key">
                     <div class="settings-label" data-col-label="Setting">
                         <span>@row.Label</span>
@@ -37,15 +68,44 @@ else
                     </div>
 
                     <div data-col-label="Desired">
-                        <GatedControl Label="@($"Desired value for {row.Label}")">
-                            <div style="display:flex; gap:0.4rem; align-items:center;">
-                                <input type="@(row.IsSecret ? "password" : "text")" class="svx-input svx-input-sm"
-                                       value="@row.Desired" aria-label="@($"Desired value for {row.Label}")" />
-                                @if (row.IsSecret)
-                                {
-                                    <GatedButton Label="Reveal" CssClass="gated-button-compact">Reveal</GatedButton>
-                                }
+                        @if (descriptor.RequiresRecreate)
+                        {
+                            <p class="setting-locked-note" data-testid="setting-locked-recreate">
+                                Locked: changing this setting requires the container to be recreated, which
+                                Servyx cannot apply yet (Phase 4b). Recording an intent nothing can honor yet
+                                would be misleading.
+                            </p>
+                        }
+
+                        <GatedControl Enabled="@enabled" Reason="@RowReason(descriptor)" Label="@($"Desired value for {row.Label}")">
+                            <div class="setting-editor-cell">
+                                <SettingEditor Descriptor="@descriptor"
+                                               Value="@CurrentEditValue(row, descriptor)"
+                                               ValueChanged="@(v => _edits[row.Key] = v)" />
+
+                                <GatedButton TestId="@($"setting-save-{row.Key}")"
+                                             Label="@($"Save desired value for {row.Label}")"
+                                             Enabled="@(enabled && !IsBusy(row.Key))"
+                                             Reason="@RowReason(descriptor)"
+                                             CssClass="gated-button-compact"
+                                             OnClick="@(() => SaveAsync(row))">
+                                    @(IsBusy(row.Key) ? "Saving…" : "Save")
+                                </GatedButton>
                             </div>
+
+                            @if (descriptor.IsSecret && _desired.TryGetValue(row.Key, out var secretDesired))
+                            {
+                                <p class="setting-secret-hint" data-testid="setting-secret-hint">
+                                    A desired value is already recorded (hidden) — last set by
+                                    "@secretDesired.UpdatedBy" at @secretDesired.UpdatedAt.ToString("u"). Enter
+                                    a new value to replace it, or leave this blank to keep it.
+                                </p>
+                            }
+
+                            @if (_saveStatus.TryGetValue(row.Key, out var status))
+                            {
+                                <p class="setting-save-status" data-testid="setting-save-status">@status</p>
+                            }
                         </GatedControl>
                     </div>
 
@@ -65,4 +125,212 @@ else
 @code {
     [Parameter, EditorRequired]
     public IReadOnlyList<SettingRow> Settings { get; set; } = [];
+
+    /// <summary>
+    /// Full descriptor metadata (type, constraints, <see cref="SettingDescriptor.RequiresRecreate"/>, …) for
+    /// every setting whose key matches a row in <see cref="Settings"/>, keyed by
+    /// <see cref="SettingDescriptor.Key"/>. Sourced from the same single-definition-mode
+    /// <c>IReadOnlyList&lt;SettingGroup&gt;</c> singleton the composition root registers — see
+    /// <c>ServerDetailPage</c>. Empty in multi-definition mode, in a bUnit render that supplies none, or when
+    /// no game definition loaded at all; a row with no matching descriptor renders through
+    /// <see cref="SyntheticDescriptor"/> rather than failing to render.
+    /// </summary>
+    [Parameter]
+    public IReadOnlyDictionary<string, SettingDescriptor> Descriptors { get; set; } =
+        new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal);
+
+    /// <summary>The server's discovery id (container id) — what <see cref="IServerSettingsService"/> resolves against.</summary>
+    [Parameter]
+    public string ServerId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// This server's write posture. Drives whether a row's Desired field and Save button are usable — see
+    /// <see cref="RowEnabled"/> for the write-gating decision and its reasoning.
+    /// </summary>
+    [Parameter]
+    public WriteMode WriteMode { get; set; } = WriteMode.ReadOnly;
+
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Optional, matching
+    /// <c>WriteModeControl</c>'s own parameter — a bUnit render (or a host with authentication switched off)
+    /// has none, and falls back to the same single operator identity the authentication endpoints issue.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private IServerSettingsService? _settingsService;
+    private Servyx.Domain.Common.ServerId? _resolvedServerId;
+    private readonly Dictionary<string, DesiredSettingValue> _desired = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> _edits = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string?> _saveStatus = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> _busy = new(StringComparer.Ordinal);
+    private string? _loadError;
+    private bool _untracked;
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching
+    /// <c>WriteModeControl</c>: a host — or a bUnit test rendering this tab directly — that never composed
+    /// <see cref="IServerSettingsService"/> must still render, degrading to "nothing can be saved here"
+    /// rather than throwing at render time over a required injection.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _settingsService = Services.GetService(typeof(IServerSettingsService)) as IServerSettingsService;
+        await ReloadDesiredAsync();
+    }
+
+    private async Task ReloadDesiredAsync()
+    {
+        _desired.Clear();
+        _untracked = false;
+        _resolvedServerId = null;
+
+        if (_settingsService is null || string.IsNullOrWhiteSpace(ServerId))
+        {
+            return;
+        }
+
+        try
+        {
+            var snapshot = await _settingsService.LoadAsync(ServerId);
+            if (snapshot is null)
+            {
+                _untracked = true;
+                return;
+            }
+
+            _resolvedServerId = snapshot.ServerId;
+            foreach (var (key, value) in snapshot.Values)
+            {
+                _desired[key] = value;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Degrade visibly, matching every other backend read on this page — never a silent "nothing
+            // recorded" when the truth is "could not be read".
+            _loadError = $"Could not read recorded desired values: {ex.Message}";
+        }
+    }
+
+    // ── Write gating ─────────────────────────────────────────────────────────────────────────────────
+    //
+    // Recording a desired value writes ONLY to Servyx's own database — IServerSettingsService never touches
+    // IExecutionTarget, IRconSession, or any transport (see its own remarks) — so this is not the same kind
+    // of act WriteGuardedExecutionTarget exists to gate, and it is deliberately NOT left unconditionally open
+    // the way Phase 1's adoption is. ReadOnly is this product's promise that Servyx will not record ANY
+    // operator intent for a server, not only that it will not act on one, so a ReadOnly server's fields stay
+    // locked here too. PreviewOnly IS allowed to save: that tier exists precisely for computing/recording
+    // what a change would be without applying it, which is exactly what "desired, not applied" already means
+    // — gating it out would make PreviewOnly strictly less useful than the honesty story this phase tells.
+    // RequiresRecreate settings lock regardless of WriteMode: recording an intent this codebase cannot even
+    // theoretically honor yet (no IPlanExecutor, no container-recreate plan — see Phase 4b) would itself be
+    // the dishonesty this phase exists to avoid, so Enabled does not unlock them either.
+    private bool RowEnabled(SettingDescriptor descriptor) =>
+        WriteMode != WriteMode.ReadOnly && !descriptor.RequiresRecreate && _resolvedServerId is not null;
+
+    private const string RequiresRecreateReason =
+        "Changing this setting requires the server's container to be recreated. Applying any desired value " +
+        "— this one or any other — is not implemented yet (see Phase 4b, docs/plans/ui-management-surface.md). " +
+        "Recording an intent Servyx cannot even theoretically honor yet would be misleading, so this field is " +
+        "locked regardless of write access.";
+
+    private static string RowReason(SettingDescriptor descriptor) =>
+        descriptor.RequiresRecreate ? RequiresRecreateReason : GatedButton.DefaultReason;
+
+    private bool IsBusy(string key) => _busy.TryGetValue(key, out var busy) && busy;
+
+    /// <summary>
+    /// The value to show in a row's editor. Secrets are the one case that never reads from
+    /// <see cref="_desired"/> or <see cref="Servyx.Web.Models.SettingRow.Desired"/> — see
+    /// <see cref="SettingEditor.Value"/>'s remarks for why a persisted secret must never round-trip into a
+    /// rendered input.
+    /// </summary>
+    private string? CurrentEditValue(Servyx.Web.Models.SettingRow row, SettingDescriptor descriptor)
+    {
+        if (_edits.TryGetValue(row.Key, out var edited))
+        {
+            return edited;
+        }
+
+        if (descriptor.IsSecret)
+        {
+            return null;
+        }
+
+        return _desired.TryGetValue(row.Key, out var desired) ? desired.Value : row.Desired;
+    }
+
+    private async Task SaveAsync(Servyx.Web.Models.SettingRow row)
+    {
+        if (_settingsService is null || _resolvedServerId is null || IsBusy(row.Key))
+        {
+            return;
+        }
+
+        _busy[row.Key] = true;
+        _saveStatus.Remove(row.Key);
+
+        try
+        {
+            var editedValue = _edits.TryGetValue(row.Key, out var v) ? v : null;
+            var actor = await ResolveActorAsync();
+            var result = await _settingsService.SaveDesiredValueAsync(_resolvedServerId.Value, row.Key, editedValue, actor);
+
+            if (result.Recorded && result.Value is not null)
+            {
+                _desired[row.Key] = result.Value;
+                _edits.Remove(row.Key);
+                _saveStatus[row.Key] =
+                    $"Recorded as desired by \"{result.Value.UpdatedBy}\" at {result.Value.UpdatedAt:u}. " +
+                    "Not applied to the running server.";
+            }
+            else
+            {
+                _saveStatus[row.Key] =
+                    "Nothing was recorded: Servyx no longer tracks this server. It may have been forgotten " +
+                    "in another session.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _saveStatus[row.Key] = $"Could not record this value: {ex.Message}";
+        }
+        finally
+        {
+            _busy[row.Key] = false;
+        }
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks on why this is one constant value in practice.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
+    }
+
+    /// <summary>
+    /// Built for a row whose key has no matching entry in <see cref="Descriptors"/> — multi-definition mode,
+    /// a bUnit render that supplies none, or no game definition loaded. Degrades to the same plain
+    /// text/password editing the pre-Phase-4a tab always offered (<see cref="Servyx.Web.Models.SettingRow.IsSecret"/>
+    /// is the only signal available), never fails to render the row.
+    /// </summary>
+    private static SettingDescriptor SyntheticDescriptor(Servyx.Web.Models.SettingRow row) => new(
+        Key: row.Key,
+        Label: row.Label,
+        Group: row.Group,
+        Type: row.IsSecret ? SettingType.Secret : SettingType.String,
+        Required: false,
+        Default: null,
+        RenderFormat: null,
+        RequiresRecreate: false,
+        PublishByDefault: null,
+        Constraints: new SettingConstraints(null, null, null, null, null, null, null, null, null),
+        Bindings: []);
 }

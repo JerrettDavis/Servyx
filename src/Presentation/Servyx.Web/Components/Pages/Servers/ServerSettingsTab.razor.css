@@ -1,0 +1,22 @@
+.setting-editor-cell {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.setting-locked-note {
+    font-size: 0.78rem;
+    color: var(--svx-text-muted);
+    margin: 0 0 0.4rem 0;
+}
+
+.setting-secret-hint,
+.setting-save-status {
+    font-size: 0.78rem;
+    color: var(--svx-text-muted);
+    margin: 0.4rem 0 0 0;
+}
+
+.settings-honesty-notice {
+    color: var(--svx-text-muted);
+}

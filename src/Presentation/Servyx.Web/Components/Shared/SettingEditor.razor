@@ -1,0 +1,129 @@
+@* Renders one input control per Servyx.Domain.Definitions.Model.SettingType, honouring the descriptor's
+   Constraints/Required/RenderFormat. Pure editing surface: this component never persists anything itself —
+   the caller (ServerSettingsTab) owns loading and saving via IServerSettingsService — and it never receives
+   or displays a Secret's real stored value; see the Secret case below. *@
+@using System.Globalization
+@using Servyx.Domain.Definitions.Model
+
+<div class="setting-editor" data-testid="setting-editor" data-setting-type="@Descriptor.Type">
+    @switch (Descriptor.Type)
+    {
+        case SettingType.Text:
+            <textarea class="svx-textarea" data-testid="setting-editor-control"
+                      value="@Value" @onchange="e => OnChanged(e.Value?.ToString())"></textarea>
+            break;
+
+        case SettingType.Int:
+        case SettingType.Port:
+            <input type="number" class="svx-input svx-input-sm" data-testid="setting-editor-control"
+                   step="1" min="@MinAttr" max="@MaxAttr"
+                   value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+            break;
+
+        case SettingType.Float:
+            <input type="number" class="svx-input svx-input-sm" data-testid="setting-editor-control"
+                   step="@(StepAttr ?? "any")" min="@MinAttr" max="@MaxAttr"
+                   value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+            break;
+
+        case SettingType.Bool:
+            <label class="setting-editor-bool">
+                <input type="checkbox" class="svx-checkbox" data-testid="setting-editor-control"
+                       checked="@IsTrue" @onchange="e => OnBoolChanged((bool)(e.Value ?? false))" />
+                <span>@(IsTrue ? TrueToken : FalseToken)</span>
+            </label>
+            break;
+
+        case SettingType.Enum:
+            <select class="svx-select" data-testid="setting-editor-control"
+                    value="@Value" @onchange="e => OnChanged(e.Value?.ToString())">
+                @if (!Descriptor.Required)
+                {
+                    <option value="">(not set)</option>
+                }
+                @foreach (var option in Descriptor.Constraints.Values ?? [])
+                {
+                    <option value="@option">@option</option>
+                }
+            </select>
+            break;
+
+        case SettingType.Secret:
+            @* Never pre-filled with a real stored value — see Value's remarks below. Revealing only ever
+               shows what the operator is CURRENTLY typing into this field, never a value fetched from
+               Servyx's database, so toggling it carries no risk of exposing a persisted secret. *@
+            <div class="setting-editor-secret">
+                <input type="@(_revealed ? "text" : "password")" class="svx-input svx-input-sm"
+                       data-testid="setting-editor-control" autocomplete="new-password"
+                       value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+                <button type="button" class="svx-btn svx-btn-sm" data-testid="setting-editor-reveal"
+                        @onclick="() => _revealed = !_revealed">
+                    @(_revealed ? "Hide" : "Reveal")
+                </button>
+            </div>
+            break;
+
+        case SettingType.Path:
+            <input type="text" class="svx-input svx-input-sm" data-testid="setting-editor-control"
+                   placeholder="/path/to/..."
+                   value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+            break;
+
+        case SettingType.Duration:
+            <input type="text" class="svx-input svx-input-sm" data-testid="setting-editor-control"
+                   placeholder="@(Descriptor.RenderFormat ?? "e.g. 45s")"
+                   value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+            break;
+
+        default:
+            @* SettingType.String, and structurally the fallback for any future addition to the enum — never
+               silently unhandled. *@
+            <input type="text" class="svx-input svx-input-sm" data-testid="setting-editor-control"
+                   maxlength="@MaxLengthAttr"
+                   value="@Value" @onchange="e => OnChanged(e.Value?.ToString())" />
+            break;
+    }
+
+    @if (Descriptor.Required)
+    {
+        <span class="setting-editor-required" data-testid="setting-editor-required" title="Required">*</span>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public SettingDescriptor Descriptor { get; set; } = null!;
+
+    /// <summary>
+    /// The value currently shown in the control. For <see cref="SettingType.Secret"/>, the CALLER must never
+    /// pass a value read back from storage here — see <c>ServerSettingsTab.CurrentEditValue</c>, which
+    /// enforces this by always supplying <see langword="null"/> for secret rows unless the operator has
+    /// typed something in this render pass. This component has no way to tell "never fetch a real secret
+    /// into this field" apart from "the caller already didn't"; the guarantee lives one layer up.
+    /// </summary>
+    [Parameter]
+    public string? Value { get; set; }
+
+    [Parameter]
+    public EventCallback<string?> ValueChanged { get; set; }
+
+    private bool _revealed;
+
+    private bool IsTrue => string.Equals(Value, TrueToken, StringComparison.OrdinalIgnoreCase);
+
+    private string TrueToken => Descriptor.Constraints.TrueValue ?? "True";
+
+    private string FalseToken => Descriptor.Constraints.FalseValue ?? "False";
+
+    private string? MinAttr => Descriptor.Constraints.Min?.ToString(CultureInfo.InvariantCulture);
+
+    private string? MaxAttr => Descriptor.Constraints.Max?.ToString(CultureInfo.InvariantCulture);
+
+    private string? StepAttr => Descriptor.Constraints.Step?.ToString(CultureInfo.InvariantCulture);
+
+    private string? MaxLengthAttr => Descriptor.Constraints.MaxLength?.ToString(CultureInfo.InvariantCulture);
+
+    private Task OnChanged(string? value) => ValueChanged.InvokeAsync(string.IsNullOrEmpty(value) ? null : value);
+
+    private Task OnBoolChanged(bool isTrue) => ValueChanged.InvokeAsync(isTrue ? TrueToken : FalseToken);
+}

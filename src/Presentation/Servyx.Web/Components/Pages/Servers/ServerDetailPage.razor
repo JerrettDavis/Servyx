@@ -1,6 +1,7 @@
 @page "/servers/{Id}"
 @implements IDisposable
 @using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus
+@using Servyx.Domain.Definitions.Model
 @using Servyx.Domain.Lifecycle
 @using Servyx.Domain.Rcon
 @using Servyx.Domain.Transport
@@ -98,13 +99,14 @@ else
         @switch (_activeTab)
         {
             case "Overview":
-                <ServerOverviewTab Detail="@_detail" ServerId="@Id" WriteMode="@_writeMode" Lifecycle="@_lifecycle" StopPlan="@_stopPlan" />
+                <ServerOverviewTab Detail="@_detail" ServerId="@Id" WriteMode="@_writeMode" Lifecycle="@_lifecycle"
+                                   StopPlan="@_stopPlan" OnWriteModeChanged="RefreshWriteModeAsync" />
                 break;
             case "Console":
                 <ServerConsoleTab Logs="@_logs" Commands="@_rconChannels.Catalog.Commands" WriteMode="@_writeMode" ResolveSession="@ResolveConsoleSessionAsync" />
                 break;
             case "Settings":
-                <ServerSettingsTab Settings="@_settings" />
+                <ServerSettingsTab Settings="@_settings" Descriptors="@_settingDescriptorsByKey" ServerId="@Id" WriteMode="@_writeMode" />
                 break;
             case "Saves":
                 <ServerSavesTab Result="@_saves" />
@@ -142,6 +144,19 @@ else
     private WriteMode _writeMode = WriteMode.ReadOnly;
     private IServerLifecycle? _lifecycle;
     private StopPlan? _stopPlan;
+
+    /// <summary>
+    /// Full setting-descriptor metadata (type, constraints, <c>RequiresRecreate</c>, …), keyed by
+    /// <see cref="SettingDescriptor.Key"/>, for <see cref="ServerSettingsTab"/>. Sourced from the same
+    /// single-definition-mode <c>IReadOnlyList&lt;SettingGroup&gt;</c> singleton the composition root
+    /// registers (see <c>ServyxCoreCompositionExtensions</c>) — not persisted via <see cref="ApplicationState"/>,
+    /// recomputed on every pass the same way <see cref="_lifecycle"/> and <see cref="_writeMode"/> are, since
+    /// it is cheap to rebuild and carries no live resource. Empty in multi-definition mode or when no game
+    /// definition loaded; <c>ServerSettingsTab</c> degrades a row with no matching descriptor to a synthetic
+    /// one rather than failing to render.
+    /// </summary>
+    private IReadOnlyDictionary<string, SettingDescriptor> _settingDescriptorsByKey =
+        new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal);
 
     /// <summary>
     /// Resolved via <see cref="IServiceProvider"/> rather than <c>@@inject</c>, for the reason BackupsPage
@@ -182,8 +197,11 @@ else
             _backups = await Data.GetServerBackupsAsync(Id);
         }
 
-        var writableServers = Services.GetService(typeof(WritableServers)) as WritableServers ?? WritableServers.None;
-        _writeMode = writableServers.Mode(_detail?.Summary.Id, _detail?.Summary.Name);
+        RefreshWriteMode();
+
+        var settingGroups = Services.GetService(typeof(IReadOnlyList<SettingGroup>)) as IReadOnlyList<SettingGroup>;
+        _settingDescriptorsByKey = settingGroups?.SelectMany(g => g.Items).ToDictionary(s => s.Key, StringComparer.Ordinal)
+            ?? new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal);
 
         var serverLifecycles = Services.GetService(typeof(ServyxServerLifecycles)) as ServyxServerLifecycles;
         _stopPlan = serverLifecycles?.StopPlan;
@@ -192,6 +210,24 @@ else
         _rconChannels = Services.GetService(typeof(ServyxRconChannels)) as ServyxRconChannels ?? ServyxRconChannels.None;
 
         _loading = false;
+    }
+
+    /// <summary>
+    /// Re-reads this server's posture from the live grant view. <see cref="WritableServers"/> is a view over
+    /// the same per-server grants the write guard resolves through, not a startup snapshot, so calling this
+    /// after a flip is what keeps every gated control on the page honest about what would actually happen.
+    /// </summary>
+    private void RefreshWriteMode()
+    {
+        var writableServers = Services.GetService(typeof(WritableServers)) as WritableServers ?? WritableServers.None;
+        _writeMode = writableServers.Mode(_detail?.Summary.Id, _detail?.Summary.Name);
+    }
+
+    /// <summary>Invoked by <see cref="WriteModeControl"/> after a grant is applied.</summary>
+    private Task RefreshWriteModeAsync()
+    {
+        RefreshWriteMode();
+        return Task.CompletedTask;
     }
 
     /// <summary>Resolves this server's write-guarded RCON session for <see cref="ServerConsoleTab"/>, which surfaces a thrown <see cref="RconUnreachableException"/> itself.</summary>

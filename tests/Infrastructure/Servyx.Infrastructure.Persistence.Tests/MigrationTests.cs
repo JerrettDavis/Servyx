@@ -45,5 +45,6 @@ public class MigrationTests
         context.Hosts.Should().BeEmpty();
         context.ProviderAccounts.Should().BeEmpty();
         context.ProvisionedResources.Should().BeEmpty();
+        context.ServerSettingValues.Should().BeEmpty();
     }
 }

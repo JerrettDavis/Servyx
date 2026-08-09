@@ -64,6 +64,12 @@ public sealed class ServyxDbContext : DbContext
     /// </summary>
     public DbSet<ServerDefinitionBindingRecord> ServerDefinitionBindings => Set<ServerDefinitionBindingRecord>();
 
+    /// <summary>
+    /// An operator's recorded DESIRED per-server setting values — intent only, never applied to a running
+    /// server. See <see cref="ServerSettingValue"/>'s own remarks.
+    /// </summary>
+    public DbSet<ServerSettingValue> ServerSettingValues => Set<ServerSettingValue>();
+
     /// <inheritdoc />
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {

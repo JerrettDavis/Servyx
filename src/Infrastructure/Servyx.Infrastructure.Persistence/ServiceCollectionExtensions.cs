@@ -1,10 +1,14 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Provisioning;
+using Servyx.Domain.Servers;
+using Servyx.Infrastructure.Persistence.Configuration;
 using Servyx.Infrastructure.Persistence.Definitions;
 using Servyx.Infrastructure.Persistence.Interceptors;
 using Servyx.Infrastructure.Persistence.Provisioning;
+using Servyx.Infrastructure.Persistence.Servers;
 
 namespace Servyx.Infrastructure.Persistence;
 
@@ -98,6 +102,48 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddSingleton<IServerDefinitionBindingStore, EfServerDefinitionBindingStore>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfServerRepository"/> as the <see cref="IServerRepository"/>, backed by the
+    /// <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling of
+    /// <see cref="AddServyxServerDefinitionBindingStore"/> for the same reason — this is the durable store
+    /// behind Servyx's own adoption/forget bookkeeping, a distinct opt-in decision, not a side effect of
+    /// asking for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching <see cref="AddServyxServerDefinitionBindingStore"/>'s store: its sole
+    /// consumer, <c>ServerAdoptionService</c>, is itself registered singleton. See
+    /// <see cref="EfServerRepository"/>'s own remarks for why that is safe here.
+    /// </remarks>
+    public static IServiceCollection AddServyxServerRepository(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IServerRepository, EfServerRepository>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfServerSettingsService"/> as the <see cref="IServerSettingsService"/>, backed by
+    /// the <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling
+    /// of <see cref="AddServyxServerRepository"/> for the same reason — this is a distinct opt-in decision,
+    /// not a side effect of asking for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching <see cref="AddServyxServerRepository"/>: its consumer is a Blazor
+    /// component resolved via <see cref="IServiceProvider"/>, not a scoped DI injection, so there is no
+    /// scope for a scoped registration to ride on here. See <see cref="EfServerSettingsService"/>'s own
+    /// remarks for why that is safe (a short-lived context per call, never a held scoped dependency).
+    /// </remarks>
+    public static IServiceCollection AddServyxServerSettingsService(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IServerSettingsService, EfServerSettingsService>();
 
         return services;
     }

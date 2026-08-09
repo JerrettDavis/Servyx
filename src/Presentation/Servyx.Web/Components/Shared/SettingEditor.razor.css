@@ -1,0 +1,26 @@
+.setting-editor {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1 1 auto;
+}
+
+.setting-editor-secret {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 1 1 auto;
+}
+
+.setting-editor-bool {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-size: var(--svx-text-base);
+    color: var(--svx-text-primary);
+}
+
+.setting-editor-required {
+    color: var(--svx-danger-fg);
+    font-weight: var(--svx-weight-bold);
+}

@@ -121,9 +121,13 @@ public class LiveDashboardDataServiceSecretMaskingTests : BunitContext
         var cut = Render<ServerSettingsTab>(p => p.Add(x => x.Settings, new[] { row }));
 
         cut.Markup.Should().NotContain(RealSecret);
-        var input = cut.Find("div.settings-row[data-setting-key='ADMIN_PASSWORD'] input");
+        var input = cut.Find("div.settings-row[data-setting-key='ADMIN_PASSWORD'] input[data-testid='setting-editor-control']");
         input.GetAttribute("type").Should().Be("password");
-        input.GetAttribute("value").Should().Be("********");
+
+        // Phase 4a: a secret's Desired field is never pre-filled from a stored value, masked or otherwise —
+        // see ServerSettingsTab.CurrentEditValue's remarks. Even the "********" mask itself is withheld here
+        // because a value already sitting in the field could be read as "this is the current secret".
+        input.GetAttribute("value").Should().BeNullOrEmpty();
     }
 
     [Fact]
