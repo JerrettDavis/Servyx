@@ -21,12 +21,30 @@
             var href = entry.Href;
             var isActive = IsActive(href);
             <li class="svx-nav-item">
-                <NavLink href="@href" Match="@(href == "" ? NavLinkMatch.All : NavLinkMatch.Prefix)"
-                         class="svx-nav-link" ActiveClass="svx-nav-link-active"
-                         aria-current="@(isActive ? "page" : null)" title="@entry.Label">
-                    <Icon Name="@entry.Icon" Size="18" />
-                    <span class="svx-nav-label">@entry.Label</span>
-                </NavLink>
+                @if (entry.Locked)
+                {
+                    @* Visible but locked, never hidden: a native disabled <button> — not an <a>, and with no
+                       @onclick — so neither a pointer click nor keyboard activation can navigate. Mirrors the
+                       lock affordance GatedButton/GatedControl use elsewhere: a lock icon plus a title/aria-label
+                       naming the exact remedy. *@
+                    <button type="button" class="svx-nav-link svx-nav-link-locked"
+                            data-testid="@($"nav-link-locked-{entry.Href}")"
+                            disabled title="@NavCatalog.DeployLockedReason"
+                            aria-label="@($"{entry.Label}. {NavCatalog.DeployLockedReason}")">
+                        <Icon Name="@entry.Icon" Size="18" />
+                        <span class="svx-nav-label">@entry.Label</span>
+                        <span class="svx-nav-lock-icon" aria-hidden="true"><Icon Name="lock" Size="14" /></span>
+                    </button>
+                }
+                else
+                {
+                    <NavLink href="@href" Match="@(href == "" ? NavLinkMatch.All : NavLinkMatch.Prefix)"
+                             class="svx-nav-link" ActiveClass="svx-nav-link-active"
+                             aria-current="@(isActive ? "page" : null)" title="@entry.Label">
+                        <Icon Name="@entry.Icon" Size="18" />
+                        <span class="svx-nav-label">@entry.Label</span>
+                    </NavLink>
+                }
             </li>
         }
     </ul>

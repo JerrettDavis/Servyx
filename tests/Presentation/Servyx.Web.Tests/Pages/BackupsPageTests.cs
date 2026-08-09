@@ -457,8 +457,14 @@ public class BackupsPageTests : BunitContext
 
     // ── Read-only servers ─────────────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// Regression guard for the old, defective behaviour this test used to encode: a read-only server hid
+    /// the create/restore/prune sections entirely, contradicting the product's "visible but locked"
+    /// invariant. Every mutating control must now render — disabled, with a lock icon and a reason naming
+    /// the config key — rather than vanish.
+    /// </summary>
     [Fact]
-    public void A_read_only_server_says_so_instead_of_offering_controls_that_would_throw()
+    public void A_read_only_server_renders_every_control_disabled_rather_than_absent()
     {
         var dashboard = Arrange(writable: false);
 
@@ -469,17 +475,59 @@ public class BackupsPageTests : BunitContext
         cut.Find("[data-testid=write-mode-key]").TextContent
             .Should().Be($"Servyx:Servers:{ServerName}:WriteMode");
 
-        // Nothing that writes is offered — not creating, not restoring, not pruning.
-        cut.FindAll("[data-testid=create-backup]").Should().BeEmpty();
-        cut.FindAll("[data-testid=plan-restore]").Should().BeEmpty();
-        cut.FindAll("[data-testid=preview-prune]").Should().BeEmpty();
+        // Every mutating control is present, disabled, lock-iconed, and names the remedy — never absent.
+        var createBackup = cut.Find("[data-testid=create-backup]");
+        createBackup.HasAttribute("disabled").Should().BeTrue();
+        createBackup.QuerySelector("svg").Should().NotBeNull(because: "a locked control shows the lock icon");
+        createBackup.GetAttribute("title").Should().Contain($"Servyx:Servers:{ServerName}:WriteMode");
+
+        foreach (var restore in cut.FindAll("[data-testid=plan-restore]"))
+        {
+            restore.HasAttribute("disabled").Should().BeTrue();
+        }
+
+        var previewPrune = cut.Find("[data-testid=preview-prune]");
+        previewPrune.HasAttribute("disabled").Should().BeTrue();
+
+        // No dry run has happened, so apply-prune legitimately does not exist yet — same as on a writable
+        // server before Preview is clicked. This is not the section-hiding this test used to guard against.
         cut.FindAll("[data-testid=apply-prune]").Should().BeEmpty();
 
-        // Reading still works: the listing and the inspect control are both present.
+        // The retention inputs sit inside the native <fieldset disabled> GatedControl renders, which
+        // cascades disablement to every nested input per standard HTML semantics rather than each input
+        // carrying its own "disabled" attribute.
+        var retentionFieldset = cut.Find("[data-testid=gated-control]");
+        retentionFieldset.HasAttribute("disabled").Should().BeTrue();
+        retentionFieldset.QuerySelector("[data-testid=keep-hourly]").Should().NotBeNull();
+        retentionFieldset.QuerySelector("[data-testid=keep-daily]").Should().NotBeNull();
+        retentionFieldset.QuerySelector("[data-testid=keep-weekly]").Should().NotBeNull();
+
+        // Reading still works: the listing and the inspect control are both present and unlocked.
         cut.FindAll("[data-testid=backup-row]").Should().HaveCount(2);
         cut.FindAll("[data-testid=inspect-backup]").Should().HaveCount(2);
+        cut.Find("[data-testid=inspect-backup]").HasAttribute("disabled").Should().BeFalse();
 
+        // Clicking a disabled control still reaches nothing, belt-and-braces with the native disabled
+        // attribute: the dashboard is never called.
+        createBackup.Click();
         dashboard.CreateCalls.Should().Be(0);
+    }
+
+    /// <summary>
+    /// A writable server's create/restore/prune controls render enabled, with no lock icon — the flip side
+    /// of the read-only assertion above.
+    /// </summary>
+    [Fact]
+    public void A_writable_server_renders_every_control_enabled()
+    {
+        Arrange(writable: true);
+
+        var cut = Render<BackupsPage>();
+
+        cut.Find("[data-testid=create-backup]").HasAttribute("disabled").Should().BeFalse();
+        cut.FindAll("[data-testid=plan-restore]").Should().AllSatisfy(r => r.HasAttribute("disabled").Should().BeFalse());
+        cut.Find("[data-testid=preview-prune]").HasAttribute("disabled").Should().BeFalse();
+        cut.Find("[data-testid=gated-control]").HasAttribute("disabled").Should().BeFalse();
     }
 
     // ── Inspect ───────────────────────────────────────────────────────────────────────────────────

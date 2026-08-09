@@ -272,13 +272,13 @@ else
                                         Inspect
                                     </button>
 
-                                    @if (_writable)
-                                    {
-                                        <button type="button" class="svx-btn" data-testid="plan-restore"
-                                                @onclick="() => PlanRestoreAsync(artifact)">
-                                            Restore…
-                                        </button>
-                                    }
+                                    @* Restore writes live files, so it is gated — visible but locked, never
+                                       absent — rather than hidden the way this row used to hide it entirely
+                                       for a read-only server. *@
+                                    <GatedButton TestId="plan-restore" Label="Restore" Reason="@WriteReason"
+                                                 Enabled="@_writable" OnClick="() => PlanRestoreAsync(artifact)">
+                                        Restore…
+                                    </GatedButton>
                                 </span>
                             </div>
                         }
@@ -317,60 +317,60 @@ else
                 </div>
             }
 
-            @if (_writable)
-            {
-                <div class="svx-card" data-testid="create-section">
-                    <h3>Create a backup</h3>
+            @* Visible but locked, never hidden: the whole "Create a backup" card renders for every server,
+               read-only or not, and only the two mutating buttons are gated — matching ServerOverviewTab's
+               pattern rather than the section-hiding this page used to do. *@
+            <div class="svx-card" data-testid="create-section">
+                <h3>Create a backup</h3>
 
-                    <p class="svx-page-description">
-                        Archives this server's save tree into
-                        <code>@BackupWiringOptions.DefaultStoreDirectory</code> and writes a sidecar
-                        manifest beside it. <strong>The server may be quiesced first</strong> — where the
-                        deployment declares a flush step, it is issued before a byte is read, and a failed
-                        flush aborts the backup rather than archiving un-flushed state. Where it declares
-                        none, the archive is of whatever is already on disk, which for a running server may
-                        lag its in-memory state.
-                    </p>
+                <p class="svx-page-description">
+                    Archives this server's save tree into
+                    <code>@BackupWiringOptions.DefaultStoreDirectory</code> and writes a sidecar
+                    manifest beside it. <strong>The server may be quiesced first</strong> — where the
+                    deployment declares a flush step, it is issued before a byte is read, and a failed
+                    flush aborts the backup rather than archiving un-flushed state. Where it declares
+                    none, the archive is of whatever is already on disk, which for a running server may
+                    lag its in-memory state.
+                </p>
 
-                    @if (!_createConfirming)
-                    {
-                        <button type="button" class="svx-btn svx-btn-primary" data-testid="create-backup"
+                @if (!_createConfirming)
+                {
+                    <GatedButton TestId="create-backup" CssClass="svx-btn-primary" Label="Create a backup"
+                                 Reason="@WriteReason" Enabled="@(_writable && !_busy)"
+                                 OnClick="() => _createConfirming = true">
+                        Create a backup…
+                    </GatedButton>
+                }
+                else
+                {
+                    <div class="svx-deploy-confirm" data-testid="create-confirm-step">
+                        <p>
+                            Nothing has been written yet. Confirming archives
+                            <strong>@_selectedServerName</strong> now, and may pause the running server
+                            while its state is flushed to disk.
+                        </p>
+                        <GatedButton TestId="create-backup-confirm" CssClass="svx-btn-primary"
+                                     Label="Confirm create backup" Reason="@WriteReason"
+                                     Enabled="@(_writable && !_busy)" OnClick="CreateAsync">
+                            @(_busy ? "Working…" : "Yes, create the backup")
+                        </GatedButton>
+                        <button type="button" class="svx-btn" data-testid="create-backup-cancel"
                                 disabled="@_busy"
-                                @onclick="() => _createConfirming = true">
-                            Create a backup…
+                                @onclick="() => _createConfirming = false">
+                            Cancel
                         </button>
-                    }
-                    else
-                    {
-                        <div class="svx-deploy-confirm" data-testid="create-confirm-step">
-                            <p>
-                                Nothing has been written yet. Confirming archives
-                                <strong>@_selectedServerName</strong> now, and may pause the running server
-                                while its state is flushed to disk.
-                            </p>
-                            <button type="button" class="svx-btn svx-btn-primary" data-testid="create-backup-confirm"
-                                    disabled="@_busy"
-                                    @onclick="CreateAsync">
-                                @(_busy ? "Working…" : "Yes, create the backup")
-                            </button>
-                            <button type="button" class="svx-btn" data-testid="create-backup-cancel"
-                                    disabled="@_busy"
-                                    @onclick="() => _createConfirming = false">
-                                Cancel
-                            </button>
-                        </div>
-                    }
+                    </div>
+                }
 
-                    @if (_createResult is BackupCreateResult.Created created)
-                    {
-                        <p class="svx-deploy-applied" data-testid="create-success">@created.Message</p>
-                    }
-                    else if (_createResult is BackupCreateResult.Failed createFailed)
-                    {
-                        <p class="svx-deploy-error" data-testid="create-error">@createFailed.Message</p>
-                    }
-                </div>
-            }
+                @if (_createResult is BackupCreateResult.Created created)
+                {
+                    <p class="svx-deploy-applied" data-testid="create-success">@created.Message</p>
+                }
+                else if (_createResult is BackupCreateResult.Failed createFailed)
+                {
+                    <p class="svx-deploy-error" data-testid="create-error">@createFailed.Message</p>
+                }
+            </div>
 
             @if (_restorePlan is not null || _restoreResult is not null)
             {
@@ -467,74 +467,75 @@ else
                 </div>
             }
 
-            @if (_writable)
-            {
-                <div class="svx-card" data-testid="prune-section">
-                    <h3>Retention</h3>
+            @* Visible but locked, never hidden: this card, its inputs, and both its buttons all render for a
+               read-only server. The retention numbers are wrapped in GatedControl (a native
+               <fieldset disabled>, cascading to the three inputs); Preview and Apply are each a GatedButton. *@
+            <div class="svx-card" data-testid="prune-section">
+                <h3>Retention</h3>
 
-                    <p class="svx-page-description" data-testid="prune-foreign-note">
-                        Retention selects from this server's <strong>Servyx-owned</strong> archives only.
-                        <strong>Foreign artifacts are never pruned</strong> — not deleted, not moved, not
-                        renamed, and not counted against these numbers, however retention is configured.
-                    </p>
+                <p class="svx-page-description" data-testid="prune-foreign-note">
+                    Retention selects from this server's <strong>Servyx-owned</strong> archives only.
+                    <strong>Foreign artifacts are never pruned</strong> — not deleted, not moved, not
+                    renamed, and not counted against these numbers, however retention is configured.
+                </p>
 
+                <GatedControl Reason="@WriteReason" Label="Retention policy" Enabled="@_writable">
                     <label>Keep hourly <input type="number" min="0" class="svx-input" @bind="_keepHourly" data-testid="keep-hourly" /></label>
                     <label>Keep daily <input type="number" min="0" class="svx-input" @bind="_keepDaily" data-testid="keep-daily" /></label>
                     <label>Keep weekly <input type="number" min="0" class="svx-input" @bind="_keepWeekly" data-testid="keep-weekly" /></label>
+                </GatedControl>
 
-                    <button type="button" class="svx-btn" data-testid="preview-prune"
-                            disabled="@_busy"
-                            @onclick="PreviewPruneAsync">
-                        Preview what retention would remove
-                    </button>
+                <GatedButton TestId="preview-prune" Label="Preview retention" Reason="@WriteReason"
+                             Enabled="@(_writable && !_busy)" OnClick="PreviewPruneAsync">
+                    Preview what retention would remove
+                </GatedButton>
 
-                    @if (_pruneResult is BackupPruneResult.Previewed previewed)
-                    {
-                        <div class="svx-deploy-confirm" data-testid="prune-preview">
-                            <p data-testid="prune-preview-summary">
-                                <strong>Dry run — nothing has been deleted.</strong> @previewed.Message
+                @if (_pruneResult is BackupPruneResult.Previewed previewed)
+                {
+                    <div class="svx-deploy-confirm" data-testid="prune-preview">
+                        <p data-testid="prune-preview-summary">
+                            <strong>Dry run — nothing has been deleted.</strong> @previewed.Message
+                        </p>
+
+                        @if (previewed.Candidates.Count == 0)
+                        {
+                            <p data-testid="prune-no-candidates">
+                                This retention policy would remove nothing. There is nothing to apply.
                             </p>
+                        }
+                        else
+                        {
+                            <ul class="svx-deploy-stages" data-testid="prune-candidates">
+                                @foreach (var candidate in previewed.Candidates)
+                                {
+                                    <li data-testid="prune-candidate"><code>@candidate</code></li>
+                                }
+                            </ul>
 
-                            @if (previewed.Candidates.Count == 0)
-                            {
-                                <p data-testid="prune-no-candidates">
-                                    This retention policy would remove nothing. There is nothing to apply.
-                                </p>
-                            }
-                            else
-                            {
-                                <ul class="svx-deploy-stages" data-testid="prune-candidates">
-                                    @foreach (var candidate in previewed.Candidates)
-                                    {
-                                        <li data-testid="prune-candidate"><code>@candidate</code></li>
-                                    }
-                                </ul>
-
-                                @* Only reachable after a dry run: this control does not exist until
-                                   _pruneResult is a Previewed, so "apply retention" is never the first
-                                   click on this page. *@
-                                <button type="button" class="svx-btn svx-btn-danger" data-testid="apply-prune"
-                                        disabled="@_busy"
-                                        @onclick="ApplyPruneAsync">
-                                    @(_busy ? "Working…" : $"Delete these {previewed.Candidates.Count} archive(s)")
-                                </button>
-                            }
-                        </div>
-                    }
-                    else if (_pruneResult is BackupPruneResult.Pruned pruned)
-                    {
-                        <p class="svx-deploy-applied" data-testid="prune-applied">@pruned.Message</p>
-                    }
-                    else if (_pruneResult is BackupPruneResult.RefusedForeign refused)
-                    {
-                        <p class="svx-deploy-error" data-testid="prune-refused">@refused.Message</p>
-                    }
-                    else if (_pruneResult is BackupPruneResult.Failed pruneFailed)
-                    {
-                        <p class="svx-deploy-error" data-testid="prune-error">@pruneFailed.Message</p>
-                    }
-                </div>
-            }
+                            @* Only reachable after a dry run: this control does not exist until
+                               _pruneResult is a Previewed, so "apply retention" is never the first
+                               click on this page. *@
+                            <GatedButton TestId="apply-prune" CssClass="svx-btn-danger" Label="Apply retention"
+                                         Reason="@WriteReason" Enabled="@(_writable && !_busy)"
+                                         OnClick="ApplyPruneAsync">
+                                @(_busy ? "Working…" : $"Delete these {previewed.Candidates.Count} archive(s)")
+                            </GatedButton>
+                        }
+                    </div>
+                }
+                else if (_pruneResult is BackupPruneResult.Pruned pruned)
+                {
+                    <p class="svx-deploy-applied" data-testid="prune-applied">@pruned.Message</p>
+                }
+                else if (_pruneResult is BackupPruneResult.RefusedForeign refused)
+                {
+                    <p class="svx-deploy-error" data-testid="prune-refused">@refused.Message</p>
+                }
+                else if (_pruneResult is BackupPruneResult.Failed pruneFailed)
+                {
+                    <p class="svx-deploy-error" data-testid="prune-error">@pruneFailed.Message</p>
+                }
+            </div>
         }
     }
 }
@@ -784,6 +785,15 @@ else
     /// <summary>The exact configuration key an operator has to set to make the selected server writable.</summary>
     private string WriteModeConfigKey =>
         $"{ServerWriteModes.SectionKey}:{_selectedServerName}:{ServerWriteModes.WriteModeKey}";
+
+    /// <summary>
+    /// The reason shown on every gated create/restore/prune control on this page. Names the exact
+    /// configuration key an operator sets to unlock <see cref="_selectedServerName"/>, matching the
+    /// explanation already given in the "server-read-only" notice above the picker.
+    /// </summary>
+    private string WriteReason =>
+        $"No write grant exists for {_selectedServerName}, so Servyx cannot write an archive, overwrite a " +
+        $"save, or delete anything for it. Grant writes by setting {WriteModeConfigKey} to Enabled.";
 
     private static string FormatSize(long bytes)
     {

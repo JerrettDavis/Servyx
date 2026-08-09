@@ -64,6 +64,27 @@
     box-shadow: inset 2px 0 0 var(--svx-accent);
 }
 
+.svx-nav-item ::deep .svx-nav-link-locked {
+    width: 100%;
+    border: none;
+    background: none;
+    font: inherit;
+    text-align: left;
+    color: var(--svx-text-muted);
+    cursor: not-allowed;
+}
+
+.svx-nav-item ::deep .svx-nav-link-locked:hover {
+    background: none;
+    color: var(--svx-text-muted);
+}
+
+.svx-nav-item ::deep .svx-nav-lock-icon {
+    display: inline-flex;
+    margin-left: auto;
+    color: var(--svx-text-subtle);
+}
+
 @media (max-width: 980px) {
     .svx-brand-word,
     .svx-nav-label {
