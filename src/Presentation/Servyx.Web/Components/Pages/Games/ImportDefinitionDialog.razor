@@ -47,12 +47,30 @@
 
         @if (_result is not null)
         {
-            var isSuccess = _result.Outcome is DefinitionImportOutcome.Imported or DefinitionImportOutcome.ImportedButShadowed;
+            @* Only Imported is a success. ImportedButShadowed means the file was written and the catalog
+               refreshed, but a different provider still resolves that id — the import has no practical
+               effect at all, so it gets its own degraded branch and role="alert" rather than being
+               announced as an ordinary status. Presenting a zero-effect write with success styling would
+               leave an operator believing the definition is live when nothing about the catalog changed. *@
+            var isSuccess = _result.Outcome is DefinitionImportOutcome.Imported;
+            var isShadowed = _result.Outcome is DefinitionImportOutcome.ImportedButShadowed;
 
             <div class="import-result" data-testid="import-result" data-outcome="@_result.Outcome" role="@(isSuccess ? "status" : "alert")">
-                <p class="@(isSuccess ? "import-success" : "import-error")" data-testid="@(isSuccess ? "import-success" : "import-error")">
-                    @_result.Message
-                </p>
+                @if (isShadowed)
+                {
+                    <p class="import-shadowed" data-testid="import-shadowed">
+                        <strong>'@_result.DefinitionId' was saved, but it is not in effect.</strong>
+                        Another definition with the same id takes precedence, so this import changes nothing
+                        until that conflict is resolved.
+                    </p>
+                    <p class="import-shadowed-detail" data-testid="import-shadowed-detail">@_result.Message</p>
+                }
+                else
+                {
+                    <p class="@(isSuccess ? "import-success" : "import-error")" data-testid="@(isSuccess ? "import-success" : "import-error")">
+                        @_result.Message
+                    </p>
+                }
 
                 @if (_result.Report is { Issues.Count: > 0 } report)
                 {

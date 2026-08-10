@@ -134,6 +134,37 @@ public class ImportDefinitionDialogTests : BunitContext
     }
 
     [Fact]
+    public void A_shadowed_import_is_not_presented_as_a_success()
+    {
+        var fake = RegisterFake();
+        fake.ResultFactory = (_, _, _) => new DefinitionImportResult(
+            DefinitionImportOutcome.ImportedButShadowed,
+            null,
+            "shadowed-game",
+            "shadowed-game.yaml",
+            "'shadowed-game' was written to 'shadowed-game.yaml' and the catalog was refreshed, but a "
+            + "different source currently wins for this id ('bundled/shadowed-game.yaml') — this import "
+            + "has no effect until that is resolved.");
+
+        var cut = Render<ImportDefinitionDialog>();
+        cut.Find("[data-testid=import-textarea]").Change("id: shadowed-game");
+        cut.Find("[data-testid=import-button]").Click();
+
+        // The write landed, so it is not an error — but it changed nothing an operator can observe, so it
+        // must not borrow the success treatment either.
+        cut.FindAll("[data-testid=import-success]").Should().BeEmpty();
+        cut.FindAll("[data-testid=import-error]").Should().BeEmpty();
+
+        var shadowed = cut.Find("[data-testid=import-shadowed]");
+        shadowed.ClassList.Should().NotContain("import-success");
+        shadowed.TextContent.Should().Contain("shadowed-game").And.Contain("takes precedence");
+
+        // Announced as needing attention rather than as an ordinary status update.
+        cut.Find("[data-testid=import-result]").GetAttribute("role").Should().Be("alert");
+        cut.Find("[data-testid=import-shadowed-detail]").TextContent.Should().Contain("no effect");
+    }
+
+    [Fact]
     public void The_overwrite_action_is_not_offered_for_a_plain_validation_failure()
     {
         var fake = RegisterFake();

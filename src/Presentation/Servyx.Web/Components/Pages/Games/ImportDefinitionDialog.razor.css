@@ -50,6 +50,25 @@
     margin: 0 0 0.5rem 0;
 }
 
+/* A write that landed but is shadowed by another provider. Deliberately not .import-success: the same
+   dashed-border degraded language .svx-empty-state-degraded uses for "this is not what it looks like",
+   in warning rather than danger because nothing failed — the write simply has no effect. */
+.import-shadowed {
+    color: var(--svx-warning-fg);
+    background: var(--svx-warning-bg);
+    border: 1px dashed var(--svx-warning-border);
+    border-radius: var(--svx-radius-md);
+    padding: 0.5rem 0.6rem;
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem 0;
+}
+
+.import-shadowed-detail {
+    color: var(--svx-text-muted);
+    font-size: 0.8rem;
+    margin: 0 0 0.5rem 0;
+}
+
 .import-issue-list {
     list-style: none;
     margin: 0;
