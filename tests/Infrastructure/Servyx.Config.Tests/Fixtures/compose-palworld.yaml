@@ -1,0 +1,29 @@
+# Palworld dedicated server, thijsvanloef/palworld-server-docker.
+# Servyx manages only the services.palworld subtree; the rest is the operator's.
+services:
+  palworld:
+    image: thijsvanloef/palworld-server-docker:latest
+    restart: unless-stopped
+    container_name: palworld-server
+    stop_grace_period: 30s
+    ports:
+      - 8211:8211/udp          # game traffic, deliberately unquoted
+      - "27015:27015/udp"      # a2s query, deliberately double-quoted
+      - '8212:8212/tcp'        # REST API, deliberately single-quoted
+    env_file:
+      - .env
+    environment:
+      PUID: 1000
+      PGID: 1000
+      PORT: 8211
+      PLAYERS: 16
+      MULTITHREADING: true
+    volumes:
+      - ./data:/palworld/
+    healthcheck:
+      test: ["CMD", "healthcheck.sh"]
+      interval: 30s
+      retries: 5
+
+volumes:
+  palworld-data: {}

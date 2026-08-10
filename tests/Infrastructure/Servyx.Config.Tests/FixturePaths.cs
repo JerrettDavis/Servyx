@@ -28,4 +28,24 @@ internal static class FixturePaths
         yield return ["ini-multi-section.ini"];
         yield return ["real-palworld.ini"];
     }
+
+    /// <summary>
+    /// Every <c>.yaml</c> fixture file name, for parameterized round-trip tests. The four <c>compose-*</c>
+    /// entries stand in for the Docker Compose files every shipped definition's <c>compose</c> surface points
+    /// at — those live on a deployed server, never in this repository, so they are authored here from the
+    /// upstream images' documented shapes rather than copied.
+    /// </summary>
+    public static IEnumerable<object[]> YamlFixtures()
+    {
+        yield return ["compose-palworld.yaml"];
+        yield return ["compose-minecraft.yaml"];
+        yield return ["compose-factorio.yaml"];
+        yield return ["compose-ark-asa.yaml"];
+        yield return ["yaml-comments-and-blanks.yaml"];
+        yield return ["yaml-quotes-and-styles.yaml"];
+        yield return ["yaml-block-scalars.yaml"];
+        yield return ["yaml-anchors-and-aliases.yaml"];
+        yield return ["yaml-crlf-no-trailing-newline.yaml"];
+        yield return ["yaml-utf8-bom.yaml"];
+    }
 }

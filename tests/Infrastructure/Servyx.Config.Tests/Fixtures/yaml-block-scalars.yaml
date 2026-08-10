@@ -1,0 +1,25 @@
+literal: |
+  first line
+  second line
+      a deeply indented body line that must not count as structural nesting
+        even deeper
+          deeper still
+            and deeper again
+literal_strip: |-
+  no trailing newline
+literal_keep: |+
+  keep the trailing newlines
+
+folded: >
+  folded line one
+  folded line two
+folded_strip: >-
+  folded and stripped
+explicit_indent: |2
+   an explicit two-space indentation indicator
+after: plain value
+sequence_of_blocks:
+  - |
+    a block scalar inside a sequence
+  - plain element
+trailing: done

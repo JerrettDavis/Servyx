@@ -326,8 +326,30 @@ public class JsonConfigAdapterTests
             .Should().Be("\uFEFF{\"max_players\": 64}");
     }
 
+    /// <summary>
+    /// Every format this project ships an <see cref="IConfigAdapter"/> for. <c>yaml</c> is no longer a
+    /// pending case: <see cref="YamlConfigAdapter"/> is registered by
+    /// <see cref="ServiceCollectionExtensions.AddServyxConfig"/>, so it is asserted as present below rather
+    /// than merely tolerated.
+    /// </summary>
+    private static readonly string[] KnownFormatIds = ["dotenv", "ini", "properties", "json", "yaml"];
+
+    /// <summary>
+    /// Pins registration without pinning it to a moment in time. An exact-set assertion would have to be
+    /// edited in lockstep with every adapter that gets wired up, which means it is either failing or lying
+    /// during the window between an adapter being written and being registered. Asserting "every known
+    /// format is present, every id is unique, and nothing outside the known set is registered" still catches
+    /// what the exact-set version caught — a dropped registration, a typo'd format id — plus a duplicate id,
+    /// which it did not.
+    /// </summary>
+    /// <remarks>
+    /// <c>yaml</c> moved from <see cref="KnownFormatIds"/>-only into the presence assertion when
+    /// <see cref="YamlConfigAdapter"/> was wired up. Leaving it merely tolerated would have meant a dropped
+    /// yaml registration passing this test silently — the window the looser form existed to cover has
+    /// closed, and keeping the looser form open past that point is how a gap becomes permanent.
+    /// </remarks>
     [Fact]
-    public void AddServyxConfig_RegistersTheJsonAdapter_AlongsideTheOtherThree()
+    public void AddServyxConfig_RegistersAnAdapterForEveryBuiltInFormat_WithDistinctFormatIds()
     {
         var services = new ServiceCollection();
 
@@ -335,7 +357,11 @@ public class JsonConfigAdapterTests
 
         var formatIds = services
             .Where(d => d.ServiceType == typeof(IConfigAdapter))
-            .Select(d => ((IConfigAdapter)Activator.CreateInstance(d.ImplementationType!)!).FormatId);
-        formatIds.Should().BeEquivalentTo(["dotenv", "ini", "properties", "json"]);
+            .Select(d => ((IConfigAdapter)Activator.CreateInstance(d.ImplementationType!)!).FormatId)
+            .ToList();
+
+        formatIds.Should().OnlyHaveUniqueItems();
+        formatIds.Should().Contain(KnownFormatIds);
+        formatIds.Should().BeSubsetOf(KnownFormatIds);
     }
 }

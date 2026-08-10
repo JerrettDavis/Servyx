@@ -1,0 +1,17 @@
+services:
+  ark-asa:
+    image: acekorneya/asa_server:latest
+    container_name: asa_server
+    restart: unless-stopped
+    ports:
+      - "7777:7777/udp"
+      - "27020:27020/tcp"
+    environment:
+      - PUID=7777
+      - PGID=7777
+      - ASA_PORT=7777
+      - RCON_PORT=27020
+      - SERVER_PASSWORD=
+    volumes:
+      - ./ARK:/home/pok/arkserver
+    mem_limit: 16G

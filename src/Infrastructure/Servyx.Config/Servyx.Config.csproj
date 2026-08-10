@@ -8,6 +8,14 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
+
+    <!-- YamlConfigAdapter's reader. Servyx.Definitions declares itself "the only project under src/Core
+         allowed to depend on YamlDotNet" so that Servyx.Domain stays parser-free; this project sits under
+         src/Infrastructure, where owning a format's parser is the whole point — it is already where the
+         hand-written dotenv/ini/properties/json readers live. YamlDotNet is used here strictly as a
+         position-reporting reader: its emitter is never invoked, because re-serializing would discard the
+         comments and formatting the round-trip contract exists to preserve. -->
+    <PackageReference Include="YamlDotNet" />
   </ItemGroup>
 
   <ItemGroup>

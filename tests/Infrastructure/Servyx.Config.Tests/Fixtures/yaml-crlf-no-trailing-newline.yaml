@@ -1,0 +1,8 @@
+services:
+  crlf-service:
+    image: alpine:3
+    restart: unless-stopped
+    ports:
+      - "9000:9000/tcp"
+      - 9001:9001/udp
+    mem_limit: 512M

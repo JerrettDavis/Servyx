@@ -1,0 +1,6 @@
+﻿services:
+  bom-service:
+    image: alpine:3
+    max_players: 32
+    ports:
+      - "7777:7777/udp"

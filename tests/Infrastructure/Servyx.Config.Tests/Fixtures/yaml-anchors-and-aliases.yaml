@@ -1,0 +1,17 @@
+defaults: &defaults
+  restart: unless-stopped
+  user: "1000:1000"
+
+scalar_anchor: &port "8211"
+plain_anchor: &players 16
+
+services:
+  first:
+    <<: *defaults
+    image: alpine:3
+    port: *port
+    players: *players
+  second:
+    <<: *defaults
+    image: busybox:1
+    port: *port

@@ -1,0 +1,20 @@
+---
+# Factorio, factoriotools/factorio-docker.
+
+services:
+
+  factorio:
+    image: factoriotools/factorio:stable
+
+    # Ports declared in flow style, one entry per protocol.
+    ports: ["34197:34197/udp", "27015:27015/tcp"]
+
+    restart: unless-stopped
+    environment: { LOAD_LATEST_SAVE: "true", GENERATE_NEW_SAVE: "false" }
+    volumes:
+      - ./data:/factorio
+    deploy:
+      resources:
+        limits: { cpus: "2.0", memory: 2G }
+
+# A trailing comment, after the last mapping entry.

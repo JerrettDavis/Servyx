@@ -33,6 +33,40 @@ public class RoundTripTests
         rendered.Should().Be(original, because: $"'{fixtureName}' must round-trip byte-for-byte");
     }
 
+    /// <summary>
+    /// The same property for YAML, run over both line-ending conventions: every fixture is checked as
+    /// written on disk and again with its terminators rewritten, so a fixture's own checked-in style cannot
+    /// be the only thing the adapter is ever exercised against.
+    /// </summary>
+    [Theory]
+    [MemberData(nameof(FixturePaths.YamlFixtures), MemberType = typeof(FixturePaths))]
+    public void Yaml_RoundTrips_ByteForByte(string fixtureName)
+    {
+        var original = FixturePaths.Read(fixtureName);
+        var adapter = new YamlConfigAdapter();
+
+        var document = adapter.Parse(original);
+        var rendered = adapter.Render(document);
+
+        rendered.Should().Be(original, because: $"'{fixtureName}' must round-trip byte-for-byte");
+    }
+
+    [Theory]
+    [MemberData(nameof(FixturePaths.YamlFixtures), MemberType = typeof(FixturePaths))]
+    public void Yaml_RoundTrips_ByteForByte_UnderBothLineEndingConventions(string fixtureName)
+    {
+        var adapter = new YamlConfigAdapter();
+
+        foreach (var lineEnding in new[] { "\n", "\r\n" })
+        {
+            var original = FixturePaths.Read(fixtureName).ReplaceLineEndings(lineEnding);
+
+            adapter.Render(adapter.Parse(original)).Should().Be(
+                original,
+                because: $"'{fixtureName}' must round-trip byte-for-byte with {(lineEnding == "\n" ? "LF" : "CRLF")} terminators");
+        }
+    }
+
     [Fact]
     public void DotEnv_PreservesCrlfLineEndings()
     {

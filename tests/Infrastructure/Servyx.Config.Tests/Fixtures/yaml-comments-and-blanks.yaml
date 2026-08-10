@@ -1,0 +1,13 @@
+# Leading comment, before anything else in the file.
+
+# A second comment, after a blank line.
+alpha: one          # inline comment, must survive a write to alpha
+beta: two
+
+# A comment sitting between two entries.
+gamma:
+  # A comment inside a nested mapping.
+  delta: four
+  epsilon: five     # trailing inline comment
+
+# A final comment, followed by a trailing newline.

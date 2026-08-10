@@ -1,0 +1,27 @@
+plain: unquoted value
+single: 'single quoted'
+double: "double quoted"
+single_with_escape: 'it''s quoted'
+double_with_escape: "line1\nline2 é"
+empty_plain:
+empty_double: ""
+empty_single: ''
+null_literal: null
+tilde_null: ~
+number: 42
+float: 1.500000
+boolean: true
+colon_in_plain: 8211:8211/udp
+hash_in_quotes: "value # not a comment"
+multi_line_plain: this value folds
+  onto a second line
+nested:
+  'quoted key': quoted key value
+  "another one": 7
+  "a/b": slash in the key
+  "c~d": tilde in the key
+sequence:
+  - plain element
+  - "quoted element"
+  - 'single element'
+last: end
