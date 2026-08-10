@@ -13,6 +13,7 @@ using Servyx.Definitions;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Definitions.Model;
+using Servyx.Domain.Discovery;
 using Servyx.Domain.Lifecycle;
 using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Infrastructure.Process;
@@ -394,10 +395,13 @@ public static class ServyxCoreCompositionExtensions
                     new ComposeWriteModeResolver(sp.GetRequiredService<IWriteModeResolver>()));
 
             return new ServyxSurfaceResolutionContextSource(
-                // Deferred, not injected. IServerQueryService optionally consumes
-                // ISettingStateResolverFactory, which consumes this type — resolving it here would close
-                // that loop during container construction. See the constructor parameter's own remarks.
-                sp.GetRequiredService<IServerQueryService>,
+                // IServerDiscovery, NOT IServerQueryService. The query service optionally consumes
+                // ISettingStateResolverFactory, which consumes this type, and all three are singletons —
+                // so reaching back into it deadlocks the settings read against itself. Discovery is the
+                // layer underneath both and answers the only question this type asks. See the type's own
+                // remarks, and AddServyxCoreSettingStateReentrancyTests for the regression that proved it.
+                sp.GetRequiredService<IServerDiscovery>(),
+                adoptionCriteria,
                 sp.GetRequiredService<ITransport>(),
                 singleDefinition,
                 containerDataRoot,

@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using Servyx.Application.Servers;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions.Model;
+using Servyx.Domain.Discovery;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker;
 using Servyx.Infrastructure.Process;
@@ -50,6 +51,20 @@ namespace Servyx.Composition;
 /// <see cref="Servyx.Infrastructure.Docker.Backups.IDockerBackupContextSource"/> already states.
 /// </para>
 /// <para>
+/// <strong>It asks discovery, never <see cref="IServerQueryService"/> — and that is a correctness
+/// requirement, not a layering preference.</strong> <c>ServerQueryService</c> optionally consumes
+/// <see cref="ISettingStateResolverFactory"/>, which consumes this type; all three are singletons, so
+/// asking the query service for a server's details would be asking the very instance already executing.
+/// <c>GetServerDetailAsync</c> enriches its settings rows, enrichment builds this session set, and the
+/// memoizing <see cref="Lazy{T}"/> publishes its task at the first await — so the re-entrant call does not
+/// recurse and blow the stack, it receives the pending task the outer frame is already awaiting and the two
+/// wait on each other forever. Silent, permanent, and invisible to every catch block, because a deadlocked
+/// task never throws. Deferring the lookup behind a <c>Func</c> does not help: the cycle is at call time,
+/// not construction time. The dependency is therefore removed rather than guarded — the only fact needed
+/// here is which container id and name a server id names, which <see cref="IServerDiscovery"/> answers
+/// directly and which nothing in the settings pipeline sits above.
+/// </para>
+/// <para>
 /// <strong>Read-only by construction of its consumers, not by privilege.</strong> Both sessions are opened
 /// over write-guarded transports exactly as every other session in this process is, so a server without
 /// <c>Servyx:Servers:&lt;name&gt;:WriteMode = Enabled</c> is refused a write here as everywhere else. The
@@ -65,7 +80,8 @@ public sealed class ServyxSurfaceResolutionContextSource
     /// <summary>Description used for the session rooted at the operator-configured host compose directory.</summary>
     internal const string ComposeSessionDescription = "the host compose directory";
 
-    private readonly Func<IServerQueryService> _query;
+    private readonly IServerDiscovery _discovery;
+    private readonly AdoptionCriteria? _criteria;
     private readonly ITransport _transport;
     private readonly GameDefinition? _definition;
     private readonly string? _containerDataRoot;
@@ -79,15 +95,16 @@ public sealed class ServyxSurfaceResolutionContextSource
         new(ReferenceComparer.Instance);
 
     /// <summary>Creates the context source.</summary>
-    /// <param name="query">
-    /// Resolves a server id to the adopted container, its id, and its mount path — supplied as a factory,
-    /// not an instance, and deliberately so. <c>ServerQueryService</c> optionally consumes
-    /// <see cref="ISettingStateResolverFactory"/>, which consumes an
-    /// <see cref="IServerConfigSessionSource"/>, which is this type: taking an
-    /// <see cref="IServerQueryService"/> directly closes that loop, and a container asked to resolve either
-    /// end of it re-enters its own in-flight construction. Deferring the lookup to first use — which happens
-    /// on a page load, long after the container is built — breaks the cycle without either side having to
-    /// know the other exists.
+    /// <param name="discovery">
+    /// Lists candidate containers, and is deliberately the LOWEST layer that can answer this type's only
+    /// question — which container id and name a server id names.
+    /// </param>
+    /// <param name="criteria">
+    /// The single loaded definition's adoption criteria, or null when none is derivable — in which case no
+    /// server is discoverable here and every surface degrades to unreadable-with-a-reason. Also supplies the
+    /// last-resort <c>${DATA_DIR}</c> fallback: <see cref="AdoptionCriteria.RequiredMountContainerPath"/> is
+    /// exactly what <c>ServerDetail.MountContainerPath</c> reports for an adopted container, so nothing is
+    /// lost by reading it from here.
     /// </param>
     /// <param name="transport">The (write-guarded) transport the data session is opened through.</param>
     /// <param name="definition">
@@ -112,17 +129,19 @@ public sealed class ServyxSurfaceResolutionContextSource
     /// other transport in this process.
     /// </param>
     public ServyxSurfaceResolutionContextSource(
-        Func<IServerQueryService> query,
+        IServerDiscovery discovery,
+        AdoptionCriteria? criteria,
         ITransport transport,
         GameDefinition? definition = null,
         string? containerDataRoot = null,
         string? composeDirectory = null,
         ITransport? composeTransport = null)
     {
-        ArgumentNullException.ThrowIfNull(query);
+        ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(transport);
 
-        _query = query;
+        _discovery = discovery;
+        _criteria = criteria;
         _transport = transport;
         _definition = definition;
         _containerDataRoot = string.IsNullOrWhiteSpace(containerDataRoot) ? null : containerDataRoot;
@@ -162,30 +181,30 @@ public sealed class ServyxSurfaceResolutionContextSource
 
     private async Task<ServerConfigSessions?> BuildAsync(string serverId, CancellationToken ct)
     {
-        var detail = await _query().GetServerDetailAsync(serverId, ct).ConfigureAwait(false);
-        if (detail is null)
-        {
-            return null;
-        }
-
         // Docker is the only deployment kind Servyx discovers today, so it is the only profile whose
         // surfaces can be bound to a discovered server. A process profile's surfaces are declared against a
         // deployment this host has no session for, and silently reading them over the Docker transport would
         // be the wrong-filesystem failure again.
         var profile = _definition?.Deployments.FirstOrDefault(d => d.Kind == DeploymentKind.Docker);
-        if (profile is null || profile.Surfaces.Count == 0)
+        if (profile is null || profile.Surfaces.Count == 0 || _criteria is null)
+        {
+            return null;
+        }
+
+        var container = await DiscoverAsync(serverId, ct).ConfigureAwait(false);
+        if (container is null)
         {
             return null;
         }
 
         var sessions = new List<ConfigSession>(2);
 
-        var dataRoot = Normalize(_containerDataRoot ?? profile.DataDir ?? detail.MountContainerPath);
+        var dataRoot = Normalize(_containerDataRoot ?? profile.DataDir ?? _criteria.RequiredMountContainerPath);
         if (dataRoot is not null)
         {
             var target = await ConnectAsync(
                 _transport,
-                BuildDockerDescriptor(detail.Summary.Name, detail.Summary.Id, dataRoot),
+                BuildDockerDescriptor(container.Name, container.ServerId, dataRoot),
                 ct).ConfigureAwait(false);
 
             if (target is not null)
@@ -209,7 +228,7 @@ public sealed class ServyxSurfaceResolutionContextSource
         {
             var target = await ConnectAsync(
                 _composeTransport,
-                BuildComposeDescriptor(composeDirectory, detail.Summary.Name, detail.Summary.Id),
+                BuildComposeDescriptor(composeDirectory, container.Name, container.ServerId),
                 ct).ConfigureAwait(false);
 
             if (target is not null)
@@ -230,6 +249,36 @@ public sealed class ServyxSurfaceResolutionContextSource
         }
 
         return new ServerConfigSessions(sessions, profile.Surfaces);
+    }
+
+    /// <summary>
+    /// Finds the container <paramref name="serverId"/> names, matching id first and then name — the same
+    /// two-step <c>ServerQueryService.GetServerDetailAsync</c> uses, so a route that works there works here.
+    /// </summary>
+    /// <remarks>
+    /// A daemon that is down is a normal condition for a self-hosted panel, and a settings view must degrade
+    /// to "could not be read" rather than throw out of a page load.
+    /// </remarks>
+    private async Task<DiscoveredServer?> DiscoverAsync(string serverId, CancellationToken ct)
+    {
+        IReadOnlyList<DiscoveredServer> candidates;
+        try
+        {
+            candidates = await _discovery
+                .DiscoverAsync(_criteria!.ImageRepository, _criteria.RequiredMountContainerPath, ct)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        return candidates.FirstOrDefault(s => string.Equals(s.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
+            ?? candidates.FirstOrDefault(s => string.Equals(s.Name, serverId, StringComparison.OrdinalIgnoreCase));
     }
 
     private ConfigSession Register(IExecutionTarget target, string description, SurfaceResolutionContext context)
@@ -317,15 +366,17 @@ public sealed class ServyxSurfaceResolutionContextSource
                 continue;
             }
 
-            ServerConfigSessions? sessions;
-            try
-            {
-                sessions = await lazy.Value.ConfigureAwait(false);
-            }
-            catch (Exception)
+            // Only a build that has already finished can be drained. Awaiting one still in flight would
+            // block disposal on however long a daemon takes to answer — and, if that build is itself stuck,
+            // forever. Disposal must always terminate; a session belonging to an unfinished build is
+            // released when its own transport is, which is the same guarantee it had before this type
+            // existed.
+            if (!lazy.Value.IsCompletedSuccessfully)
             {
                 continue;
             }
+
+            var sessions = lazy.Value.Result;
 
             foreach (var session in sessions?.Sessions ?? [])
             {
