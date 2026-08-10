@@ -416,6 +416,30 @@ public static class ServyxCoreCompositionExtensions
         // grant and must work with the provisioning gate closed, exactly like adoption above.
         builder.Services.AddServyxServerSettingsService();
 
+        // ── Game definition import (Phase 5) ────────────────────────────────────────────────────────────
+        //
+        // Import writes ONLY into Servyx's own definitions directory (Servyx:Definitions:Path) — it never
+        // issues a command to a managed game server, adopted or otherwise — so, exactly like adoption and
+        // the settings service immediately above, it needs no write grant and is registered here,
+        // unconditionally, rather than inside the `if (provisioningGate.Enabled)` block below. Gating this
+        // behind the provisioning master switch would mean a fresh install cannot teach Servyx a new game
+        // without first opening the ability to mutate a server, which inverts rather than strengthens the
+        // safety story — see docs/plans/ui-management-surface.md, Phase 5, "Is definition import gated?".
+        // Operator authentication, enforced above this service at the host level, is the only gate.
+        //
+        // Resolves the same GameDefinitionCatalog singleton every other consumer in this file shares (see
+        // the "Game definition catalog" block above, which replaces AddServyxDefinitions' lazily-constructed
+        // registration with an already-populated instance) — a successful import calls RefreshAsync on that
+        // exact instance, so every reader (this process's /games page, ServerQueryService's adoption
+        // criteria, and so on) observes the new definition on its next read, not a second, disconnected
+        // catalog. Uses the same Servyx:Definitions:Path configuration key FileSystemGameDefinitionProvider
+        // itself reads, so an import lands exactly where the provider that will serve it back out already
+        // looks.
+        builder.Services.AddSingleton<IDefinitionImportService>(sp => new DefinitionImportService(
+            builder.Configuration[Servyx.Definitions.ServiceCollectionExtensions.PathConfigKey],
+            sp.GetRequiredService<GameDefinitionCatalog>(),
+            sp.GetService<ILogger<DefinitionImportService>>()));
+
         // Every Server-row write drops the grant cache, structurally rather than by convention.
         //
         // AddServyxServerRepository() above registers IServerRepository -> EfServerRepository; this Replace

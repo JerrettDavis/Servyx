@@ -1,0 +1,148 @@
+@using Servyx.Definitions
+@using Servyx.Domain.Definitions
+@inject IServiceProvider Services
+
+@* Import writes only to Servyx's own definitions directory — it never issues a command to a managed game
+   server — so, exactly like AdoptionPanel's own controls (see that component's top comment), these are
+   plain .svx-btn/.svx-btn-primary/.svx-btn-danger rather than <GatedButton>: there is nothing here for the
+   write guard to gate. Operator authentication, enforced above this component at the host level, is the
+   only gate — see docs/plans/ui-management-surface.md, Phase 5, "Is definition import gated?". *@
+
+@if (_import is not null)
+{
+    <div class="svx-card import-card" data-testid="import-section">
+        <h3>Import a game definition</h3>
+        <p class="svx-page-description">
+            Paste a <code>servyx.dev/v1</code> <code>GameDefinition</code> YAML document below, or choose a
+            file, to teach Servyx a new game. It is validated before anything is written to disk. An
+            imported definition is <strong>global</strong> — it affects every server that matches it, not
+            just this install.
+        </p>
+
+        <label class="import-label" for="import-file-input">Upload a .yaml file (optional)</label>
+        <InputFile id="import-file-input" class="import-file-input" data-testid="import-file-input" OnChange="OnFileSelectedAsync" />
+
+        <label class="import-label" for="import-textarea">Or paste YAML directly</label>
+        <textarea id="import-textarea" class="svx-textarea import-textarea" rows="14"
+                  data-testid="import-textarea"
+                  placeholder="apiVersion: servyx.dev/v1&#10;kind: GameDefinition&#10;metadata:&#10;  id: my-game&#10;  ..."
+                  value="@_yamlText" @onchange="e => { _yamlText = e.Value?.ToString() ?? string.Empty; _result = null; }"></textarea>
+
+        <div class="import-actions">
+            <button type="button" class="svx-btn svx-btn-primary" data-testid="import-button"
+                    disabled="@(_busy || string.IsNullOrWhiteSpace(_yamlText))"
+                    @onclick="() => ImportAsync(overwrite: false)">
+                @(_busy ? "Importing…" : "Import")
+            </button>
+
+            @if (_result is { Outcome: DefinitionImportOutcome.DuplicateId })
+            {
+                <button type="button" class="svx-btn svx-btn-danger" data-testid="import-overwrite-button"
+                        disabled="@_busy"
+                        @onclick="() => ImportAsync(overwrite: true)">
+                    Replace the existing '@_result.DefinitionId'
+                </button>
+            }
+        </div>
+
+        @if (_result is not null)
+        {
+            var isSuccess = _result.Outcome is DefinitionImportOutcome.Imported or DefinitionImportOutcome.ImportedButShadowed;
+
+            <div class="import-result" data-testid="import-result" data-outcome="@_result.Outcome" role="@(isSuccess ? "status" : "alert")">
+                <p class="@(isSuccess ? "import-success" : "import-error")" data-testid="@(isSuccess ? "import-success" : "import-error")">
+                    @_result.Message
+                </p>
+
+                @if (_result.Report is { Issues.Count: > 0 } report)
+                {
+                    <ul class="import-issue-list" data-testid="import-issue-list">
+                        @foreach (var issue in report.Issues)
+                        {
+                            <li class="import-issue" data-testid="import-issue-row" data-severity="@issue.Severity">
+                                <span class="svx-badge import-issue-severity import-issue-severity-@issue.Severity.ToString().ToLowerInvariant()">
+                                    @issue.Severity
+                                </span>
+                                <span class="import-issue-location" data-testid="import-issue-location">
+                                    Line @issue.Line, column @issue.Column
+                                </span>
+                                <span class="import-issue-message" data-testid="import-issue-message">@issue.Message</span>
+                            </li>
+                        }
+                    </ul>
+                }
+            </div>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>Invoked after a write that actually took effect (<see cref="DefinitionImportOutcome.Imported"/> or <see cref="DefinitionImportOutcome.ImportedButShadowed"/>), so the host page can reload its own games/faults listing.</summary>
+    [Parameter]
+    public EventCallback OnImported { get; set; }
+
+    /// <summary>Generous relative to any real definition (a few tens of KB); matches <see cref="DefinitionImportService.MaxYamlLength"/> so an oversized upload is rejected at read time rather than only after ImportAsync re-checks it.</summary>
+    private const long MaxUploadBytes = DefinitionImportService.MaxYamlLength;
+
+    private IDefinitionImportService? _import;
+    private string _yamlText = string.Empty;
+    private bool _busy;
+    private DefinitionImportResult? _result;
+
+    protected override void OnInitialized()
+    {
+        // Resolved via IServiceProvider, not @@inject: IDefinitionImportService is registered
+        // unconditionally in a real host (see AddServyxCore), but this component must still render
+        // gracefully wherever it is not — most notably a bUnit harness that has not registered it — matching
+        // the same fail-closed "optional collaborator" pattern AdoptionPanel already uses for
+        // IServerAdoptionService.
+        _import = Services.GetService(typeof(IDefinitionImportService)) as IDefinitionImportService;
+    }
+
+    private async Task OnFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _result = null;
+
+        try
+        {
+            using var stream = e.File.OpenReadStream(MaxUploadBytes);
+            using var reader = new StreamReader(stream);
+            _yamlText = await reader.ReadToEndAsync();
+        }
+        catch (IOException ex)
+        {
+            // Most commonly the file exceeds MaxUploadBytes — OpenReadStream throws rather than truncating,
+            // which is exactly what we want: never silently import a truncated definition.
+            _result = new DefinitionImportResult(
+                DefinitionImportOutcome.TooLarge,
+                Report: null,
+                DefinitionId: null,
+                FilePath: null,
+                $"The selected file could not be read: {ex.Message}");
+        }
+    }
+
+    private async Task ImportAsync(bool overwrite)
+    {
+        if (_import is null || string.IsNullOrWhiteSpace(_yamlText))
+        {
+            return;
+        }
+
+        _busy = true;
+        try
+        {
+            _result = await _import.ImportAsync(_yamlText, sourceName: "web-import", overwrite: overwrite);
+
+            if (_result.Outcome is DefinitionImportOutcome.Imported or DefinitionImportOutcome.ImportedButShadowed)
+            {
+                _yamlText = string.Empty;
+                await OnImported.InvokeAsync();
+            }
+        }
+        finally
+        {
+            _busy = false;
+        }
+    }
+}

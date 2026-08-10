@@ -6,8 +6,9 @@
 <div class="svx-page-header">
     <h2>Games</h2>
     <p class="svx-page-description">
-        Bundled game definitions. Adding support for a new game is a data-only exercise — see
-        <code>definitions/*.yaml</code> — not a code change.
+        Every game definition Servyx has loaded. Import a new one below — paste or upload a
+        <code>servyx.dev/v1</code> <code>GameDefinition</code> YAML document — or hand-edit
+        <code>definitions/*.yaml</code> directly.
     </p>
 </div>
 
@@ -76,6 +77,8 @@ else
     </div>
 }
 
+<ImportDefinitionDialog OnImported="ReloadAsync" />
+
 @code {
     private bool _loading = true;
     private IReadOnlyList<GameCardSummary> _games = [];
@@ -83,8 +86,18 @@ else
 
     protected override async Task OnInitializedAsync()
     {
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    /// <summary>
+    /// Re-reads both listings from <see cref="Data"/>. Called on initial load and again by
+    /// <see cref="ImportDefinitionDialog"/> after a write that actually took effect, so a freshly imported
+    /// definition appears in the card grid above without a manual page refresh.
+    /// </summary>
+    private async Task ReloadAsync()
+    {
         _games = await Data.GetGamesAsync();
         _faults = await Data.GetGameDefinitionFaultsAsync();
-        _loading = false;
     }
 }

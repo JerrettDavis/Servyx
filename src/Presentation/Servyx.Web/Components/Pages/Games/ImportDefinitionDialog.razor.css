@@ -1,0 +1,96 @@
+/* Phase 5 — game definition import. Reuses .svx-card/.svx-btn*/.svx-textarea/.svx-badge from app.css;
+   everything below is layout and the issue-list presentation specific to this component. */
+
+.import-card {
+    margin-top: 1.5rem;
+}
+
+.import-label {
+    display: block;
+    margin: 0.75rem 0 0.35rem 0;
+    font-size: var(--svx-text-sm);
+    font-weight: 600;
+    color: var(--svx-text-muted);
+}
+
+.import-file-input {
+    display: block;
+    width: 100%;
+    font-size: var(--svx-text-sm);
+    color: var(--svx-text-primary);
+}
+
+.import-textarea {
+    font-family: var(--svx-font-mono);
+    font-size: 0.8rem;
+    min-height: 14rem;
+}
+
+.import-actions {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.75rem;
+}
+
+.import-result {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.import-success {
+    color: var(--svx-success-fg);
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem 0;
+}
+
+.import-error {
+    color: var(--svx-danger-fg);
+    font-size: 0.85rem;
+    margin: 0 0 0.5rem 0;
+}
+
+.import-issue-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+}
+
+.import-issue {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--svx-border-subtle);
+    border-radius: var(--svx-radius-md);
+    background: var(--svx-bg-surface);
+}
+
+.import-issue-severity-error {
+    background: var(--svx-danger-bg);
+    border-color: var(--svx-danger-border);
+    color: var(--svx-danger-fg);
+}
+
+.import-issue-severity-warning {
+    background: var(--svx-warning-bg);
+    border-color: var(--svx-warning-border);
+    color: var(--svx-warning-fg);
+}
+
+.import-issue-location {
+    font-family: var(--svx-font-mono);
+    font-size: 0.78rem;
+    color: var(--svx-text-muted);
+    white-space: nowrap;
+}
+
+.import-issue-message {
+    flex: 1 1 auto;
+    font-size: 0.85rem;
+    color: var(--svx-text-primary);
+}
