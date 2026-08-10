@@ -1,5 +1,17 @@
 # Configuration
 
+## What works today
+
+Servyx **reads** configuration and **records** what you want it to be. It does not yet **apply** anything.
+
+| You can | You cannot yet |
+|---|---|
+| See all four columns for a setting, computed by reading the real files on the real server. | Have Servyx write a new value to `.env`, a compose file, or anything else. |
+| See genuine drift — Servyx compares what it actually read, not what it assumes. | Apply, preview-and-apply, or revert a change. |
+| Record a desired value, so your intent is stored and shows up in the Desired column. | Recreate a container to pick up a changed value. |
+
+The component that would perform a write — the plan executor — is a defined interface with **no implementation**. Recording a desired value is therefore exactly that: a note to yourself and to a future Servyx, stored in Servyx's database. Nothing reaches the server. Change the server the way you normally would; Servyx will show you the result honestly in the columns below.
+
 ## The four columns
 
 Every setting Servyx tracks for a server is shown across four columns, side by side:
@@ -21,13 +33,44 @@ These columns exist because a game server's "current setting" is not one fact �
 
 Any of these disagreements is called **drift**, and Servyx flags it rather than picking one column and presenting it as "the" value.
 
+### Which fact the Authoritative column is showing you
+
+This one is worth being precise about, because the column shows one of **two different facts** depending on the setting, and they answer different questions.
+
+For a setting that maps to an environment variable — which is most of them — Authoritative is **the live environment of the running container**, read from Docker's own inspect output. That is *what the workload is running with right now*.
+
+For a setting that has no environment binding at all, Servyx falls back to reading the **authoritative file** on disk (`.env` on a standard compose deployment). That is *what the workload would start with next time*.
+
+The distinction matters most in the case where the two disagree. If someone edits `.env` while the container is running, the file changes but the container's environment does not — a running container's environment is fixed at creation and cannot be edited in place. Servyx deliberately keeps showing you the **live** value rather than the file value, because preferring the file would make the change look already-in-effect when it is not. You would see "the new value" and reasonably conclude the server had picked it up.
+
+So: a pending `.env` edit is real, is not yet in effect, and will require the container to be recreated before it is. Servyx shows the live value precisely so that gap stays visible instead of being papered over.
+
+One wrinkle to be aware of: the column header in the settings tab is labelled **Authoritative (.env)**, which is where the value usually *comes from* but not where it was *read from*. For an environment-bound setting it was read from the container. If you have just edited `.env` and the column has not moved, that is the intended behaviour, not a stale reading.
+
+## Telling Servyx where the files are
+
+The four columns only work if Servyx can reach the files behind them, and on a Docker deployment those files live in **two different places**. The game's own config sits inside the container; `compose.yaml` and `.env` sit on the host, because the Docker API cannot see them at all. Servyx therefore opens a separate session for each, and you tell it where they are with two settings:
+
+| Setting | What it does |
+|---|---|
+| `Servyx:Backups:ComposeDirectory` | The host directory holding the server's `compose.yaml` and `.env`. |
+| `Servyx:Backups:ContainerDataRoot` | The data directory inside the container. Optional — Servyx falls back to the game definition's declared data directory, then to the container's own reported mount path. |
+
+**If `ComposeDirectory` is unset, no host session is opened at all**, and every surface that lives there becomes unresolvable — which on every shipped definition includes `.env`, so the Authoritative column has nothing to read. Servyx will tell you the surface could not be resolved rather than quietly showing a blank.
+
+There is deliberately no default and no guessing for this one. A compose directory cannot be discovered from inside a container, and a wrong guess would mean reading a real file from the wrong filesystem and presenting it as your server's configuration — so Servyx refuses to infer it.
+
 ## What to do about drift
 
 Drift isn't automatically a problem — a value you just changed will legitimately drift for a moment until a restart catches it up. What matters is whether the drift is expected (you changed something and haven't restarted yet) or not (something changed outside Servyx — someone edited a file by hand, or the container was recreated from an older image). Servyx's job is to tell you which columns disagree and why; deciding what to do about it — restart, re-apply, or investigate an external change — is yours in the current milestone, since Servyx cannot yet write configuration on your behalf.
 
 ## Byte-exact round-trip
 
-When Servyx does gain the ability to write configuration, a hard requirement underpins it: reading a file and writing it back out unchanged must reproduce it **byte-for-byte** — comments, blank lines, key order, and quoting style included. An editor that "normalises" a config file as a side effect of touching one value is not acceptable here, because that file is often hand-maintained and shared, and a diff full of incidental reformatting hides the one line that actually changed. See [the schema reference](../schema.md) for how individual settings map onto the files a game definition declares.
+A hard requirement underpins any future write: reading a file and writing it back out unchanged must reproduce it **byte-for-byte** — comments, blank lines, key order, and quoting style included. An editor that "normalises" a config file as a side effect of touching one value is not acceptable here, because that file is often hand-maintained and shared, and a diff full of incidental reformatting hides the one line that actually changed.
+
+The file readers that satisfy this already exist and are what the columns above are read through — for `.env`, INI, `.properties`, JSON and YAML. They work by recording the exact character range a value occupies and replacing only those characters, rather than re-generating the file from a parsed model. One practical consequence you may notice once writing is enabled: a value that cannot be expressed as a change to a single line — a YAML block scalar, or a whole list such as a Compose `ports:` block — is readable but will not be writable. That is a deliberate limit of the byte-exactness approach, not an oversight.
+
+See [the schema reference](../schema.md) for how individual settings map onto the files a game definition declares.
 
 ## Why editing the rendered file is the classic mistake
 

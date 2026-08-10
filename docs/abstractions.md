@@ -366,6 +366,18 @@ namespace Servyx.Domain.Configuration;
 /// comments, blank lines, key order, and quoting style. This is
 /// property-tested against the ~150-key <c>.env</c> fixture used
 /// throughout the Palworld deployment.
+///
+/// Shipped implementations (<c>Servyx.Config</c>): <c>DotEnvConfigAdapter</c>,
+/// <c>IniConfigAdapter</c>, <c>JsonConfigAdapter</c>, <c>PropertiesConfigAdapter</c>,
+/// <c>YamlConfigAdapter</c>. None re-serializes: fidelity comes from recording the character span
+/// each writable scalar occupies and splicing over that range only.
+///
+/// The span mechanism imposes a one-line-splice invariant, which bounds what is writable — most
+/// visibly in YAML, where single-line scalars including sequence ELEMENTS
+/// (<c>/services/palworld/ports/0</c>) are writable, while block scalars, valueless keys and
+/// multi-line plain scalars are readable but not writable, and a mapping or sequence CONTAINER
+/// (<c>/services/palworld/ports</c>) gets no span at all — a write through it raises
+/// <c>KeyNotFoundException</c> from <c>ConfigDocument.WithValue</c>. See <c>architecture.md</c>.
 /// </summary>
 public interface IConfigAdapter
 {
@@ -434,12 +446,82 @@ public enum SurfaceRole
     Runtime,
 }
 
-/// <summary>A single configuration surface as declared by a game definition.</summary>
-public sealed record ConfigSurface(string Id, SurfaceRole Role, SurfaceLocator Locator, string FormatId, string? CodecId)
+/// <summary>
+/// A single configuration surface, resolved against a live session. This is the engine's
+/// runtime shape; the definition-parsed shape is <c>DeclaredConfigSurface</c>
+/// (<c>Servyx.Domain.Definitions.Model</c>), which additionally carries <c>DerivedFrom</c>,
+/// <c>Regeneration</c> and <c>ManagedSubtree</c>. Those three are parse-time concerns and are
+/// dropped here.
+///
+/// NOTE that dropping <c>ManagedSubtree</c> is why it is declarative only: a definition can
+/// declare that Servyx owns just one subtree of a shared <c>compose.yaml</c>, and nothing
+/// downstream enforces the boundary, because the runtime shape no longer knows about it.
+/// </summary>
+public sealed record ConfigSurface(
+    string Id,
+    SurfaceRole Role,
+    SurfaceLocator Locator,
+    string FormatId,
+    string? CodecId,
+    TargetPath? Path = null,
+    bool ContainerScoped = false,
+    TransportCapabilities RequiredCapabilities = TransportCapabilities.None,
+    string? CodecPath = null,
+    MergePolicy MergePolicy = MergePolicy.PreserveUnknown)
 {
     /// <summary>True only when <see cref="Role"/> is <see cref="SurfaceRole.Authoritative"/>.</summary>
     public bool ServyxMayWrite => Role == SurfaceRole.Authoritative;
 }
+
+/// <summary>
+/// Resolves a game definition's declared surfaces into concrete <see cref="ConfigSurface"/>
+/// paths against one live session. Implemented by <c>SurfaceResolver</c> (<c>Servyx.Config</c>).
+///
+/// Never throws for an unresolvable surface — that is what
+/// <see cref="SurfaceResolution.Unresolvable"/> is for. Argument validation (a null target, an
+/// empty server id) still throws, because those are caller bugs rather than facts about a
+/// deployment.
+/// </summary>
+public interface ISurfaceResolver
+{
+    Task<SurfaceResolution> ResolveAsync(
+        string serverId,
+        IExecutionTarget target,
+        IReadOnlyList<DeclaredConfigSurface> surfaces,
+        CancellationToken ct = default);
+}
+
+/// <summary>The two-list outcome of resolving a definition's surface set.</summary>
+public sealed record SurfaceResolution(
+    IReadOnlyList<ConfigSurface> Resolved,
+    IReadOnlyList<SurfaceResolutionFailure> Unresolvable);
+
+/// <summary>
+/// One surface that could not be resolved, with an operator-actionable reason. Refusal kinds:
+/// a locator not rooted at <c>${DATA_DIR}</c>/<c>${COMPOSE_DIR}</c>; a root variable the session
+/// has no value for; a leftover <c>${...}</c> token after expansion; a container-scoped surface on
+/// a session whose transport lacks <c>TransportCapabilities.ContainerScopedFiles</c>; a missing
+/// file capability; or a path that escapes either containment bound.
+/// </summary>
+public sealed record SurfaceResolutionFailure(string SurfaceId, string Reason, string RemediationHint);
+
+/// <summary>
+/// What one session knows about the filesystem it reaches. Supplied per
+/// <see cref="IExecutionTarget"/> instance by <c>ISurfaceResolutionContextSource</c>.
+///
+/// CRITICAL: on the Docker topology <c>${DATA_DIR}</c> lives inside the container while
+/// <c>${COMPOSE_DIR}</c> is always host-side, so a server has up to two sessions and each one
+/// nulls the directory it cannot legitimately reach — <c>ComposeDirectory</c> is null on the
+/// container session, <c>DataDirectory</c> is null on the host session. Without that nulling a
+/// host path resolved against the container session would succeed and read the WRONG filesystem;
+/// the failure mode being prevented is succeeding wrongly, not failing loudly.
+/// </summary>
+public sealed record SurfaceResolutionContext(
+    TransportCapabilities Capabilities,
+    string SessionRoot,
+    string? DataDirectory,
+    string? ComposeDirectory,
+    bool DataDirectoryIsContainerScoped);
 
 /// <summary>How a <see cref="SurfaceRole.Derived"/> surface gets regenerated.</summary>
 public enum RegenerationKind { ContainerRestart, ProcessRestart, Manual }
@@ -461,6 +543,21 @@ public abstract record SurfaceLocator
 /// The four-column view of a single setting, mirroring the surface roles:
 /// Servyx's intent, the current authoritative value, the current rendered
 /// (derived) value, and the current live (runtime) value.
+///
+/// Which column a read lands in is decided by the bound surface's declared
+/// <see cref="SurfaceRole"/>, not by how it was read: every bound surface is read through the
+/// same <c>IExecutionTarget.OpenReadAsync</c> call and parsed by its <see cref="IConfigAdapter"/>.
+/// <c>Authoritative</c> here is therefore the current contents of the authoritative FILE —
+/// <c>.env</c> on every shipped Docker definition. Where a role has several bound surfaces, the
+/// first one read wins.
+///
+/// IMPORTANT: this is NOT the <c>Authoritative</c> the UI displays. The read model
+/// <c>ServerSettingValue.Authoritative</c> is sourced from the running container's environment
+/// (<c>docker inspect</c> → <c>Config.Env</c>), and <c>ServerQueryService.EnrichAsync</c> only
+/// BACKFILLS from this model — <c>row.Authoritative ?? state.Authoritative</c> — so the
+/// file-sourced value surfaces only for a setting with no environment binding. The two are
+/// different facts on purpose: what the workload runs with now, versus what it would start with
+/// next time. See <c>architecture.md</c>, "Two Authoritatives".
 /// </summary>
 public sealed record SettingState(
     string? Desired,
@@ -483,10 +580,31 @@ public enum DriftKind
     Unreadable                  = 1 << 3,
 }
 
-/// <summary>Computes <see cref="SettingState"/> for a setting across its bound surfaces.</summary>
+/// <summary>
+/// Computes <see cref="SettingState"/> for a setting across its bound surfaces. Bound to ONE
+/// server — <see cref="ResolveAsync"/> takes only a key, because every consumer of one resolver is
+/// already talking about one server. Implemented by <c>SettingStateResolver</c>
+/// (<c>Servyx.Config</c>).
+/// </summary>
 public interface ISettingStateResolver
 {
     Task<SettingState> ResolveAsync(string settingKey, CancellationToken ct = default);
+}
+
+/// <summary>The one server, and the settings, a resolver is being built for.</summary>
+public sealed record SettingStateScope(string ServerId, IReadOnlyList<SettingDescriptor> Settings);
+
+/// <summary>
+/// Builds an <see cref="ISettingStateResolver"/> for one server. The factory exists to be the
+/// batch point: <see cref="CreateAsync"/> runs <c>ISurfaceResolver.ResolveAsync</c> over the
+/// server's whole declared surface set once and loads the desired-value snapshot once, so the
+/// per-setting resolve is a lookup rather than a round trip. The resolver's read cache lives
+/// exactly as long as the instance — one settings view — so refreshing is constructing a new
+/// resolver, not invalidating a shared cache.
+/// </summary>
+public interface ISettingStateResolverFactory
+{
+    Task<ISettingStateResolver> CreateAsync(SettingStateScope scope, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -533,6 +651,17 @@ public sealed record Consequence(ConsequenceKind Kind, string Description);
 /// <summary>
 /// The single funnel through which every mutation in the product passes.
 /// No other interface applies a configuration write directly.
+///
+/// STATUS: declared only. There are ZERO implementations and ZERO callers of this interface
+/// anywhere in src/. Nothing in Servyx applies a configuration change to a running server today;
+/// every member below is a signature. The single-funnel design is the point — one choke point
+/// means write-mode enforcement, staleness checking, secret masking, audit and revert are built
+/// once rather than per adapter — but the funnel is currently empty.
+///
+/// Two adjacent pieces are staged behind the same gap: <c>IServerLifecycle.RecreateAsync</c> has
+/// one implementation and it throws <c>NotSupportedException</c> unconditionally, and the
+/// <c>strategy</c> field on a pointer binding (<c>publish-udp</c>/<c>publish-tcp</c>) is parsed
+/// and stored but read by no code.
 /// </summary>
 public interface IPlanExecutor
 {
@@ -564,6 +693,53 @@ public sealed class PlanStaleException : Exception
 /// <summary>Record of a successfully applied plan.</summary>
 public sealed record ChangeReceipt(string PlanId, DateTimeOffset AppliedAt, IReadOnlyList<PlannedAction> Actions);
 ```
+
+### Plan persistence
+
+The durable half of the plan model exists and is migrated
+(`20260810032112_AddChangePlans`, tables `ChangePlans` and `ChangePlanActions`),
+even though the executor that would drive it does not. These are EF entities in
+`Servyx.Domain.Entities` rather than `Servyx.Domain.Configuration` records, and
+no production code reads or writes either table yet.
+
+```csharp
+namespace Servyx.Domain.Entities;
+
+/// <summary>
+/// The lifecycle of one plan. PartiallyApplied exists because a multi-action apply that stops
+/// halfway is a real state that has to be nameable rather than collapsed into Failed.
+/// </summary>
+public enum ChangePlanStatus
+{
+    Previewed, Applying, Applied, PartiallyApplied, Failed, Stale, Reverted, Superseded,
+}
+
+public enum ChangePlanActionStatus { Pending, Applying, Applied, Failed, Skipped, Reverted }
+```
+
+`ChangePlanRecord` carries `Id`, `ServerId`, `Status`, `CreatedAt`/`CreatedBy`,
+`ExpiresAt` (`DefaultTtl` is 15 minutes), `AppliedAt`/`AppliedBy`,
+`RevertedAt`/`RevertedBy`, the pinned `DefinitionId`/`DefinitionVersion`, and
+`ConsequencesJson`/`SurfaceHashesJson`/`BlockedJson`. It cascades from `Server`
+and is indexed on `ServerId` and on `Status`.
+
+`RowVersion` is the optimistic concurrency token that makes a double-apply
+impossible. It is a plain `Guid` column marked `IsConcurrencyToken()` and
+deliberately **not** `IsRowVersion()` — `ServyxDbContext` overrides
+`SaveChanges`/`SaveChangesAsync` to assign a fresh `Guid` to every added or
+modified `ChangePlanRecord` immediately before the save. This is scoped to that
+one entity, the only one in the model carrying a concurrency token today;
+`ChangePlanActionRecord` has none.
+
+`ChangePlanActionRecord` is the durable counterpart of `PlannedAction`, ordered
+by `Ordinal` (unique per plan, zero-based, and the order apply must follow). It
+adds `ResolvedPath`, `ContainsSecrets`, a per-action
+`Status`/`AppliedAt`/`RevertedAt`/`FailureReason`, and the images:
+`PreImageContent`/`PreImageHash` and `PostImageContent`/`PostImageHash`. The
+pre-image is what makes revert **exact** — reverting restores recorded bytes
+rather than re-deriving what the file should have said. Note that
+`PreImageContent` stores real bytes, unmasked, because a masked pre-image would
+revert a secret to the mask.
 
 ## §4 Lifecycle
 

@@ -8,7 +8,17 @@
 
 A provisioner's job is finished when it can hand back a `TargetDescriptor` (plus the `ConnectorDescriptor` that owns it). From that moment the existing machinery takes over unchanged. That single rule is the core of this architecture.
 
-The second structural claim: Servyx already has an execution engine, and provisioning must not introduce a second one. `IPlanExecutor`, `ConfigChangePlan`, `PlanStep`, `PlanFeasibility`, `CapabilityFingerprint`, `ChangeReceipt` and `JobProgress` are existing code. Provisioning is therefore new step kinds and new capability requirements inside the existing plan model, plus one new contract that produces those plans.
+The second structural claim: Servyx already has an execution *contract*, and provisioning must not introduce a second one. Be precise about what that means today, because the distinction is load-bearing and easy to misread:
+
+| Type | Status in `src/` |
+|---|---|
+| `IPlanExecutor` | **Declared, never implemented.** `Servyx.Domain.Configuration`; zero implementations, zero callers. `PreviewAsync`/`ApplyAsync`/`RevertAsync` are signatures only. |
+| `ConfigChangePlan`, `PlannedAction`, `PlannedActionKind`, `Consequence`, `ConsequenceKind`, `ChangeReceipt`, `PlanStaleException` | **Exist as declared types.** Nothing constructs or throws them in production code. |
+| `ChangePlanRecord` / `ChangePlanActionRecord` | **Exist, with an applied EF migration.** Persistence only — no production code reads or writes these tables yet. |
+| `JobProgress` | **Exists** (`Servyx.Domain.Common`), used by backups. |
+| `PlanStep`, `PlanFeasibility`, `CapabilityFingerprint`, `JobStep`, `BlockedChange`, `RestartImpact` | **Do not exist anywhere in `src/` or `tests/`.** They are proposed here and in `control-plane.md`, and are named below as design vocabulary, not as code to call. |
+
+So provisioning is not "new step kinds inside an existing plan model" in the sense of extending running code. It is new step kinds and new capability requirements inside an existing *model sketch*, plus one new contract that produces those plans — and it presumes someone first builds the executor that the sketch has always assumed. Every type in the last row of that table has to be written before anything in this document compiles.
 
 ```csharp
 public interface IProvisioner
@@ -59,7 +69,7 @@ Note what `IProvisioner` deliberately lacks: an `ApplyAsync`. Application goes t
 | Capability evaluation subject | per-**server** | Widen to `Server \| Host \| ProviderAccount`. Before creation there is no server to evaluate. |
 | Capability confidence | probe-based | Pre-creation, `CreateWorkload` is at best `Inferred` — you cannot probe a thing that doesn't exist. "Unknown is not Denied" still holds; the normal probe upgrades to `Verified` post-creation. |
 | `DestroyWorkload` | defined, unused, in no tier | Keep it out of every tier. Destroy is per-operation confirmed, never granted by tier membership. |
-| `PlanStep` | `SurfaceId` presumes an existing surface | Make `SurfaceId` nullable; add `Produces`. A provisioning step's output *is* the surface. Add `ResourceEffect { None, Creates, Destroys, Resizes }` and a `Billable` flag. |
+| `PlanStep` (**does not exist yet**) | Nothing to widen — the type has never been written. `control-plane.md` sketches it with a non-nullable `SurfaceId`, which presumes an existing surface | Whoever writes it must make `SurfaceId` nullable and add `Produces`. A provisioning step's output *is* the surface. Add `ResourceEffect { None, Creates, Destroys, Resizes }` and a `Billable` flag. |
 | `IServerDiscovery` | Docker-shaped signature | Land the `IDiscoveryStrategy` + `DetectSpec` refactor already spec'd in `connectors.md` first. |
 
 `ProvisioningCapabilities` is separate from both `TransportCapabilities` and `ControlCapability` because it answers a third question: "what can this adapter do to *infrastructure*." `TransportCapabilities` is read on execution hot paths, and `BillsHourly` is a category error there. Non-capability facts such as `has-public-ip` belong in `ResourceFacts` as data.
@@ -151,7 +161,7 @@ Secrets never enter the database — only credential URNs, resolved through the 
 
 ## 5. Job engine
 
-Extend the existing `JobProgress` and `IPlanExecutor`; do not introduce a competing progress or execution abstraction. Add a database-backed queue and an in-process `JobRunner : BackgroundService` using row leases — no Hangfire, no Quartz, with single-instance documented as an assumption.
+Extend `JobProgress` (which exists) and `IPlanExecutor` (which is declared but unimplemented — extending it here means building it, then keeping provisioning inside it); do not introduce a competing progress or execution abstraction. Add a database-backed queue and an in-process `JobRunner : BackgroundService` using row leases — no Hangfire, no Quartz, with single-instance documented as an assumption.
 
 Intent-before-effect is the critical discipline: before any billable create, commit a `ResourceHandle` with `State = Intended` *and the tags about to be applied*, then call the API, then update to `Created`. A crash between the call and the record leaves an `Intended` row for the sweep to find.
 
@@ -159,13 +169,13 @@ Universal tagging: every cloud resource carries `servyx:instance-id`, `servyx:jo
 
 Compensation is a per-step `CompensateAsync` run in reverse. Restart mid-deploy means the lease expires, the runner reclaims the job, and replays from the last completed step by idempotency key. Cancellation is both a token and a persisted flag, so a cancel issued before a restart still lands.
 
-Drift is already solved: `CapabilityFingerprint` and `surfaceHashes` captured at preview, re-checked at apply, `PlanStaleException`, `ChangePlan.status = Stale`. Provisioning inherits this, and completion emits a `ChangeReceipt`.
+Drift is *designed*, not solved. The intended mechanism is `CapabilityFingerprint` and `surfaceHashes` captured at preview, re-checked at apply, raising `PlanStaleException` and moving the plan to `Stale`. Of that, `ConfigChangePlan.SurfaceHashes`, `PlanStaleException` and `ChangePlanStatus` exist as declared types; `CapabilityFingerprint` does not exist at all, and nothing re-checks anything at apply because no `IPlanExecutor` implementation exists to have an apply step. Provisioning inherits the design, and would emit a `ChangeReceipt` on completion once there is something to emit it.
 
-For progress reporting, the database is truth and the in-memory channel is liveness: read `JobStep` rows on render, then subscribe, so a circuit drop and reconnect re-reads and then re-subscribes with no gap. No SignalR hub of our own is needed — the Blazor Server circuit already is one. No HTTP API is needed either, beyond one read-only `GET /api/jobs/{id}` for future CLI use.
+For progress reporting, the database is truth and the in-memory channel is liveness: read job-step rows on render, then subscribe, so a circuit drop and reconnect re-reads and then re-subscribes with no gap. (The `JobStep` entity is proposed here; no such table or type exists today, and there is no job runner or durable queue in `src/` at all.) No SignalR hub of our own is needed — the Blazor Server circuit already is one. No HTTP API is needed either, beyond one read-only `GET /api/jobs/{id}` for future CLI use.
 
 ## 6. Safety
 
-The plan/preview/confirm flow is a `ChangePlan` variant, not a new mechanism: `Previewed → Applied`, with `PlanFeasibility` of `FullyAchievable | PartiallyAchievable | Blocked`, and anything an adapter cannot do surfacing as a `BlockedChange` with a remediation hint.
+The plan/preview/confirm flow is a `ChangePlan` variant rather than a second mechanism — though "the mechanism" is at present a set of record definitions and a database table, not a working flow. The shape: `Previewed → Applied`, with `PlanFeasibility` of `FullyAchievable | PartiallyAchievable | Blocked`, and anything an adapter cannot do surfacing as a `BlockedChange` with a remediation hint. `PlanFeasibility` and `BlockedChange` are both proposed types; `RemediationHint` is the only one of the three that exists today.
 
 No force flag — that non-goal is absolute and provisioning gets no exception. Likewise no `AcceptAny` host-key path: a freshly created VM's host key is captured at creation from the provider API or console output and pinned, which is stronger evidence than trust-on-first-use, not a reason to weaken the model.
 

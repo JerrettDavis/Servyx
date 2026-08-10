@@ -193,9 +193,11 @@ Results are **cached per server with a 5-minute TTL**, invalidated early by: a c
 
 ## Graceful degradation
 
-**The rule, stated once and enforced everywhere below `IPlanExecutor`: no code beneath that boundary throws for a capability reason.** Capability is fully resolved during preview, before the user commits to anything, so the UI has the true picture — what will happen, what won't, why — *before* the "Apply" button is even enabled to be pressed. This inverts the failure mode that capability-unaware code naturally falls into, where a `NotSupportedException` surfaces from deep inside a file writer partway through applying a plan. By the time execution starts, capability is a known quantity; if it changes between preview and apply, that is handled explicitly as staleness (below), not as an exception escaping a plan step.
+**The rule, stated once and to be enforced everywhere below `IPlanExecutor`: no code beneath that boundary throws for a capability reason.** This is a design rule awaiting an enforcer — `IPlanExecutor` is a declared interface with zero implementations, so there is currently no boundary at which it is checked. The one place the rule is already honoured in shipped code is surface resolution: `ISurfaceResolver.ResolveAsync` returns `SurfaceResolutionFailure` records for missing capabilities and container-scoping refusals rather than throwing (see `architecture.md`). Capability is fully resolved during preview, before the user commits to anything, so the UI has the true picture — what will happen, what won't, why — *before* the "Apply" button is even enabled to be pressed. This inverts the failure mode that capability-unaware code naturally falls into, where a `NotSupportedException` surfaces from deep inside a file writer partway through applying a plan. By the time execution starts, capability is a known quantity; if it changes between preview and apply, that is handled explicitly as staleness (below), not as an exception escaping a plan step.
 
-`ConfigChangePlan` — which already exists — is extended, not replaced:
+`ConfigChangePlan` — which already exists as a declared record — is extended, not replaced.
+
+**None of the four types in the block below exist in `src/` today.** `PlanFeasibility`, `RestartImpact`, `PlanStep` and `BlockedChange` are proposed here; grepping for them across `src/` and `tests/` returns nothing. What *does* exist is `ConfigChangePlan`, `PlannedAction`, `PlannedActionKind`, `Consequence`, `ConsequenceKind`, `ChangeReceipt`, `PlanStaleException`, `ControlCapability`, `ControlTier` and `RemediationHint`. Treat the block as a target shape, not as an API to call:
 
 ```csharp
 public enum PlanFeasibility
@@ -230,9 +232,9 @@ public sealed record BlockedChange(
     ControlTier UnlockedAtTier);
 ```
 
-`ConfigChangePlan` gains `Feasibility`, a list of `PlanStep`, a list of `BlockedChange`, and a `CapabilityFingerprint` captured at preview time.
+`ConfigChangePlan` would gain `Feasibility`, a list of `PlanStep`, a list of `BlockedChange`, and a `CapabilityFingerprint` captured at preview time. It carries none of these today — its current shape is `(Id, Actions, Consequences, SurfaceHashes)`, and `CapabilityFingerprint` is likewise unwritten.
 
-Three consequences follow from this design:
+Three consequences follow from this design once it is built:
 
 1. **The UI never guesses.** A plan with eight requested settings and two blocked ones renders "Apply 6 of 8," with the blocked rows explained inline. This reuses the *existing* `SettingState.IsWritable` / `NotWritableReason` fields — no new UI-facing columns are needed, because `BlockedChange.Reason` and `.Remediations` slot directly into the existing not-writable explanation slot.
 2. **Mechanism selection becomes visible copy**, and this *is* the sliding-control feature made legible to the user, not an internal implementation detail: *"via `PalWorldSettings.ini` (direct, no restart)"* versus *"via `.env` (container restart required)"* versus *"via RCON (live, not persisted)"*. The user is told not just *that* a setting will change but *how*, because the how determines whether it survives a restart, whether the server bounces, and whether it's safe to do while players are online.

@@ -197,13 +197,160 @@ instead of `null`.
 Round-trip fidelity is a hard requirement: `Render(Parse(x)) == x`
 byte-for-byte, including comments, blank lines, key order, and quoting style.
 
+The shipped adapters are `DotEnvConfigAdapter`, `IniConfigAdapter`,
+`JsonConfigAdapter`, `PropertiesConfigAdapter` and `YamlConfigAdapter`
+(`Servyx.Config`), all implementing `IConfigAdapter`.
+
+### `YamlConfigAdapter`
+
+The YAML adapter is worth describing separately, because the way it achieves
+byte-exactness constrains what it is able to write.
+
+It never re-serializes. YamlDotNet is used purely as a *position-reporting
+reader* — its emitter is never invoked. Parsing walks the document and records
+the exact character range each writable scalar occupies as a `ConfigSpan`
+(line index, value start, value length); a write splices over that range and
+nothing else. `Render` is `string.Join(lineEnding, RawLines)`. That is the whole
+fidelity mechanism: the bytes outside one value's span are never re-derived,
+so they cannot drift.
+
+The cost of that mechanism is the **one-line-splice invariant** — the code's own
+term for it. `ConfigSpan` carries a single line index and a write rewrites
+exactly one element of `RawLines`, so anything that cannot be expressed as
+"replace these characters on this one line" gets no span at all. Concretely:
+
+- **Writable** — single-line scalars anywhere in the document, *including
+  sequence elements*. A Compose ports list is reachable element by element
+  (`/services/palworld/ports/0`).
+- **Readable but not writable** — block scalars (`|`, `>`), whose value spans
+  multiple lines; valueless keys (`empty:`), whose zero-length extent sits flush
+  against the colon, so splicing into it would emit `empty:x` and silently turn a
+  mapping into a plain scalar; and multi-line plain scalars. These appear in
+  `YamlConfigDocument.Values` with `IsAddressable: false`.
+- **Not addressable at all** — mapping and sequence *containers*. A pointer such
+  as `/services/palworld/ports` names the list itself, gets no span, and appears
+  in neither `Values` nor `Spans`. Writing through it raises
+  `KeyNotFoundException` from `ConfigDocument.WithValue`, naming the pointer.
+  Complex keys (`? [a, b]`) have no reference-token spelling and are skipped
+  rather than given an invented pointer. A value reachable only through an alias
+  is recorded once, at its anchor: registering it under both pointers would mean
+  a write through one silently rewriting the other.
+
+Pointers are RFC 6901 JSON Pointers (`~` → `~0`, `/` → `~1`, in that order), with
+`""` addressing a scalar document root. Two conditions raise `FormatException`
+rather than a refusal, deliberately: a scalar whose reported extent runs outside
+the line, and a quoted scalar whose reported boundary characters are not the
+expected quote character. Both mean YamlDotNet's position reporting has changed
+underneath the adapter, and it refuses to write rather than splice at the wrong
+offset and corrupt the file.
+
 ### `IConfigValueCodec`
 
 Decodes a structured payload that lives inside a single scalar value. The
 motivating example is `unreal-option-settings`, which decodes Unreal Engine's
 `OptionSettings=(...)` blob into named members.
 
-### `SettingState`
+### `ISurfaceResolver` / `ConfigSurface`
+
+A game definition declares surfaces abstractly, as `DeclaredConfigSurface`
+records whose locators are written against variables rather than paths —
+`${DATA_DIR}/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini`,
+`${COMPOSE_DIR}/.env`. `ISurfaceResolver` (`Servyx.Domain.Configuration`,
+implemented by `SurfaceResolver` in `Servyx.Config`) turns those declarations
+into concrete `TargetPath`s against one live session:
+
+```csharp
+Task<SurfaceResolution> ResolveAsync(
+    string serverId,
+    IExecutionTarget target,
+    IReadOnlyList<DeclaredConfigSurface> surfaces,
+    CancellationToken ct = default);
+```
+
+`SurfaceResolution` is a two-list result — `Resolved` (`ConfigSurface` records
+carrying a `Path`, `ContainerScoped` flag and `RequiredCapabilities`) and
+`Unresolvable` (`SurfaceResolutionFailure(SurfaceId, Reason, RemediationHint)`).
+**Resolution never throws for an unresolvable surface**; that is what the second
+list is for. Argument validation still throws, because a null target is a caller
+bug rather than a fact about a deployment. This is the one place the
+`control-plane.md` rule — no capability refusal below the plan boundary arrives
+as an exception — is already honoured by shipped code.
+
+Two variables are expanded, `${DATA_DIR}` and `${COMPOSE_DIR}`, case-insensitively
+on the name, and only as the *leading* segment of the locator path. A variable
+appearing later is not a root. Any `${...}` token still present after expansion is
+a refusal, never a literal directory name.
+
+Refusals come in three kinds. A locator rooted at a variable the session has no
+value for is refused. A surface that lives inside the container is refused when
+the session's transport does not advertise
+`TransportCapabilities.ContainerScopedFiles` — the file channel would otherwise
+reach the host and read a different file of the same name. And the capability set
+the surface needs (`FileRead`, plus `FileWrite` when Servyx may write it, plus
+`ContainerScopedFiles` when it is container-scoped) is checked against the
+session's advertised capabilities, with any missing flag named in the reason.
+
+Containment is enforced **twice, against two different bounds, and both must
+hold**. The inner bound contains the declared remainder against the root
+variable it claims to be relative to, before it is joined onto anything. The
+outer bound contains the joined result against the session root. The inner check
+is not redundant: on the whole-host SSH/SFTP topology the session root is `/`,
+which every absolute path satisfies, so the outer check alone would let
+`${COMPOSE_DIR}/../../../etc/passwd` resolve. `PathEscapesSandboxException` from
+either bound is caught and converted into a `SurfaceResolutionFailure`.
+
+`ConfigSurface` is the engine's lighter runtime shape. It deliberately drops the
+parse-time fields `DeclaredConfigSurface` carries — `DerivedFrom`, `Regeneration`,
+and `ManagedSubtree`. That last one matters: **`managedSubtree` is declarative
+only.** It is parsed from the definition and stored on `DeclaredConfigSurface`,
+then dropped at conversion, so nothing enforces that Servyx writes only within
+its own slice of a user's `compose.yaml`. The declaration exists; the enforcement
+does not.
+
+#### Two filesystems, two sessions
+
+`${DATA_DIR}` and `${COMPOSE_DIR}` are not merely two directories — on the
+motivating Docker topology they are on **two different filesystems**. The data
+directory is inside the container; the compose directory and its `.env` are on
+the host, because the Docker API cannot read them at all. So
+`ServyxSurfaceResolutionContextSource` (`Servyx.Composition`) opens up to *two*
+sessions per server: one over the Docker transport rooted at the container data
+root, one over a local-process transport rooted at the operator-configured
+compose directory.
+
+Each session is registered with its own `SurfaceResolutionContext`, and the
+crucial detail is what each context leaves **null**:
+
+| Session | `SessionRoot` | `DataDirectory` | `ComposeDirectory` | `DataDirectoryIsContainerScoped` |
+|---|---|---|---|---|
+| Data (container) | data root | data root | **`null`** | `true` |
+| Compose (host) | compose dir | **`null`** | compose dir | `false` |
+
+The nulling is the safety mechanism, and the failure it prevents is worth
+stating plainly: without it, a `${COMPOSE_DIR}`-rooted locator resolved against
+the container session would produce a path that *exists*, is *readable*, and is
+the **wrong file** — read from inside the container rather than from the host.
+The danger is succeeding wrongly, not failing loudly. With `ComposeDirectory`
+null on that context, the same locator instead hits the "no expansion for that
+variable is known" refusal, which is visible. The mirror case holds for
+`${DATA_DIR}` against the host session.
+
+`ISurfaceResolutionContextSource.GetAsync` therefore keys contexts by the
+`IExecutionTarget` *instance* the caller passes, not by `serverId` alone — the
+two sessions for one server answer to two different contexts, and only the
+caller's own target says which one is being asked about.
+
+Both roots come from operator configuration, under the `Servyx:Backups` section:
+
+| Key | Effect if unset |
+|---|---|
+| `Servyx:Backups:ContainerDataRoot` | Falls back to the definition's declared `dataDir`, then to the adopted container's reported mount path. |
+| `Servyx:Backups:ComposeDirectory` | **No compose session opens at all**, and every `${COMPOSE_DIR}`-rooted surface — `.env` on every shipped definition — becomes unresolvable. |
+
+There is deliberately no default and no inference for `ComposeDirectory`: it
+cannot be discovered from inside a container, so Servyx never guesses it.
+
+### `SettingState` / `ISettingStateResolverFactory`
 
 A record with four columns, mirroring the surface roles above:
 
@@ -215,7 +362,70 @@ A record with four columns, mirroring the surface roles above:
 Alongside these, a `DriftKind` flags enum captures which columns disagree:
 `DesiredVsAuthoritative`, `AuthoritativeVsRendered`, `RenderedVsRuntime`,
 `Unreadable` — plus a `PendingRegeneration` flag for when a restart is needed
-before drift can resolve.
+before drift can resolve, and `IsWritable` / `NotWritableReason` for whether
+Servyx could write this setting at all.
+
+These four columns are now genuinely computed against a live server rather than
+declared. `ISettingStateResolverFactory.CreateAsync(SettingStateScope, ct)`
+returns an `ISettingStateResolver` bound to one server, and the split into
+factory and resolver is the batching seam: `CreateAsync` runs
+`ISurfaceResolver.ResolveAsync` over the server's whole declared surface set once
+and loads the desired-value snapshot once, so the per-setting
+`ResolveAsync(settingKey, ct)` takes only a key. The read cache's lifetime is
+deliberately that one resolver instance — one settings view — so a refresh is a
+new resolver, not a cache invalidation protocol.
+
+**Which column a value lands in is decided by the bound surface's declared
+`SurfaceRole`, not by the mechanism used to read it.** The resolver reads every
+bound surface through the same call — `IExecutionTarget.OpenReadAsync` on that
+surface's session — parses it with the surface's `IConfigAdapter`, optionally
+decodes through an `IConfigValueCodec`, and then files the result under
+`Authoritative`, `Rendered` or `Runtime` according to the surface's role. Where a
+role has several bound surfaces, the first one read wins.
+
+#### Two Authoritatives: the model's and the displayed one
+
+`SettingState.Authoritative` and the `Authoritative` an operator sees in the
+settings tab are **not the same value**, and the difference is deliberate. This
+is easy to get wrong by reading either layer alone.
+
+- **`SettingState.Authoritative`** (the resolver, above) is the current contents
+  of the authoritative *file* — `.env` on every shipped Docker definition. It
+  answers *what the workload would start with next time*.
+- **`ServerSettingValue.Authoritative`** (the read model the UI binds to) is
+  sourced by `ServerQueryService.BuildSettings` from
+  `DiscoveredServer.EnvironmentVariables`, which `DockerInspectJson` parses out
+  of the container's `Config.Env`. It answers *what the workload is running with
+  now*.
+
+`ServerQueryService.EnrichAsync` composes the two, and the composition is a
+**backfill, not a replacement**:
+
+```csharp
+Authoritative = row.Authoritative ?? state.Authoritative,
+```
+
+The environment-sourced value wins wherever it exists; the resolver's
+file-sourced value is used only where the environment had none — a setting whose
+bindings include no `SettingBinding.ByKey` addressing the environment surface.
+The other four columns (`Desired`, `Rendered`, `Runtime`, `Drift`,
+`PendingRegeneration`) are taken from the resolver unconditionally.
+
+Preferring the file here would be a bug, not a simplification. A running
+container's environment is fixed at creation, so an operator who edits `.env`
+under a live container has changed the file and not the process. Showing the
+file value would render that pending edit as though it were already in effect
+and erase the very divergence the four-column model exists to expose. The
+service's own remarks say so directly: *"Those are two different facts — what
+the workload is running with now, versus what it would start with next time —
+and their disagreement is precisely the drift the four-column model exists to
+expose."*
+
+Enrichment is entirely best-effort. `EnrichAsync` is a no-op when no
+`ISettingStateResolverFactory` is registered, and any exception is logged once at
+warning level and returns the environment-only rows unchanged — a settings page
+must not fail to render because a container is stopped or a surface is
+unreachable. Both layers mask secrets with the same fixed `"********"`.
 
 ### `IConfigMerger`
 
@@ -231,7 +441,18 @@ files, managed regions are delimited with marker blocks:
 
 ### `IPlanExecutor`
 
-The single funnel through which **every mutation in the product** passes:
+**Declared, and not implemented.** `IPlanExecutor` has zero implementations and
+zero callers anywhere in `src/`. Every member below is a signature; no
+configuration change reaches a running server today. This is the single largest
+gap between this document's model and the shipped product, and it is the reason
+the four-column view above is a *diagnosis* rather than a control.
+
+It is designed as the single funnel through which **every mutation in the
+product** passes — one choke point, so that write-mode enforcement, staleness
+checking, secret masking, audit and revert are implemented once rather than per
+adapter. A code path that mutates configuration without producing a receipt is a
+bug by construction, and that property is only worth anything if there is
+exactly one such path.
 
 - `PreviewAsync` — read-only; produces a unified diff with secrets masked, a
   reversibility flag per action, the capabilities the plan requires, and any
@@ -240,6 +461,61 @@ The single funnel through which **every mutation in the product** passes:
   `PlanStaleException` if any surface has drifted since the plan was
   previewed.
 - `RevertAsync` — reverses a previously applied plan.
+
+Two other pieces are staged behind the same gap. `IServerLifecycle.RecreateAsync`
+has one implementation (`ServerLifecycleService`) and it throws
+`NotSupportedException` unconditionally — recreation only means anything as the
+applied consequence of an approved plan, so there is no plan it could be
+honouring. And the `strategy` field on a pointer binding (`publish-udp`,
+`publish-tcp`) is parsed by the definition parser and stored on
+`SettingBinding.ByPointer`, but **no code reads it**. Nothing interprets a
+strategy, so the four shipped compose port bindings — palworld `PORT`, ark
+`ASA_PORT`, minecraft `SERVER_PORT`, factorio `PORT` — are unappliable twice
+over: they name a sequence container pointer (`/services/<service>/ports`) that
+`YamlConfigAdapter` cannot address, and the strategy that would splice a port
+into that list has no implementation.
+
+A related sharp edge sits in `SettingDescriptor.WritableSurface`, which is
+`Bindings.FirstOrDefault(b => b.Direction == Write)`. Those same four port
+settings each declare *two* write bindings — one to `env`, one to `compose` —
+and `env` is listed first, so the compose binding is dropped silently: no
+exception, no log, no diagnostic. The "normally exactly one write binding per
+setting" rule is a doc comment, not an enforced invariant.
+
+### `ChangePlanRecord` / `ChangePlanActionRecord`
+
+The durable half of the plan model exists and is migrated, even though the
+executor that would use it does not. Migration
+`20260810032112_AddChangePlans` creates two tables.
+
+`ChangePlans` holds one row per preview: `Id`, `ServerId`, `Status`, `CreatedAt`
+/ `CreatedBy`, `ExpiresAt` (a 15-minute default TTL), `AppliedAt` / `AppliedBy`,
+`RevertedAt` / `RevertedBy`, the pinned `DefinitionId` / `DefinitionVersion`, and
+`ConsequencesJson` / `SurfaceHashesJson` / `BlockedJson`. `ChangePlanStatus` runs
+`Previewed`, `Applying`, `Applied`, `PartiallyApplied`, `Failed`, `Stale`,
+`Reverted`, `Superseded` — note `PartiallyApplied`, which exists because a
+multi-action apply that stops halfway is a real state that must be nameable
+rather than collapsed into `Failed`.
+
+`ChangePlanActions` holds the ordered actions, unique on
+`(ChangePlanId, Ordinal)`, cascading from the plan. Each action carries its
+`Kind`, `SurfaceId`, `ResolvedPath`, `RequiredCapabilities`, `UnifiedDiff`,
+`Reversible`, `ContainsSecrets`, per-action `Status` / `AppliedAt` /
+`RevertedAt` / `FailureReason`, and — the point of the table —
+`PreImageContent` / `PreImageHash` and `PostImageContent` / `PostImageHash`.
+The pre-image is what makes revert *exact*: reverting restores recorded bytes
+rather than re-deriving what the file "should" have said.
+
+`RowVersion` is the optimistic concurrency token that makes a double-apply
+impossible. It is a plain `Guid` column marked `IsConcurrencyToken()`,
+deliberately **not** `IsRowVersion()`; `ServyxDbContext` overrides
+`SaveChanges`/`SaveChangesAsync` to assign a fresh `Guid` to every added or
+modified `ChangePlanRecord` immediately before the save. It is scoped to that one
+entity — the only entity in the model carrying a concurrency token today.
+`ChangePlanActionRecord` has none.
+
+Nothing in production code reads or writes either table yet. The schema is
+storage waiting for `IPlanExecutor` to be built against it.
 
 ### `IGameControlChannel` / `IControlChannelReachability` / `IGameControlSession`
 
@@ -294,8 +570,9 @@ Servers pin a definition by **content hash**, never by a mutable version tag.
 | `BackupPolicy` | — |
 | `Backup` | `ownership` (`Servyx` \| `Foreign`) |
 | `Operation` / `Job` | — |
-| `ChangePlan` | `surfaceHashes`, `status` (`Previewed` \| `Applied` \| `Stale` \| `Discarded`) |
-| `ChangeReceipt` | — |
+| `ChangePlanRecord` (table `ChangePlans`) | `surfaceHashesJson`, `status` (`Previewed` \| `Applying` \| `Applied` \| `PartiallyApplied` \| `Failed` \| `Stale` \| `Reverted` \| `Superseded`), `expiresAt`, `revertedAt` / `revertedBy`, `rowVersion` (concurrency token). Migrated; not yet written by any production code. |
+| `ChangePlanActionRecord` (table `ChangePlanActions`) | `ordinal` (unique per plan), `preImageContent` / `preImageHash`, `postImageContent` / `postImageHash`, `containsSecrets`, per-action `status`. Migrated; not yet written by any production code. |
+| `ChangeReceipt` | Declared record; no table, no producer. |
 | `ConfigSnapshot` | content-addressed |
 | `ModInstall` | — |
 | `AuditEvent` | `prevHash` / `hash` (hash chain) |
