@@ -21,7 +21,7 @@ namespace Servyx.Infrastructure.Ssh;
 /// bounded concurrency, and idle eviction — is still meaningful pooling behavior; true single-socket
 /// multiplexing is future work, not a regression this milestone introduces.
 /// </remarks>
-public sealed class ConnectorPool : IConnectorPool, IAsyncDisposable
+public sealed class ConnectorPool : IConnectorPool, IAsyncDisposable, IDisposable
 {
     private readonly Func<ConnectorKey, CancellationToken, Task<IConnector>> _connectorFactory;
     private readonly ILogger<ConnectorPool> _logger;
@@ -156,6 +156,20 @@ public sealed class ConnectorPool : IConnectorPool, IAsyncDisposable
 
         _entries.Clear();
     }
+
+    /// <summary>
+    /// Releases the same resources <see cref="DisposeAsync"/> does, synchronously.
+    /// </summary>
+    /// <remarks>
+    /// Implemented alongside <see cref="IAsyncDisposable"/> rather than instead of it because
+    /// <c>ServiceProvider.Dispose()</c> — which every synchronously-disposed host and test harness calls —
+    /// <em>throws</em> for a resolved singleton that implements only <see cref="IAsyncDisposable"/>, and this
+    /// type is registered as a singleton <see cref="IConnectorPool"/> resolved by hosts this project does not
+    /// own. There is no sync-over-async hazard worth avoiding here: <see cref="DisposeAsync"/> only disposes
+    /// an already-idle <see cref="Timer"/> and in-memory entries, with no in-flight I/O to wait on, and
+    /// disposal runs with no synchronization context.
+    /// </remarks>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     private sealed class PooledEntry
     {

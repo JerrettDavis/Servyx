@@ -41,7 +41,7 @@ namespace Servyx.Composition;
 /// guaranteed to fail.
 /// </para>
 /// </remarks>
-public sealed class ServyxServerLifecycles : IAsyncDisposable
+public sealed class ServyxServerLifecycles : IAsyncDisposable, IDisposable
 {
     private readonly IServerQueryService _query;
     private readonly ITransport _transport;
@@ -181,9 +181,19 @@ public sealed class ServyxServerLifecycles : IAsyncDisposable
                 continue;
             }
 
+            // Only a connect that has already finished can be drained. Awaiting one still in flight would
+            // block disposal on however long the daemon takes to answer — and, if that connect is itself
+            // stuck, forever. Disposal must always terminate; a session belonging to an unfinished connect
+            // is released when its own transport is, which is the same guarantee it had before this type
+            // existed.
+            if (!lazy.Value.IsCompletedSuccessfully)
+            {
+                continue;
+            }
+
             try
             {
-                await (await lazy.Value.ConfigureAwait(false)).DisposeAsync().ConfigureAwait(false);
+                await lazy.Value.Result.DisposeAsync().ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -194,4 +204,18 @@ public sealed class ServyxServerLifecycles : IAsyncDisposable
 
         _sessions.Clear();
     }
+
+    /// <summary>
+    /// Releases the same sessions <see cref="DisposeAsync"/> does, synchronously.
+    /// </summary>
+    /// <remarks>
+    /// Implemented alongside <see cref="IAsyncDisposable"/> rather than instead of it because
+    /// <c>ServiceProvider.Dispose()</c> — which every synchronously-disposed host and test harness calls —
+    /// <em>throws</em> for a resolved singleton that implements only <see cref="IAsyncDisposable"/>. This
+    /// service is registered in the composition root and resolved by hosts this project does not own, so it
+    /// has to be disposable both ways. There is no sync-over-async hazard worth avoiding here: every task
+    /// being awaited has already completed or is a session teardown, and disposal runs with no
+    /// synchronization context.
+    /// </remarks>
+    public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 }
