@@ -1,3 +1,4 @@
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Lifecycle;
 
 namespace Servyx.Application.Servers;
@@ -63,18 +64,46 @@ public sealed record ServerSummary(
     IReadOnlyList<string>? AmbiguousCandidateGameIds = null);
 
 /// <summary>
-/// A single setting value read from a server's live configuration surface. Only the
-/// <see cref="Authoritative"/> column is populated in this milestone — reading the generated INI
-/// (Rendered) and live RCON/REST state (Runtime) is M2/M3 work, so those columns are left for the
-/// caller to render as "not yet read" rather than being fabricated here.
+/// A single setting value read from a server's live configuration surface.
 /// </summary>
+/// <remarks>
+/// <para>
+/// The four value columns mirror <see cref="Servyx.Domain.Configuration.SettingState"/>'s, and every one of
+/// them is <see langword="null"/> when it was not read — never a fabricated stand-in. Only
+/// <see cref="Authoritative"/> is populated without a configuration-surface reader wired up; the other
+/// three are sourced from <see cref="Servyx.Domain.Configuration.ISettingStateResolver"/> and stay null
+/// when no <see cref="Servyx.Domain.Configuration.ISettingStateResolverFactory"/> is registered, when the
+/// server's surfaces are unreachable, or when reading them fails.
+/// </para>
+/// <para>
+/// The trailing five members are optional positional parameters because this record predates the resolver
+/// and is still constructed with the Authoritative column alone — in the characterization tests, and
+/// anywhere the environment is the only source available.
+/// </para>
+/// </remarks>
 /// <param name="Authoritative">
-/// The current value as read from the live container's environment, or <see langword="null"/> if the
-/// key was not present. When <see cref="IsSecret"/> is <see langword="true"/>, this is always the fixed
-/// mask <c>"********"</c> — the real value is read internally to decide presence but is never assigned
-/// to this property.
+/// The current value as read from the live container's environment, falling back to the authoritative
+/// configuration surface, or <see langword="null"/> if neither had it. The container's own environment is
+/// preferred deliberately: it is what the workload is actually running with, whereas the <c>.env</c> file
+/// on the host is what it would run with on its next start. A disagreement between those two is drift, not
+/// a better answer, and <see cref="Drift"/> is where it belongs.
 /// </param>
-public sealed record ServerSettingValue(string Key, string Label, string Group, bool IsSecret, string? Authoritative);
+/// <param name="Desired">Servyx's recorded intent for this setting, or <see langword="null"/> when none is recorded or it was not read.</param>
+/// <param name="Rendered">The value on the workload-generated (derived) surface, or <see langword="null"/> when not read.</param>
+/// <param name="Runtime">The live in-process value, or <see langword="null"/> when not read.</param>
+/// <param name="Drift">Which of the four columns disagree, and whether any of them could not be read at all.</param>
+/// <param name="PendingRegeneration">True when the authoritative and rendered columns disagree only because a restart has not happened yet.</param>
+public sealed record ServerSettingValue(
+    string Key,
+    string Label,
+    string Group,
+    bool IsSecret,
+    string? Authoritative,
+    string? Desired = null,
+    string? Rendered = null,
+    string? Runtime = null,
+    DriftKind Drift = DriftKind.None,
+    bool PendingRegeneration = false);
 
 /// <summary>Everything the "Overview" and "Settings" views need for a single adopted server.</summary>
 public sealed record ServerDetail(

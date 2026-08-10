@@ -22,6 +22,11 @@
     <ProjectReference Include="..\..\Core\Servyx.Application\Servyx.Application.csproj" />
     <ProjectReference Include="..\..\Core\Servyx.Definitions\Servyx.Definitions.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure\Servyx.Infrastructure.csproj" />
+    <!-- The configuration engine (format adapters, value codecs, surface resolver, setting-state
+         resolver). Referenced so AddServyxCore can call AddServyxConfig() and then supersede its
+         placeholder ISurfaceResolutionContextSource/IServerConfigSessionSource with
+         ServyxSurfaceResolutionContextSource — the per-server deployment facts only this layer knows. -->
+    <ProjectReference Include="..\..\Infrastructure\Servyx.Config\Servyx.Config.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Docker\Servyx.Infrastructure.Docker.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Rcon\Servyx.Infrastructure.Rcon.csproj" />
     <ProjectReference Include="..\..\Infrastructure\Servyx.Infrastructure.Ssh\Servyx.Infrastructure.Ssh.csproj" />

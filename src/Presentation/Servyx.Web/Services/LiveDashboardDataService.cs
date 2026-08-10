@@ -599,12 +599,11 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         CpuLimit: d.CpuLimit is null ? "(unknown)" : d.CpuLimit.Value.ToString("0.##", CultureInfo.InvariantCulture));
 
     /// <summary>
-    /// Maps only the M1-supported Authoritative column; Desired/Rendered/Runtime and drift computation
-    /// require the DB-backed intent, INI parser, and RCON/REST session respectively (M2/M3 scope) and
-    /// are left <see langword="null"/>/<see cref="DriftKind.None"/> so the UI shows them as "not yet
-    /// read" rather than a fabricated value. Every value column is routed through
-    /// <see cref="MaskIfSecret"/> regardless of whether it is sourced yet — see that method's remarks
-    /// for why this has to be structural rather than something each future data source remembers to do.
+    /// Maps every column the read model carries. A column the read model left <see langword="null"/> — no
+    /// configuration-surface reader wired, the surface unreachable, or the read failed — stays null here,
+    /// so the UI shows "not yet read" rather than a fabricated value. Every value column is routed through
+    /// <see cref="MaskIfSecret"/> regardless of where it came from — see that method's remarks for why this
+    /// has to be structural rather than something each data source remembers to do.
     /// </summary>
     private static IReadOnlyList<SettingRow> MapSettings(IReadOnlyList<ServerSettingValue> settings) => settings
         .Select(s => new SettingRow(
@@ -612,19 +611,16 @@ public sealed class LiveDashboardDataService : IDashboardDataService
             Key: s.Key,
             Label: s.Label,
             IsSecret: s.IsSecret,
-            // Not yet sourced (M2+ DB-backed intent). Masked at read time regardless of the hardcoded
-            // null today, so a future Desired source can never bypass masking just by plugging a real
-            // value in here without also touching this line.
-            Desired: MaskIfSecret(s.IsSecret, rawValue: null),
+            // Masked here as well as at the source, so no data source can bypass masking just by plugging a
+            // real value into the read model without also touching this line.
+            Desired: MaskIfSecret(s.IsSecret, s.Desired),
             // Defense in depth: ServerQueryService.BuildSettings already masks Authoritative before it
             // ever reaches this layer, so this is redundant-but-harmless for it today.
             Authoritative: MaskIfSecret(s.IsSecret, s.Authoritative),
-            // Not yet sourced (M2 INI parser).
-            Rendered: MaskIfSecret(s.IsSecret, rawValue: null),
-            // Not yet sourced (M2/M3 RCON/REST session).
-            Runtime: MaskIfSecret(s.IsSecret, rawValue: null),
-            Drift: DriftKind.None,
-            PendingRegeneration: false))
+            Rendered: MaskIfSecret(s.IsSecret, s.Rendered),
+            Runtime: MaskIfSecret(s.IsSecret, s.Runtime),
+            Drift: s.Drift,
+            PendingRegeneration: s.PendingRegeneration))
         .ToList();
 
     /// <summary>

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Servyx.Application.Servers;
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Observability;
@@ -68,7 +69,12 @@ public static class ServiceCollectionExtensions
             criteriaSet,
             sp.GetRequiredService<IBoundDefinitionLookup>(),
             sp.GetRequiredService<ILogger<ServerQueryService>>(),
-            sp.GetService<IServerDefinitionBindingStore>()));
+            sp.GetService<IServerDefinitionBindingStore>(),
+
+            // Optional for the same reason the binding store above is: a host that has not wired a
+            // configuration-surface reader still gets the environment-sourced Authoritative column, and
+            // every other column honestly stays null rather than being fabricated.
+            sp.GetService<ISettingStateResolverFactory>()));
 
         return services;
     }

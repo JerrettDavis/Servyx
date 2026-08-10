@@ -8,7 +8,9 @@ using Servyx.Application.Backups;
 using Servyx.Application.Lifecycle;
 using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
+using Servyx.Config;
 using Servyx.Definitions;
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Lifecycle;
@@ -358,6 +360,56 @@ public static class ServyxCoreCompositionExtensions
             sp.GetRequiredService<WriteGrantCache>(),
             sp.GetRequiredService<ILoggerFactory>().CreateLogger(WriteGrantAudit.LogCategory),
             sp.GetService<TimeProvider>()));
+
+        // ── Configuration surfaces ───────────────────────────────────────────────────────────────────
+        //
+        // Registered on both sides of the provisioning gate, because reading a configuration surface is a
+        // read: it opens sessions and parses files, and issues no command, no write, and no RCON. What the
+        // gate governs is applying a change, which is IPlanExecutor's job and does not exist yet.
+        //
+        // ORDER MATTERS. ServyxSurfaceResolutionContextSource is registered BEFORE AddServyxConfig() so the
+        // latter's TryAdd'ed placeholders — which know about no server at all — yield to it, exactly as
+        // AddServyxConfig's own remarks describe. Registered as the implementation type as well, so the
+        // sessions it caches are disposed with the container.
+        builder.Services.AddSingleton(sp =>
+        {
+            // ${COMPOSE_DIR}: the host directory where '.env' and 'compose.yaml' sit next to each other.
+            // Servyx cannot discover it — it names a directory outside every container filesystem — so it is
+            // opt-in under the same key the backup capture set already uses, rather than a second spelling
+            // of one operator-configured fact. Read as raw keys rather than via
+            // BackupWiringOptions.FromConfiguration so that composing this (always-on) block cannot start
+            // throwing for a host whose backup options are misconfigured but whose backups are switched off.
+            var composeDirectory = builder.Configuration[$"{BackupWiringOptions.SectionKey}:ComposeDirectory"];
+            var containerDataRoot = builder.Configuration[$"{BackupWiringOptions.SectionKey}:ContainerDataRoot"];
+
+            // Built and guarded in the same place, like every other transport in this process — see
+            // ProvisionerCompositionWriteGuardTests, which fails a method that constructs a transport
+            // without constructing its guard alongside. ComposeWriteModeResolver re-asks the SAME per-server
+            // IWriteModeResolver the Docker transport consults, so this session is never a directory-scoped
+            // grant that outlives the server's own posture.
+            ITransport? composeTransport = string.IsNullOrWhiteSpace(composeDirectory)
+                ? null
+                : new WriteGuardedTransport(
+                    new LocalProcessTransport(),
+                    new ComposeWriteModeResolver(sp.GetRequiredService<IWriteModeResolver>()));
+
+            return new ServyxSurfaceResolutionContextSource(
+                // Deferred, not injected. IServerQueryService optionally consumes
+                // ISettingStateResolverFactory, which consumes this type — resolving it here would close
+                // that loop during container construction. See the constructor parameter's own remarks.
+                sp.GetRequiredService<IServerQueryService>,
+                sp.GetRequiredService<ITransport>(),
+                singleDefinition,
+                containerDataRoot,
+                composeDirectory,
+                composeTransport);
+        });
+        builder.Services.AddSingleton<ISurfaceResolutionContextSource>(
+            sp => sp.GetRequiredService<ServyxSurfaceResolutionContextSource>());
+        builder.Services.AddSingleton<IServerConfigSessionSource>(
+            sp => sp.GetRequiredService<ServyxSurfaceResolutionContextSource>());
+
+        builder.Services.AddServyxConfig();
 
         // The old Servyx:Servers:<key>:WriteMode key is now IGNORED for adopted (local docker) servers —
         // neither honoured as an override nor imported as a seed. It is keyed by container NAME while the

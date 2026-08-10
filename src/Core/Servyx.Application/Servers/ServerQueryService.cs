@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Discovery;
@@ -77,6 +78,16 @@ public sealed class ServerQueryService : IServerQueryService
     private readonly ITransport _transport;
     private readonly ILogger<ServerQueryService> _logger;
 
+    /// <summary>
+    /// Reads each setting's real configuration surfaces, or <see langword="null"/> when no reader is wired.
+    /// </summary>
+    /// <remarks>
+    /// Optional, and null in every construction that predates it, so <see cref="BuildSettings"/> keeps
+    /// producing exactly the environment-only rows it always has. See
+    /// <see cref="EnrichAsync"/> for what a non-null one adds and, importantly, what it does not replace.
+    /// </remarks>
+    private readonly ISettingStateResolverFactory? _settingStates;
+
     private readonly bool _multiMode;
 
     // ── Single-criteria mode fields — populated only by the original constructor. ──────────────────────
@@ -107,6 +118,13 @@ public sealed class ServerQueryService : IServerQueryService
     /// unhealthy explanation degrades to <see cref="GenericUnhealthyExplanation"/> rather than throwing or
     /// assuming a specific game.
     /// </param>
+    /// <param name="settingStates">
+    /// Reads each setting's real configuration surfaces — the <c>Desired</c>, <c>Rendered</c> and
+    /// <c>Runtime</c> columns, and the drift between them. Optional and null by default, exactly like
+    /// <paramref name="settingGroups"/> and <paramref name="lifecycle"/>: with no reader wired, or with one
+    /// that cannot reach this server's surfaces, <see cref="ServerDetail.Settings"/> carries the same
+    /// environment-sourced <c>Authoritative</c> column it always has and leaves the rest honestly null.
+    /// </param>
     public ServerQueryService(
         IServerDiscovery discovery,
         IMetricsSource metricsSource,
@@ -115,7 +133,8 @@ public sealed class ServerQueryService : IServerQueryService
         AdoptionCriteria criteria,
         ILogger<ServerQueryService> logger,
         IReadOnlyList<SettingGroup>? settingGroups = null,
-        LifecycleDefinition? lifecycle = null)
+        LifecycleDefinition? lifecycle = null,
+        ISettingStateResolverFactory? settingStates = null)
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(metricsSource);
@@ -134,6 +153,7 @@ public sealed class ServerQueryService : IServerQueryService
             ? []
             : settingGroups.SelectMany(g => g.Items).ToList();
         _healthSignal = lifecycle?.HealthSignal;
+        _settingStates = settingStates;
         _multiMode = false;
     }
 
@@ -152,6 +172,10 @@ public sealed class ServerQueryService : IServerQueryService
     /// are then re-resolved fresh on every call, with no cross-restart pin) so this constructor remains
     /// usable in tests and hosts that have not wired persistence.
     /// </param>
+    /// <param name="settingStates">
+    /// Reads each setting's real configuration surfaces. Optional and null by default — see the
+    /// single-criteria constructor's parameter of the same name.
+    /// </param>
     public ServerQueryService(
         IServerDiscovery discovery,
         IMetricsSource metricsSource,
@@ -160,7 +184,8 @@ public sealed class ServerQueryService : IServerQueryService
         IReadOnlyList<DefinitionAdoptionCriteria> criteriaSet,
         IBoundDefinitionLookup definitionLookup,
         ILogger<ServerQueryService> logger,
-        IServerDefinitionBindingStore? bindingStore = null)
+        IServerDefinitionBindingStore? bindingStore = null,
+        ISettingStateResolverFactory? settingStates = null)
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(metricsSource);
@@ -178,6 +203,7 @@ public sealed class ServerQueryService : IServerQueryService
         _criteriaSet = criteriaSet;
         _definitionLookup = definitionLookup;
         _bindingStore = bindingStore;
+        _settingStates = settingStates;
         _multiMode = true;
     }
 
@@ -229,7 +255,7 @@ public sealed class ServerQueryService : IServerQueryService
         var match = attempt.Servers.FirstOrDefault(s => string.Equals(s.Server.ServerId, serverId, StringComparison.OrdinalIgnoreCase))
             ?? attempt.Servers.FirstOrDefault(s => string.Equals(s.Server.Name, serverId, StringComparison.OrdinalIgnoreCase));
 
-        return match is null ? null : ToDetail(match);
+        return match is null ? null : await ToDetailAsync(match, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -517,7 +543,7 @@ public sealed class ServerQueryService : IServerQueryService
             AmbiguousCandidateGameIds: ctx.BindingStatus == ServerBindingStatus.Bound ? null : ctx.AmbiguousCandidateGameIds);
     }
 
-    private ServerDetail ToDetail(ServerContext ctx)
+    private async Task<ServerDetail> ToDetailAsync(ServerContext ctx, CancellationToken ct)
     {
         var requiredMount = ctx.Server.Mounts.FirstOrDefault(
             m => string.Equals(m.Destination, ctx.RequiredMountContainerPath, StringComparison.Ordinal));
@@ -531,7 +557,87 @@ public sealed class ServerQueryService : IServerQueryService
             IpAddress: ctx.Server.ContainerIp,
             MemoryLimitBytes: ctx.Server.MemoryLimitBytes,
             CpuLimit: ctx.Server.CpuLimit,
-            Settings: BuildSettings(ctx.Settings, ctx.Server.EnvironmentVariables));
+            Settings: await EnrichAsync(
+                ctx,
+                BuildSettings(ctx.Settings, ctx.Server.EnvironmentVariables),
+                ct).ConfigureAwait(false));
+    }
+
+    /// <summary>
+    /// Fills in the <c>Desired</c>, <c>Rendered</c>, <c>Runtime</c> and drift columns of
+    /// <paramref name="rows"/> from the server's real configuration surfaces, leaving them exactly as
+    /// <see cref="BuildSettings"/> produced them when there is no reader, no state for a row, or any
+    /// failure at all.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong><c>Authoritative</c> is not replaced, only backfilled.</strong>
+    /// <see cref="BuildSettings"/> sources it from the running container's own environment; the resolver
+    /// sources it from the authoritative configuration surface on disk (for a compose deployment, the
+    /// <c>.env</c> file). Those are two different facts — what the workload is running with now, versus what
+    /// it would start with next time — and their disagreement is precisely the drift the four-column model
+    /// exists to expose. Preferring the file would silently discard the running value and make that drift
+    /// invisible, so the resolver's value is used only where the environment had none (a setting with no
+    /// <c>env</c>-surface binding at all).
+    /// </para>
+    /// <para>
+    /// <strong>Every failure degrades to today's rows.</strong> Reading surfaces opens sessions and touches
+    /// files on a target that may be unreachable, and a settings page must not fail to render because a
+    /// container is stopped. A throwing resolver is logged once and the environment-only rows are returned
+    /// unchanged — the same degrade-honestly contract every other method on this class follows.
+    /// </para>
+    /// <para>
+    /// <strong>Masking is preserved end to end.</strong> Both sources mask a secret with the same fixed
+    /// <c>"********"</c>, and neither the real value nor any part of it is logged here.
+    /// </para>
+    /// </remarks>
+    private async Task<IReadOnlyList<ServerSettingValue>> EnrichAsync(
+        ServerContext ctx,
+        IReadOnlyList<ServerSettingValue> rows,
+        CancellationToken ct)
+    {
+        if (_settingStates is null || rows.Count == 0)
+        {
+            return rows;
+        }
+
+        try
+        {
+            var resolver = await _settingStates
+                .CreateAsync(new SettingStateScope(ctx.Server.ServerId, ctx.Settings), ct)
+                .ConfigureAwait(false);
+
+            var enriched = new List<ServerSettingValue>(rows.Count);
+            foreach (var row in rows)
+            {
+                var state = await resolver.ResolveAsync(row.Key, ct).ConfigureAwait(false);
+                enriched.Add(row with
+                {
+                    Authoritative = row.Authoritative ?? state.Authoritative,
+                    Desired = state.Desired,
+                    Rendered = state.Rendered,
+                    Runtime = state.Runtime,
+                    Drift = state.Drift,
+                    PendingRegeneration = state.PendingRegeneration,
+                });
+            }
+
+            return enriched;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Failed to read configuration surfaces for server '{ServerId}'; showing environment-sourced "
+                + "settings only.",
+                ctx.Server.ServerId);
+
+            return rows;
+        }
     }
 
     /// <summary>
