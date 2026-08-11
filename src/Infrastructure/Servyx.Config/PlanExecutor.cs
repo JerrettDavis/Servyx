@@ -7,6 +7,7 @@ using Servyx.Domain.Common;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Entities;
+using Servyx.Domain.Servers;
 using Servyx.Domain.Transport;
 
 namespace Servyx.Config;
@@ -109,6 +110,7 @@ public sealed class PlanExecutor : IPlanExecutor
     private readonly TimeProvider _time;
     private readonly ILogger<PlanExecutor>? _logger;
     private readonly string _actor;
+    private readonly IServerRepository? _servers;
 
     /// <summary>Creates the previewer.</summary>
     /// <param name="sessions">Supplies the server's live read sessions and its declared surface set.</param>
@@ -130,6 +132,15 @@ public sealed class PlanExecutor : IPlanExecutor
     /// </param>
     /// <param name="logger">Optional; records a malformed definition's <c>derivedFrom</c> cycle.</param>
     /// <param name="actor">Who the plan is attributed to. Defaults to <see cref="DefaultActor"/>.</param>
+    /// <param name="servers">
+    /// Resolves a stored plan's <see cref="ChangePlanRecord.ServerId"/> back to the container id every other
+    /// dependency here is keyed by, which is what <see cref="ApplyAsync"/> needs and
+    /// <see cref="PreviewAsync"/> does not (preview is handed the container id directly). Deliberately
+    /// <see cref="IServerRepository"/> and not <c>IServerQueryService</c> — see this type's own remarks for
+    /// the re-entrancy deadlock that rule exists to prevent; this repository is a leaf over Servyx's own
+    /// database and cannot route back into the settings pipeline. Optional only so preview-only compositions
+    /// and preview-only tests need not supply one; <see cref="ApplyAsync"/> refuses loudly without it.
+    /// </param>
     public PlanExecutor(
         IServerConfigSessionSource sessions,
         IServerPlanCatalogSource catalogs,
@@ -141,7 +152,8 @@ public sealed class PlanExecutor : IPlanExecutor
         IEnumerable<IConfigValueCodec> codecs,
         TimeProvider? time = null,
         ILogger<PlanExecutor>? logger = null,
-        string? actor = null)
+        string? actor = null,
+        IServerRepository? servers = null)
     {
         ArgumentNullException.ThrowIfNull(sessions);
         ArgumentNullException.ThrowIfNull(catalogs);
@@ -163,6 +175,7 @@ public sealed class PlanExecutor : IPlanExecutor
         _time = time ?? TimeProvider.System;
         _logger = logger;
         _actor = string.IsNullOrWhiteSpace(actor) ? DefaultActor : actor;
+        _servers = servers;
     }
 
     /// <inheritdoc />
@@ -291,19 +304,813 @@ public sealed class PlanExecutor : IPlanExecutor
         };
     }
 
+    // ── Apply ──────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The operation name <see cref="RequireWritesEnabled"/> phrases its refusal around.</summary>
+    private const string ApplyOperation = "apply a configuration change";
+
     /// <inheritdoc />
-    public Task<ChangeReceipt> ApplyAsync(string planId, CancellationToken ct = default) =>
-        throw new NotImplementedException(
-            "Applying a previewed plan is not implemented yet. PreviewAsync computes, masks and persists a "
-            + "plan; nothing in Servyx writes a configuration surface to a game server. See "
-            + "ChangePlanRecord.Status for the state machine a later phase will drive.");
+    /// <remarks>
+    /// <para>
+    /// <strong>Refusal happens before any side effect, deliberately and in that order.</strong> Write mode,
+    /// plan status, expiry, control-channel scope, definition identity and surface drift are all checked
+    /// while nothing has been written; only then is the plan claimed and the first byte sent. The one
+    /// departure from "write mode first" is that the plan must be read out of the database before the server
+    /// it targets — and therefore the session whose posture is being asked about — is even known. That read
+    /// touches Servyx's own storage only.
+    /// </para>
+    /// <para>
+    /// <strong>Two layers of staleness, not one.</strong> The pre-flight sweep re-reads EVERY bound surface
+    /// the plan recorded a hash for — not merely the ones being written — and raises
+    /// <see cref="PlanStaleException"/> before a single write is attempted, because several planned values
+    /// were validated against surfaces this plan does not touch. Each individual write then carries the
+    /// action's recorded <see cref="ChangePlanActionRecord.PreImageHash"/> as
+    /// <see cref="FileWriteOptions.ExpectedPreImageHash"/>, which is the TOCTOU backstop for drift arriving
+    /// between the sweep and that specific write; the transport refuses with
+    /// <see cref="TargetDriftException"/> before touching the file.
+    /// </para>
+    /// <para>
+    /// <strong>Exactly the previewed bytes are written.</strong> The post-image was rendered once, at
+    /// preview, and is written verbatim from <see cref="ChangePlanActionRecord.PostImageContent"/>. Nothing
+    /// is re-derived from the desired values here, so there is no way for what an operator approved and what
+    /// reaches the disk to differ.
+    /// </para>
+    /// <para>
+    /// <strong>Every write is <see cref="FileWriteStrategy.AtomicRename"/>, with no per-write branching, and
+    /// that is a decision rather than an oversight.</strong> Three things force it. It is the only strategy
+    /// more than one transport implements — <c>SftpFileChannel</c>, <c>ShellFileChannel</c> and
+    /// <c>LocalExecutionTarget</c> all call
+    /// <see cref="FileWriteOptions.ThrowIfBeyondPlainAtomicRename"/> and refuse anything else, and a
+    /// <c>${COMPOSE_DIR}</c> surface routes over exactly those. It is the only correct strategy against a
+    /// workload that is running, which is what a server under management normally is;
+    /// <see cref="FileWriteStrategy.DirectPlacement"/> is explicitly non-atomic and a reader racing it can
+    /// observe a partial file. And selecting <see cref="FileWriteStrategy.DirectPlacement"/> honestly would
+    /// require knowing the container is NOT running, a fact no dependency available here reports —
+    /// <see cref="IContainerLifecycle"/> is mutation-only by design and <c>IServerQueryService</c> is
+    /// forbidden to this type. Guessing is the one thing <see cref="FileWriteStrategy"/>'s own contract
+    /// forbids. The failure mode of this choice is loud and non-destructive: against a stopped container the
+    /// finalizing rename fails, the transport removes its temporary sibling, and the target file is
+    /// unchanged. A future phase that plumbs a read-only run-state fact in below
+    /// <c>IServerQueryService</c> can revisit this; until one exists, there is nothing to branch on.
+    /// </para>
+    /// <para>
+    /// <strong>Nothing is restarted or recreated.</strong> A plan carrying
+    /// <see cref="ConsequenceKind.RestartRequired"/> or <see cref="ConsequenceKind.RecreateRequired"/> still
+    /// has its file writes applied here, and the consequence is NOT acted on: this method never starts,
+    /// stops, restarts or recreates a container or process. The returned <see cref="ChangeReceipt"/>
+    /// therefore means "the bytes are on disk", not "the running workload has picked them up" — the operator
+    /// (or a later phase) still has to perform the restart the plan's consequences named.
+    /// </para>
+    /// <para>
+    /// <strong>Partial application is recorded, never hidden.</strong> If a write fails partway through, the
+    /// plan lands in <see cref="ChangePlanStatus.PartiallyApplied"/> (or
+    /// <see cref="ChangePlanStatus.Failed"/> when nothing at all landed — the honest reading of that member's
+    /// own definition), each action carries its own outcome, and the exception propagates. A
+    /// partially-applied plan can never read as a fully applied one, because
+    /// <see cref="ChangePlanStatus.Applied"/> is only ever written after every action reported success.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="planId"/> is null, empty or whitespace.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="planId"/> is not a plan id, names no stored plan, names a plan that is not
+    /// <see cref="ChangePlanStatus.Previewed"/>, names a plan whose server is no longer tracked, or the plan
+    /// contains an action this phase cannot carry out.
+    /// </exception>
+    /// <exception cref="PlanStaleException">
+    /// The plan expired, its governing definition changed underneath it, or a bound surface drifted — either
+    /// during the pre-flight sweep (before any write) or at an individual write's own pre-image check.
+    /// </exception>
+    /// <exception cref="WritesDisabledException">
+    /// The server's write mode is not <see cref="WriteMode.Enabled"/>. Raised up front for the whole plan,
+    /// and possible again mid-plan if the grant is revoked while the apply is running — see
+    /// <c>WriteGuardedExecutionTarget</c>, which re-resolves the grant per call by design.
+    /// </exception>
+    /// <exception cref="ChangePlanConcurrencyException">
+    /// Another attempt claimed this plan first. The double-apply guard.
+    /// </exception>
+    /// <exception cref="PlanApplyFidelityException">
+    /// Raised from two places with very different force. Before anything is written, a stored action whose
+    /// post-image content and recorded digest disagree. After a write, either the transport's own receipt
+    /// disagreeing with the approved digest (which attests only that the transport agrees about the bytes it
+    /// was handed) or — the one that speaks to the file itself — a read-back finding different content on the
+    /// server. In the post-write cases the write already happened and is deliberately NOT undone or retried;
+    /// the action is Failed carrying both digests and the plan is left
+    /// <see cref="ChangePlanStatus.PartiallyApplied"/>.
+    /// </exception>
+    public async Task<ChangeReceipt> ApplyAsync(string planId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(planId);
+
+        if (!ChangePlanId.TryParse(planId, out var id))
+        {
+            throw new InvalidOperationException(
+                $"'{planId}' is not a change plan identifier, so there is no plan to apply.");
+        }
+
+        var stored = await _store.TryGetAsync(id, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"No change plan '{planId}' is stored. A plan id can outlive its row — forgetting a server "
+                + "discards its plans — so preview the change again to get a fresh plan.");
+
+        var plan = stored.Plan;
+        var actions = stored.Actions;
+
+        // A plan is applicable exactly once, out of exactly one state. Anything else — already applied,
+        // mid-flight, stale, superseded — is refused here; the RowVersion claim further down is what makes
+        // this check race-proof rather than merely usually right.
+        if (plan.Status != ChangePlanStatus.Previewed)
+        {
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' is {plan.Status}, not {ChangePlanStatus.Previewed}, so it cannot be "
+                + "applied. A plan is applicable exactly once; preview the change again to get a fresh plan.");
+        }
+
+        var now = _time.GetUtcNow();
+        if (plan.ExpiresAt <= now)
+        {
+            // Security-relevant, not housekeeping: an approval an operator gave fifteen minutes ago was given
+            // against a picture of the server that is no longer being verified. Recording Stale durably is
+            // what stops a browser tab left open since before the expiry from ever becoming applicable again.
+            await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+            throw new PlanStaleException(
+                $"Change plan '{planId}' expired at {plan.ExpiresAt:u} and it is now {now:u}, so it can no "
+                + "longer be applied. It has been marked stale. Preview the change again to get a fresh plan.",
+                planId);
+        }
+
+        // Out of scope for this phase, and refused for the WHOLE plan rather than skipped within it: applying
+        // the file half of a plan whose control-channel half silently did not happen would leave the server
+        // in a state no operator approved and no diff described.
+        if (actions.Any(a => a.Kind == PlannedActionKind.WriteControlChannel))
+        {
+            var offending = actions
+                .Where(a => a.Kind == PlannedActionKind.WriteControlChannel)
+                .Select(a => $"#{a.Ordinal} ('{a.SurfaceId}')");
+
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' contains control-channel action(s) {string.Join(", ", offending)}, "
+                + "which Servyx cannot yet carry out. The whole plan is refused and NOTHING was written: "
+                + "applying only its file actions would leave the server half-changed in a way the approved "
+                + "diff never described. Apply the file-only part as a separate plan, or wait for "
+                + "control-channel support.");
+        }
+
+        var servers = _servers
+            ?? throw new InvalidOperationException(
+                $"This {nameof(PlanExecutor)} was constructed without an {nameof(IServerRepository)}, so a "
+                + "stored plan's server cannot be resolved back to the container id its sessions are keyed "
+                + "by. Applying a plan is unavailable in this composition; previewing one is not.");
+
+        var server = await servers.TryGetAsync(plan.ServerId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Change plan '{planId}' targets a server Servyx no longer tracks, so there is nothing to "
+                + "apply it to. Nothing was written.");
+
+        var serverId = server.ContainerId;
+
+        var sessions = await _sessions.GetAsync(serverId, ct).ConfigureAwait(false);
+        if (sessions is null || sessions.Sessions.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No configuration session is open for server '{serverId}', so change plan '{planId}' cannot "
+                + "be applied. Nothing was written.");
+        }
+
+        // THE WRITE-MODE GATE, ahead of every side effect — the house idiom, for the reason SshBackupProvider
+        // states at its own call site: the guard on each session would refuse the first write anyway, but by
+        // then a plan could already be half-applied, and the operator would read a failure about a file
+        // instead of about the server's posture. Every session is checked, not only the ones this plan
+        // happens to write through, because the posture is one per-server fact and a plan that can only be
+        // half-permitted must not start.
+        foreach (var session in sessions.Sessions)
+        {
+            RequireWritesEnabled(session.Target, serverId);
+        }
+
+        var catalog = await _catalogs.GetAsync(serverId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"No game definition governs server '{serverId}' any more, so change plan '{planId}' cannot "
+                + "be verified against the catalogue it was planned from. Nothing was written.");
+
+        if (!string.Equals(catalog.DefinitionId, plan.DefinitionId, StringComparison.Ordinal)
+            || !string.Equals(catalog.DefinitionVersion, plan.DefinitionVersion, StringComparison.Ordinal))
+        {
+            await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+            throw new PlanStaleException(
+                $"Change plan '{planId}' was planned against definition '{plan.DefinitionId}' at version "
+                + $"'{plan.DefinitionVersion}', but server '{serverId}' is now governed by "
+                + $"'{catalog.DefinitionId}' at '{catalog.DefinitionVersion}'. The rules the plan was built "
+                + "from changed underneath it, so it has been marked stale and nothing was written.",
+                planId);
+        }
+
+        // Surfaces are re-resolved, never taken from ChangePlanActionRecord.ResolvedPath: an IExecutionTarget
+        // is a live connection that cannot be persisted, and the stored path names no session. The stored
+        // path is the cross-check on this resolution, applied in the pre-flight sweep below.
+        var context = await BindAsync(serverId, catalog.Settings, ct).ConfigureAwait(false);
+
+        await PreflightAsync(plan, actions, context, planId, serverId, ct).ConfigureAwait(false);
+
+        // THE CLAIM. Write-ahead and RowVersion-guarded: durable "an apply is starting" before the first
+        // mutating call, and the point at which a second concurrent attempt that read the same Previewed row
+        // loses. Two attempts can both reach here; exactly one gets past it.
+        plan.Status = ChangePlanStatus.Applying;
+        await _store.UpdateAsync(plan, [], ct).ConfigureAwait(false);
+
+        return await WriteAsync(plan, actions, context, planId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Refuses the operation when <paramref name="target"/> carries a write guard that is not
+    /// <see cref="WriteMode.Enabled"/>.
+    /// </summary>
+    /// <remarks>
+    /// Delegated to <see cref="ExecutionTargetWriteMode"/> rather than re-derived here, exactly as the SSH
+    /// and local-process backup providers do, so those three and this one cannot drift into different
+    /// answers to the same question. A target with no guard anywhere in it answers <see langword="null"/> and
+    /// is allowed through: this method surfaces a refusal the guard would make anyway, earlier and with a
+    /// message about the operation rather than about a file. Anything that slips past still meets the guard
+    /// at the first real write — see <see cref="ApplyAsync"/>'s handling of a mid-flight revocation, which is
+    /// a real possibility because <c>WriteGuardedExecutionTarget</c> re-resolves the grant per call.
+    /// </remarks>
+    private static void RequireWritesEnabled(IExecutionTarget target, string serverId) =>
+        ExecutionTargetWriteMode.RequireWritesEnabled(
+            target,
+            ApplyOperation,
+            serverId,
+            "Previewing a change, reading current values, and inspecting an already-recorded plan all remain "
+            + "available.");
+
+    /// <summary>
+    /// The pre-flight sweep: proves every action is still carryable and every bound surface still hashes to
+    /// what preview saw, before a single byte is written.
+    /// </summary>
+    /// <exception cref="PlanStaleException">A surface drifted, vanished, or moved. The plan is marked stale.</exception>
+    /// <exception cref="PlanApplyFidelityException">
+    /// A stored action's post-image content and its recorded digest describe different files, or content was
+    /// recorded with no digest at all. The ledger row disagrees with itself, so there is no trustworthy
+    /// statement of what the operator approved to check a write against — and checking a write against a
+    /// digest that was never its content's is worse than not checking, because it passes. Nothing is written.
+    /// </exception>
+    /// <exception cref="InvalidOperationException">A stored action is not carryable at all (a missing post-image).</exception>
+    private async Task PreflightAsync(
+        ChangePlanRecord plan,
+        IReadOnlyList<ChangePlanActionRecord> actions,
+        PlanContext context,
+        string planId,
+        string serverId,
+        CancellationToken ct)
+    {
+        foreach (var action in actions)
+        {
+            // A row that records no bytes to write cannot be applied and cannot be reasoned about. Refused as
+            // a caller/storage bug rather than treated as "write an empty file", which would truncate a real
+            // configuration file to nothing.
+            if (action.PostImageContent is null)
+            {
+                throw new InvalidOperationException(
+                    $"Action #{action.Ordinal} of change plan '{planId}' (surface '{action.SurfaceId}') "
+                    + "records no post-image content, so there is nothing to write. Nothing was written. "
+                    + "Preview the change again to get a plan with a rendered post-image.");
+            }
+
+            // The stored content and the stored digest must agree BEFORE anything is written. This is what
+            // makes PostImageHash usable as "the digest the operator approved" later: without it, the
+            // post-write comparisons would be checking the bytes against a number that might itself be wrong,
+            // and a corrupted row would sail through both of them.
+            var renderedHash = Hash(StrictUtf8.GetBytes(action.PostImageContent));
+            if (action.PostImageHash is not { } recordedHash)
+            {
+                throw new PlanApplyFidelityException(
+                    $"Action #{action.Ordinal} of change plan '{planId}' (surface '{action.SurfaceId}') "
+                    + "records post-image content but no digest for it, so there is nothing to verify the "
+                    + "write against. Nothing was written. Preview the change again.",
+                    planId,
+                    action.Ordinal,
+                    action.SurfaceId,
+                    renderedHash,
+                    null);
+            }
+
+            if (!string.Equals(renderedHash, recordedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new PlanApplyFidelityException(
+                    $"Action #{action.Ordinal} of change plan '{planId}' (surface '{action.SurfaceId}') has a "
+                    + $"stored post-image whose content hashes to {renderedHash} but whose recorded digest is "
+                    + $"{recordedHash}. The stored plan disagrees with itself, so there is no way to tell "
+                    + "which of the two the operator approved. Nothing was written. Preview the change again.",
+                    planId,
+                    action.Ordinal,
+                    action.SurfaceId,
+                    recordedHash,
+                    renderedHash);
+            }
+
+            if (!context.Bound.TryGetValue(action.SurfaceId, out var surface) || surface.Surface.Path is null)
+            {
+                await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+                var reason = context.Failures.TryGetValue(action.SurfaceId, out var failure)
+                    ? " " + failure.Reason
+                    : string.Empty;
+
+                throw new PlanStaleException(
+                    $"Surface '{action.SurfaceId}', which change plan '{planId}' writes, no longer resolves "
+                    + $"to a reachable file on server '{serverId}'.{reason} The plan has been marked stale "
+                    + "and nothing was written.",
+                    planId);
+            }
+
+            // ResolvedPath's only job — see its own remarks. A freshly resolved path that differs means the
+            // deployment moved underneath the plan, and writing the approved bytes to a path the operator
+            // never saw is exactly the mistake this column exists to catch.
+            if (!string.Equals(surface.Surface.Path.Value.Value, action.ResolvedPath, StringComparison.Ordinal))
+            {
+                await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+                throw new PlanStaleException(
+                    $"Surface '{action.SurfaceId}' resolved to '{action.ResolvedPath}' when change plan "
+                    + $"'{planId}' was previewed and resolves to '{surface.Surface.Path.Value.Value}' now, so "
+                    + "the deployment moved underneath the plan. It has been marked stale and nothing was "
+                    + "written.",
+                    planId);
+            }
+        }
+
+        var expected = DeserializeHashes(plan.SurfaceHashesJson);
+
+        foreach (var (surfaceId, hash) in expected.OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            ct.ThrowIfCancellationRequested();
+
+            // Every surface the preview READ, not merely the ones it writes. Several planned values were
+            // validated against surfaces this plan does not touch, and a change to one of those invalidates
+            // the plan just as surely as a change to a written one.
+            if (!context.Bound.TryGetValue(surfaceId, out var surface))
+            {
+                await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+                throw new PlanStaleException(
+                    $"Surface '{surfaceId}', which change plan '{planId}' was validated against, is no longer "
+                    + $"reachable on server '{serverId}'. The plan has been marked stale and nothing was "
+                    + "written.",
+                    planId);
+            }
+
+            var (bytes, error) = await ReadRawAsync(surface, ct).ConfigureAwait(false);
+            if (error is not null)
+            {
+                await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+                throw new PlanStaleException(
+                    $"Surface '{surfaceId}' could not be re-read to check change plan '{planId}' for drift: "
+                    + $"{error} The plan has been marked stale and nothing was written.",
+                    planId);
+            }
+
+            var actual = Hash(bytes!);
+            if (!string.Equals(actual, hash, StringComparison.OrdinalIgnoreCase))
+            {
+                await TryMarkStaleAsync(plan, ct).ConfigureAwait(false);
+
+                throw new PlanStaleException(
+                    $"Surface '{surfaceId}' has changed since change plan '{planId}' was previewed (expected "
+                    + $"content hash {hash}, found {actual}), so the plan no longer describes this server. It "
+                    + "has been marked stale and NOTHING was written. Preview the change again to see the "
+                    + "current state.",
+                    planId);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Walks the plan's actions in ordinal order, writing each one write-ahead-logged, and returns the
+    /// receipt once every one has landed.
+    /// </summary>
+    private async Task<ChangeReceipt> WriteAsync(
+        ChangePlanRecord plan,
+        IReadOnlyList<ChangePlanActionRecord> actions,
+        PlanContext context,
+        string planId,
+        CancellationToken ct)
+    {
+        var applied = new List<PlannedAction>(actions.Count);
+
+        foreach (var action in actions)
+        {
+            var surface = context.Bound[action.SurfaceId];
+            var path = surface.Surface.Path!.Value;
+
+            // Write-ahead, exactly as ProvisioningExecutor commits its intent before asking a provider to
+            // create anything: the row says "this write is being attempted" BEFORE it is, so a process that
+            // dies mid-write leaves a row that names the file to go and look at rather than no trace at all.
+            action.Status = ChangePlanActionStatus.Applying;
+            await _store.UpdateAsync(plan, [action], ct).ConfigureAwait(false);
+
+            // Captured before anything can overwrite it. PreflightAsync has already proved this digest agrees
+            // with the bytes about to be sent, so it is a trustworthy statement of what the operator
+            // approved rather than a second guess at the same thing.
+            var approved = action.PostImageHash!;
+
+            try
+            {
+                var bytes = StrictUtf8.GetBytes(action.PostImageContent!);
+                using var content = new MemoryStream(bytes, writable: false);
+
+                var receipt = await surface.Session.Target.WriteFileAsync(
+                        path,
+                        content,
+
+                        // The persisted pre-image hash goes straight through as the expectation: both are a
+                        // bare lower-case hex SHA-256 over the file's RAW bytes, which is what every
+                        // transport computes and compares. Null (a file that did not exist at preview) is a
+                        // supported "no expectation".
+                        new FileWriteOptions(action.PreImageHash)
+                        {
+                            Strategy = FileWriteStrategy.AtomicRename,
+                        },
+                        ct)
+                    .ConfigureAwait(false);
+
+                // Set the moment the write call returns anything at all, and BEFORE any verification runs. A
+                // receipt means the transport did something to the server, so a failure after this point must
+                // not be reported as "nothing happened" — not by RecordFailureAsync below, and not by the
+                // retention sweep, which reads this same column off the persisted row to decide whether the
+                // pre-image may be discarded. Both of the throws below leave it set, deliberately: the write
+                // landed, it was just the wrong bytes.
+                action.WriteReachedServer = true;
+
+                // CHECK 1 — THE TRANSPORT AGREES ABOUT THE BYTES IT WAS GIVEN.
+                //
+                // Precisely that, and no more. Every transport in this repo computes PostImageSha256 over the
+                // buffer it drained from the stream, before or independently of placing it
+                // (DockerExecutionTarget, SftpFileChannel, ShellFileChannel, LocalExecutionTarget all do), so
+                // a matching receipt says NOTHING about what is on disk. Against today's transports this can
+                // only fire for one that miscomputes or misreports its own receipt. It is kept because it is
+                // free, cannot false-positive (both sides are bare lower-case hex SHA-256 over raw bytes),
+                // and would catch a future transport that transforms content. The check that actually speaks
+                // to the file is CHECK 2 below.
+                if (!string.Equals(approved, receipt.PostImageSha256, StringComparison.OrdinalIgnoreCase))
+                {
+                    // The observed column, never PostImageHash: that one is what the operator approved and
+                    // stays so for the life of the row (PreflightAsync above depends on it agreeing with
+                    // PostImageContent). PostWriteVerification is left at NotAttempted here and that is
+                    // accurate — nothing has read the file; this failure is the transport contradicting
+                    // itself about its own input.
+                    action.ObservedPostImageHash = receipt.PostImageSha256;
+
+                    throw new PlanApplyFidelityException(
+                        $"Action #{action.Ordinal} of change plan '{planId}' wrote surface "
+                        + $"'{action.SurfaceId}' at '{action.ResolvedPath}', but the transport reported a "
+                        + $"post-image digest of {receipt.PostImageSha256} for content that was approved as "
+                        + $"{approved}. The transport does not agree about the bytes it was handed, so what "
+                        + "it placed cannot be trusted to be what the operator approved. The write was NOT "
+                        + "undone and NOT retried; inspect the file directly.",
+                        planId,
+                        action.Ordinal,
+                        action.SurfaceId,
+                        approved,
+                        receipt.PostImageSha256);
+                }
+
+                // CHECK 2 — WHAT IS ACTUALLY ON THE SERVER.
+                var (verification, observed) = await VerifyWrittenAsync(surface, approved, ct)
+                    .ConfigureAwait(false);
+
+                // Recorded on every arm, including the one that is about to throw, and null exactly when
+                // nothing was read. PostImageHash is NOT touched: approved and observed are two different
+                // facts and the row has a column for each.
+                action.ObservedPostImageHash = observed;
+                action.PostWriteVerification = verification;
+
+                // Ordered mismatch-first, and that ordering is load-bearing rather than stylistic. A read-back
+                // that DISAGREED is the opposite of one that could not be performed, so emitting the "nothing
+                // has looked at the file" warning before this check would log a flat falsehood on the single
+                // path where the log matters most: something did look, and it found the wrong bytes.
+                if (verification == PostWriteVerification.Mismatched)
+                {
+                    throw new PlanApplyFidelityException(
+                        $"Action #{action.Ordinal} of change plan '{planId}' wrote surface "
+                        + $"'{action.SurfaceId}' at '{action.ResolvedPath}', but reading it back found "
+                        + $"content hashing to {observed} where {approved} was approved. The bytes on the "
+                        + "server are NOT the bytes the operator approved. The write was NOT undone and NOT "
+                        + "retried — a second write chasing a bad first one risks damaging the file further. "
+                        + "Inspect it directly.",
+                        planId,
+                        action.Ordinal,
+                        action.SurfaceId,
+                        approved,
+                        observed);
+                }
+
+                if (verification == PostWriteVerification.Unverifiable)
+                {
+                    _logger?.LogWarning(
+                        "Action #{Ordinal} of change plan {PlanId} wrote surface {SurfaceId}, but the write "
+                        + "could not be confirmed by reading it back. The change is believed to have landed; "
+                        + "nothing has looked at the file.",
+                        action.Ordinal,
+                        planId,
+                        action.SurfaceId);
+                }
+
+                action.Status = ChangePlanActionStatus.Applied;
+                action.AppliedAt = _time.GetUtcNow();
+
+                await _store.UpdateAsync(plan, [action], ct).ConfigureAwait(false);
+
+                applied.Add(new PlannedAction(
+                    action.Kind,
+                    action.SurfaceId,
+                    action.UnifiedDiff,
+                    action.Reversible,
+                    action.RequiredCapabilities));
+            }
+            catch (Exception ex)
+            {
+                // CancellationToken.None: the ledger write must happen even when the reason we are here is
+                // that the caller's token was cancelled. Losing the record of a write that already landed is
+                // strictly worse than honouring a cancellation promptly.
+                //
+                // action.WriteReachedServer is what stops a fidelity failure on action #0 from being recorded
+                // as Failed ("no action applied"): a receipt came back, so the server WAS changed — wrongly,
+                // which is the single most important case in this method to report accurately. It is
+                // deliberately not set for a TargetDriftException or a WritesDisabledException: both are
+                // contractually refused before any I/O, so nothing was touched on those paths. Reading the
+                // property rather than a local also means the plan's status and the row the retention sweep
+                // reads cannot drift apart — they are the same fact.
+                await RecordFailureAsync(
+                        plan,
+                        actions,
+                        action,
+                        ex,
+                        applied.Count > 0 || action.WriteReachedServer,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                _logger?.LogError(
+                    ex,
+                    "Applying change plan {PlanId} failed at action #{Ordinal} (surface {SurfaceId}); "
+                    + "{Applied} of {Total} action(s) landed. The plan is recorded as {Status}.",
+                    planId,
+                    action.Ordinal,
+                    action.SurfaceId,
+                    applied.Count,
+                    actions.Count,
+                    plan.Status);
+
+                // Drift found by the transport's own pre-image check — the TOCTOU backstop behind the
+                // pre-flight sweep. Restated as the staleness the contract promises, naming the action so an
+                // operator knows precisely where the plan stopped agreeing with the server.
+                if (ex is TargetDriftException drift)
+                {
+                    throw new PlanStaleException(
+                        $"Action #{action.Ordinal} of change plan '{planId}' could not be written: surface "
+                        + $"'{action.SurfaceId}' at '{action.ResolvedPath}' drifted between this plan's "
+                        + $"pre-flight check and the write itself (expected content hash "
+                        + $"{drift.ExpectedHash ?? "<none>"}, found {drift.ActualHash ?? "<none>"}). "
+                        + $"{applied.Count} of {actions.Count} action(s) had already been written and were "
+                        + "NOT rolled back; the plan is recorded as "
+                        + $"{plan.Status} and each action's own row says whether it landed.",
+                        planId,
+                        drift);
+                }
+
+                // Everything else — including a WritesDisabledException from a grant revoked mid-plan —
+                // propagates unchanged. Wrapping it would hide which layer refused.
+                throw;
+            }
+        }
+
+        var appliedAt = _time.GetUtcNow();
+        plan.Status = ChangePlanStatus.Applied;
+        plan.AppliedAt = appliedAt;
+        plan.AppliedBy = _actor;
+        await _store.UpdateAsync(plan, [], ct).ConfigureAwait(false);
+
+        return new ChangeReceipt(planId, appliedAt, applied);
+    }
+
+    /// <summary>
+    /// Reads a just-written surface back off the server and hashes it, so the ledger can say what is
+    /// actually there rather than only what a write call returned.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is the only check in the apply path that speaks to bytes on disk.</strong> A
+    /// <see cref="FileWriteReceipt"/> is computed by every transport over the buffer it was handed, not by
+    /// re-reading the file, so a transport that reflowed, re-encoded or truncated the content would still
+    /// return a receipt matching what it was given. Re-reading is what closes that gap.
+    /// </para>
+    /// <para>
+    /// <strong>An unreadable surface is never a failure.</strong> The write succeeded; only the confirmation
+    /// did not. Failing the action here would report a change that really did land as one that did not, which
+    /// is a worse lie than an unverified success — so this returns
+    /// <see cref="PostWriteVerification.Unverifiable"/> and lets the action stand, with the ledger saying
+    /// plainly that nobody looked. In practice the capability arm is unreachable for a surface that resolved
+    /// at all: <c>SurfaceResolver</c> puts <see cref="TransportCapabilities.FileRead"/> in every resolved
+    /// surface's requirements and refuses the surface when the session lacks it. It is checked anyway rather
+    /// than assumed, because "a resolved surface is always readable" is a property of another class that
+    /// nothing here would notice changing.
+    /// </para>
+    /// </remarks>
+    /// <returns>
+    /// <para>
+    /// One of exactly three outcomes. <see cref="PostWriteVerification.Verified"/> and
+    /// <see cref="PostWriteVerification.Mismatched"/> both mean a read really happened and both carry the
+    /// digest of what was read, so the caller can record the observed value either way — for a mismatch it is
+    /// the evidence, and for a match it is the confirmation. <see cref="PostWriteVerification.Unverifiable"/>
+    /// means no bytes were obtained and the hash is <see langword="null"/>; the hash is non-null in exactly
+    /// the other two cases.
+    /// </para>
+    /// <para>
+    /// <see cref="PostWriteVerification.NotAttempted"/> is never returned: reaching this method IS the
+    /// attempt.
+    /// </para>
+    /// </returns>
+    private static async Task<(PostWriteVerification Verification, string? ObservedHash)> VerifyWrittenAsync(
+        BoundSurface surface,
+        string approvedHash,
+        CancellationToken ct)
+    {
+        if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileRead))
+        {
+            return (PostWriteVerification.Unverifiable, null);
+        }
+
+        var (bytes, error) = await ReadRawAsync(surface, ct).ConfigureAwait(false);
+        if (error is not null || bytes is null)
+        {
+            return (PostWriteVerification.Unverifiable, null);
+        }
+
+        var actual = Hash(bytes);
+        return string.Equals(actual, approvedHash, StringComparison.OrdinalIgnoreCase)
+            ? (PostWriteVerification.Verified, actual)
+            : (PostWriteVerification.Mismatched, actual);
+    }
+
+    /// <summary>
+    /// Records a failed action, marks every action after it as never-attempted, and settles the plan's own
+    /// status.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <see cref="ChangePlanActionStatus.Skipped"/> is written explicitly onto the actions that never ran,
+    /// rather than leaving them at <see cref="ChangePlanActionStatus.Pending"/>. "We never got here" then
+    /// reads as an assertion in the data instead of being inferred from the absence of one, which is the
+    /// difference between a ledger an operator can act on and one they have to guess at.
+    /// </para>
+    /// <para>
+    /// This method writes <see cref="ChangePlanActionStatus.Failed"/> and the reason, and deliberately touches
+    /// nothing else on the failed row. <c>WriteReachedServer</c>, <c>ObservedPostImageHash</c> and
+    /// <c>PostWriteVerification</c> were already set by the caller at the moment each became true, and it is
+    /// this call that persists them — so a mismatch row lands in storage saying Failed AND that a write
+    /// reached the server AND what was found there, rather than only the first of the three.
+    /// </para>
+    /// <para>
+    /// The plan becomes <see cref="ChangePlanStatus.PartiallyApplied"/> only when something really did land,
+    /// and <see cref="ChangePlanStatus.Failed"/> otherwise — matching those members' own definitions rather
+    /// than overstating the damage. Either way it is not <see cref="ChangePlanStatus.Applied"/>, and the
+    /// per-action rows remain the authoritative account of what happened.
+    /// </para>
+    /// <para>
+    /// A ledger write that itself fails is swallowed and logged, never rethrown: the caller is already about
+    /// to surface the real failure, and replacing it with a storage error would lose the reason the apply
+    /// stopped. The action stays at <see cref="ChangePlanActionStatus.Applying"/> and the plan at
+    /// <see cref="ChangePlanStatus.Applying"/>, which is the honest "outcome unknown, go and look" state —
+    /// the same non-terminal shape <c>ProvisioningExecutor</c> leaves a ledger row in.
+    /// </para>
+    /// </remarks>
+    private async Task RecordFailureAsync(
+        ChangePlanRecord plan,
+        IReadOnlyList<ChangePlanActionRecord> actions,
+        ChangePlanActionRecord failed,
+        Exception failure,
+        bool anythingLanded,
+        CancellationToken ct)
+    {
+        failed.Status = ChangePlanActionStatus.Failed;
+        failed.FailureReason = failure.Message;
+
+        var touched = new List<ChangePlanActionRecord> { failed };
+        foreach (var action in actions)
+        {
+            if (action.Ordinal > failed.Ordinal && action.Status == ChangePlanActionStatus.Pending)
+            {
+                action.Status = ChangePlanActionStatus.Skipped;
+                touched.Add(action);
+            }
+        }
+
+        plan.Status = anythingLanded ? ChangePlanStatus.PartiallyApplied : ChangePlanStatus.Failed;
+        plan.AppliedAt = _time.GetUtcNow();
+        plan.AppliedBy = _actor;
+
+        try
+        {
+            await _store.UpdateAsync(plan, touched, ct).ConfigureAwait(false);
+        }
+        catch (Exception ledgerFailure)
+        {
+            _logger?.LogError(
+                ledgerFailure,
+                "Change plan {PlanId} failed at action #{Ordinal} AND the ledger could not be updated to say "
+                + "so. The plan and that action remain in Applying: their real outcome is unknown from "
+                + "storage alone and the file must be inspected directly.",
+                plan.Id,
+                failed.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Records a plan as <see cref="ChangePlanStatus.Stale"/>, tolerating a lost race to do so.
+    /// </summary>
+    /// <remarks>
+    /// A concurrency failure here means someone else already moved this plan on, which is the outcome this
+    /// call wanted anyway. Swallowing it keeps the caller's real refusal — the staleness the operator needs
+    /// to read about — instead of replacing it with a storage error about a bookkeeping write.
+    /// </remarks>
+    private async Task TryMarkStaleAsync(ChangePlanRecord plan, CancellationToken ct)
+    {
+        plan.Status = ChangePlanStatus.Stale;
+
+        try
+        {
+            await _store.UpdateAsync(plan, [], ct).ConfigureAwait(false);
+        }
+        catch (ChangePlanConcurrencyException ex)
+        {
+            _logger?.LogInformation(
+                ex,
+                "Change plan {PlanId} was already transitioned by someone else while it was being marked "
+                + "stale. Nothing was written to the server either way.",
+                plan.Id);
+        }
+    }
+
+    /// <summary>Reads one bound surface's raw bytes, or the reason it could not be read.</summary>
+    /// <remarks>
+    /// Bytes, not text, and no parsing: the only question the pre-flight sweep asks is "does this file still
+    /// hash to what preview saw", and that is only answerable over the bytes on disk. Deliberately not
+    /// <see cref="ReadUncachedAsync"/>, which additionally parses, round-trip-checks and codec-decodes — work
+    /// preview needed and this does not.
+    /// </remarks>
+    private static async Task<(byte[]? Bytes, string? Error)> ReadRawAsync(BoundSurface surface, CancellationToken ct)
+    {
+        if (surface.Surface.Path is not { } path)
+        {
+            return (null, $"surface '{surface.Surface.Id}' resolved without a concrete path.");
+        }
+
+        try
+        {
+            var stream = await surface.Session.Target.OpenReadAsync(path, ct).ConfigureAwait(false);
+            await using (stream.ConfigureAwait(false))
+            {
+                using var buffer = new MemoryStream();
+                await stream.CopyToAsync(buffer, ct).ConfigureAwait(false);
+                return (buffer.ToArray(), null);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            return (null, $"{path.Value} could not be read via {surface.Session.Description}: {ex.Message}");
+        }
+    }
+
+    /// <summary>Reads back the <see cref="ChangePlanRecord.SurfaceHashesJson"/> written at preview time.</summary>
+    private static Dictionary<string, string> DeserializeHashes(string json)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(json, JsonOptions)
+                ?? new Dictionary<string, string>(StringComparer.Ordinal);
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                "A stored change plan's surface hashes could not be read back, so there is no way to tell "
+                + "whether the server drifted since it was previewed. Nothing was written.",
+                ex);
+        }
+    }
 
     /// <inheritdoc />
     public Task RevertAsync(string planId, CancellationToken ct = default) =>
         throw new NotImplementedException(
-            "Reverting an applied plan is not implemented yet, because nothing can apply one. The recorded "
-            + "ChangePlanActionRecord.PreImageContent this will restore from is already written at preview "
-            + "time.");
+            "Reverting an applied plan is not implemented yet. The ChangePlanActionRecord.PreImageContent it "
+            + "will restore from is recorded at preview time and kept for the configured retention window "
+            + "after a plan takes effect — see IChangePlanStore.PurgeImagesAsync, whose sweep eventually "
+            + "discards it. A plan whose images have been purged must be REFUSED by this method with a "
+            + "message saying so, never silently succeed and never revert only the actions whose images "
+            + "survive.");
 
     // ── Binding ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -700,13 +1507,14 @@ public sealed class PlanExecutor : IPlanExecutor
             PostImageContent = after,
             PostImageHash = Hash(StrictUtf8.GetBytes(after)),
 
-            // NOTE FOR THE APPLY PHASE: when ContainsSecrets is true these two columns hold the operator's
-            // real secret values in plaintext. That is deliberate and load-bearing — an exact revert needs
-            // the real bytes, see ChangePlanActionRecord's own remarks — but it is only harmless while
-            // nothing applies a plan. Nothing currently reads ChangePlanRecord.ExpiresAt and no purge sweep
-            // exists, so these rows accumulate forever. A retention/purge path that promotes expired
-            // Previewed plans to Stale and discards their images is a PREREQUISITE for shipping ApplyAsync,
-            // not a follow-up to it.
+            // When ContainsSecrets is true these two columns hold the operator's real secret values in
+            // plaintext. That is deliberate and load-bearing — an exact revert needs the real bytes, see
+            // ChangePlanActionRecord's own remarks — and it used to be an unbounded accumulation, because
+            // nothing read ChangePlanRecord.ExpiresAt and no purge existed. Both halves shipped with
+            // ApplyAsync, as its stated prerequisite: expiry is enforced at the point of use (ApplyAsync
+            // refuses an expired plan and records it Stale) and IChangePlanStore.PurgeImagesAsync sweeps the
+            // rest, discarding these two columns once no revert can need them. See
+            // ChangePlanRetentionOptions for the window and what raising or lowering it trades away.
             ContainsSecrets = containsSecrets,
             Status = ChangePlanActionStatus.Pending,
         });

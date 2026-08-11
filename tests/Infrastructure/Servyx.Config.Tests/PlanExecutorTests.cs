@@ -702,16 +702,27 @@ public class PlanExecutorTests
     }
 
     [Fact]
-    public async Task ApplyAsync_AndRevertAsync_RefuseClearly_RatherThanSilentlyDoingNothing()
+    public async Task RevertAsync_RefusesClearly_RatherThanSilentlyDoingNothing()
     {
         var harness = new Harness();
-        var executor = harness.Executor;
 
-        var apply = async () => await executor.ApplyAsync("any-plan");
-        var revert = async () => await executor.RevertAsync("any-plan");
+        var revert = async () => await harness.Executor.RevertAsync("any-plan");
 
-        (await apply.Should().ThrowAsync<NotImplementedException>()).Which.Message.Should().Contain("not implemented");
+        // Apply is implemented (see PlanExecutorApplyTests); revert deliberately is not yet, and says so
+        // rather than returning a task that quietly completes having reverted nothing.
         (await revert.Should().ThrowAsync<NotImplementedException>()).Which.Message.Should().Contain("not implemented");
+    }
+
+    [Fact]
+    public async Task ApplyAsync_ForAnIdThatIsNotAPlanId_RefusesWithoutTouchingTheServer()
+    {
+        var harness = new Harness();
+
+        var apply = async () => await harness.Executor.ApplyAsync("any-plan");
+
+        (await apply.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("not a change plan identifier");
+        harness.Mutations.Should().BeEmpty();
     }
 
     [Fact]
@@ -1049,6 +1060,16 @@ public class PlanExecutorTests
 
         public Task<StoredChangePlan?> TryGetAsync(ChangePlanId id, CancellationToken ct = default) =>
             Task.FromResult(Plan is not null && Plan.Id == id ? new StoredChangePlan(Plan, Actions) : null);
+
+        // Preview reaches neither of these. They refuse rather than no-op so that a future preview change
+        // which quietly started transitioning or purging a plan would fail this suite instead of passing it.
+        public Task UpdateAsync(
+            ChangePlanRecord plan, IReadOnlyList<ChangePlanActionRecord> actions, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Previewing a change plan must never update a stored plan.");
+
+        public Task<ChangePlanImagePurgeResult> PurgeImagesAsync(
+            DateTimeOffset now, TimeSpan imageRetention, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Previewing a change plan must never purge a stored plan.");
     }
 
     private sealed class FakeTimeProvider(DateTimeOffset now) : TimeProvider
