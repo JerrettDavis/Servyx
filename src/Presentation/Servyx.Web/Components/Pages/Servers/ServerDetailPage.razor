@@ -99,7 +99,7 @@ else
         @switch (_activeTab)
         {
             case "Overview":
-                <ServerOverviewTab Detail="@_detail" ServerId="@Id" WriteMode="@_writeMode" Lifecycle="@_lifecycle"
+                <ServerOverviewTab Detail="@_detail" ServerId="@(_containerId ?? string.Empty)" WriteMode="@_writeMode" Lifecycle="@_lifecycle"
                                    StopPlan="@_stopPlan" OnWriteModeChanged="RefreshWriteModeAsync" />
                 break;
             case "Console":
@@ -144,6 +144,38 @@ else
     private WriteMode _writeMode = WriteMode.ReadOnly;
     private IServerLifecycle? _lifecycle;
     private StopPlan? _stopPlan;
+
+    /// <summary>
+    /// This server's real container id — the identity every per-server write grant is keyed on — resolved
+    /// exactly once from the route token and then used by everything on this page that names a server.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Why this field exists.</strong> <c>{Id}</c> is a route token, not an identity. Discovery
+    /// resolves it against a container's id <em>or</em> its name (see
+    /// <c>ServerQueryService.GetServerDetailAsync</c>), so <c>/servers/palworld-server</c> is a perfectly
+    /// valid URL whose token is a display name. Passing that raw token to <see cref="WriteModeControl"/>
+    /// while resolving the page's own <see cref="WriteMode"/> from the discovered summary made the two
+    /// disagree: the Power card reported the grant correctly and the write-access card claimed Servyx did
+    /// not track the container at all. One field, resolved once, is what keeps them agreeing by
+    /// construction rather than by the route happening to carry a container hash.
+    /// </para>
+    /// <para>
+    /// <strong>This is a resolution, not a fallback.</strong> The value is the discovered container id
+    /// (<c>ServerSummary.Id</c>) returned by the same discovery/query path <c>ServyxServerLifecycles</c>
+    /// resolves the write guard's own target through — <see cref="IDashboardDataService.GetServerDetailAsync"/>
+    /// delegates straight to <c>IServerQueryService</c>, so this is that call's answer rather than a second,
+    /// possibly-disagreeing round trip. The grant lookup itself is never widened to accept a display name:
+    /// two containers may share a name, and honouring a grant against one would hand a different workload
+    /// the other's write access.
+    /// </para>
+    /// <para>
+    /// <strong>It fails closed.</strong> An unresolvable or unadopted token leaves this
+    /// <see langword="null"/>, which resolves to <see cref="WriteMode.ReadOnly"/> and renders
+    /// <see cref="WriteModeControl"/>'s untracked state — never an enabled control.
+    /// </para>
+    /// </remarks>
+    private string? _containerId;
 
     /// <summary>
     /// Full setting-descriptor metadata (type, constraints, <c>RequiresRecreate</c>, …), keyed by
@@ -197,6 +229,9 @@ else
             _backups = await Data.GetServerBackupsAsync(Id);
         }
 
+        // Resolved once, from the discovered summary, before anything on this page reads an identity.
+        _containerId = string.IsNullOrWhiteSpace(_detail?.Summary.Id) ? null : _detail.Summary.Id;
+
         RefreshWriteMode();
 
         var settingGroups = Services.GetService(typeof(IReadOnlyList<SettingGroup>)) as IReadOnlyList<SettingGroup>;
@@ -205,7 +240,7 @@ else
 
         var serverLifecycles = Services.GetService(typeof(ServyxServerLifecycles)) as ServyxServerLifecycles;
         _stopPlan = serverLifecycles?.StopPlan;
-        _lifecycle = _detail is null || serverLifecycles is null ? null : await serverLifecycles.GetAsync(_detail.Summary.Id);
+        _lifecycle = _containerId is null || serverLifecycles is null ? null : await serverLifecycles.GetAsync(_containerId);
 
         _rconChannels = Services.GetService(typeof(ServyxRconChannels)) as ServyxRconChannels ?? ServyxRconChannels.None;
 
@@ -216,11 +251,14 @@ else
     /// Re-reads this server's posture from the live grant view. <see cref="WritableServers"/> is a view over
     /// the same per-server grants the write guard resolves through, not a startup snapshot, so calling this
     /// after a flip is what keeps every gated control on the page honest about what would actually happen.
+    /// Asked with <see cref="_containerId"/> and nothing else — the display name is deliberately not offered
+    /// as a second key, since names are not unique and a name-keyed grant would let one container inherit
+    /// another's write access.
     /// </summary>
     private void RefreshWriteMode()
     {
         var writableServers = Services.GetService(typeof(WritableServers)) as WritableServers ?? WritableServers.None;
-        _writeMode = writableServers.Mode(_detail?.Summary.Id, _detail?.Summary.Name);
+        _writeMode = writableServers.Mode(_containerId);
     }
 
     /// <summary>Invoked by <see cref="WriteModeControl"/> after a grant is applied.</summary>
@@ -232,9 +270,9 @@ else
 
     /// <summary>Resolves this server's write-guarded RCON session for <see cref="ServerConsoleTab"/>, which surfaces a thrown <see cref="RconUnreachableException"/> itself.</summary>
     private Task<IRconSession?> ResolveConsoleSessionAsync(CancellationToken ct) =>
-        _detail is null
+        _detail is null || _containerId is null
             ? Task.FromResult<IRconSession?>(null)
-            : _rconChannels.GetSessionAsync(_detail.Summary.Id, _detail.Summary.Name, ct);
+            : _rconChannels.GetSessionAsync(_containerId, _detail.Summary.Name, ct);
 
     private Task PersistData()
     {
