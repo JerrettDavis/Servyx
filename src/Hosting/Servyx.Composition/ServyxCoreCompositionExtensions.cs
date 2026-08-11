@@ -431,8 +431,9 @@ public static class ServyxCoreCompositionExtensions
         // ApplyAsync DOES write to a game server — this is the one registration in this method that can — and
         // it is gated the same way everything else here is: every session it would write through is the
         // WriteGuardedExecutionTarget-wrapped session the settings tab already holds, so a server without an
-        // Enabled write grant refuses the whole plan before the first byte. RevertAsync still throws
-        // NotImplementedException. IServerRepository is supplied because a stored plan records the tracked
+        // Enabled write grant refuses the whole plan before the first byte. RevertAsync is implemented
+        // (all-or-nothing preflight, read-back verified restores) but no operator surface calls it yet —
+        // there is no revert button. IServerRepository is supplied because a stored plan records the tracked
         // ServerId while every session/catalogue lookup here is keyed by container id; it is the leaf
         // repository, NOT IServerQueryService, for the deadlock reason documented above.
         //

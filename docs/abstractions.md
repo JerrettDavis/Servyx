@@ -702,7 +702,18 @@ public sealed record PlanDiagnostic(PlanDiagnosticKind Kind, string SurfaceId, s
 /// while unsaved edits exist) and applies it behind a two-step confirmation, so a configuration
 /// change can now reach a running server through the UI. No REST API, MCP tool, or job runner calls
 /// either method — MCP support was deliberately not built, since a tool call cannot show a human a
-/// diff to approve. RevertAsync still throws NotImplementedException.
+/// diff to approve. RevertAsync is now implemented: it is all-or-nothing, preflighting every action's
+/// pre-image availability, integrity, reversibility, and transport reachability before writing
+/// anything, and it verifies each restoring write by reading the file back from the server and
+/// rehashing the actual bytes against the recorded pre-image — never by trusting a transport receipt,
+/// since every shipped transport only hashes the buffer it was handed. It refuses (throws
+/// <c>PlanRevertException</c>) when pre-images have aged out of the retention window and been purged
+/// by <c>IChangePlanStore.PurgeImagesAsync</c>, when any action is marked non-reversible, when the
+/// plan was already reverted, when nothing from the plan ever reached the server, or when an
+/// apply/revert is already in flight; a mid-phase failure discloses, per action, whether that
+/// action's restoring write reached the server. No operator surface calls it yet — ChangePlanPanel
+/// previews and applies but renders no revert affordance — so from an operator's practical standpoint
+/// the way back is still a fresh plan.
 ///
 /// One adjacent piece remains unbuilt independently of the caller question:
 /// <c>IServerLifecycle.RecreateAsync</c> has one implementation and it throws
@@ -731,8 +742,13 @@ public interface IPlanExecutor
     /// </summary>
     Task<ChangeReceipt> ApplyAsync(string planId, CancellationToken ct = default);
 
-    /// <summary>Reverts a previously applied plan using its recorded pre-images. NOT YET IMPLEMENTED — throws <see cref="NotImplementedException"/>.</summary>
-    Task RevertAsync(string planId, CancellationToken ct = default);
+    /// <summary>
+    /// Reverts a previously applied plan using its recorded pre-images. Implemented and all-or-nothing:
+    /// preflights every action's pre-image availability, integrity, reversibility, and transport
+    /// reachability before writing anything, then verifies each restoring write with a genuine
+    /// read-back-and-rehash. No operator surface calls it yet.
+    /// </summary>
+    Task<RevertReceipt> RevertAsync(string planId, CancellationToken ct = default);
 }
 
 /// <summary>Thrown when <see cref="IPlanExecutor.ApplyAsync"/> is called against a plan whose bound surfaces have drifted since preview.</summary>
@@ -821,11 +837,11 @@ and `WriteReachedServer` (`bool`, set the instant the transport's write call
 returns anything at all, before verification runs, and never cleared — the
 retention sweep consults it before discarding `PreImageContent`, because
 after a corrupted write the pre-image is the only way back). The pre-image is
-what would make a future revert **exact** — reverting would restore recorded
-bytes rather than re-deriving what the file should have said; `RevertAsync`
-does not do this yet, see the STATUS note above. `PreImageContent` stores
-real bytes, unmasked, because a masked pre-image would revert a secret to the
-mask.
+what makes a revert **exact** — `RevertAsync` restores those recorded bytes
+rather than re-deriving what the file should have said; see the STATUS note
+above for the implemented method's preflight, refusal, and verification
+behaviour. `PreImageContent` stores real bytes, unmasked, because a masked
+pre-image would revert a secret to the mask.
 
 ## §4 Lifecycle
 

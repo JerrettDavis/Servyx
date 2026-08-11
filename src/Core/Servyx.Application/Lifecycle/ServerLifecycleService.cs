@@ -261,9 +261,10 @@ public sealed class ServerLifecycleService : IServerLifecycle
 
     /// <inheritdoc />
     /// <exception cref="NotSupportedException">
-    /// Always thrown. Config editing exists now via <see cref="IPlanExecutor.PreviewAsync"/>,
-    /// <see cref="IPlanExecutor.ApplyAsync"/>, <see cref="IPlanExecutor.RevertAsync"/>, and
-    /// <see cref="ChangePlanPanel"/> for preview, apply, and revert flows. However, <see cref="RecreateAsync"/>
+    /// Always thrown. Config editing exists now via <see cref="Servyx.Domain.Configuration.IPlanExecutor.PreviewAsync"/>,
+    /// <see cref="Servyx.Domain.Configuration.IPlanExecutor.ApplyAsync"/>,
+    /// <see cref="Servyx.Domain.Configuration.IPlanExecutor.RevertAsync"/>, and
+    /// <c>ChangePlanPanel</c> for preview, apply, and revert flows. However, <see cref="RecreateAsync"/>
     /// is not yet wired into the apply flow — no wiring exists to let an approved <c>ConfigChangePlan</c>
     /// carrying a <c>RecreateRequired</c> consequence invoke this method.
     /// </exception>

@@ -18,8 +18,10 @@ didn't. M6 has also shipped, and substantially more than its original scope:
 see the **Status today** note under M6. Config editing (M3/M4's
 `.env`/`compose.yaml` write path) has now shipped in part — see the **Status
 today** note under M4 for exactly what an operator can and cannot do with it.
-Byte-exact revert, identity/RBAC/audit UI (M7), and mod installation and the
-plugin SDK (M9) remain as originally planned: not yet built.
+Byte-exact revert now has a shipped engine (`IPlanExecutor.RevertAsync`) but
+no operator surface calls it yet — see the **Status today** note under M4.
+Identity/RBAC/audit UI (M7), and mod installation and the plugin SDK (M9)
+remain as originally planned: not yet built.
 
 ## M1 — Read-Only Observation
 
@@ -123,12 +125,22 @@ desired value only ever touches Servyx's own database, but a `ChangePlanPanel`
 below the grid previews a plan built from recorded values (refusing to preview
 while unsaved edits exist) and, behind a two-step confirmation, calls
 `ApplyAsync` — an operator can, today, make Servyx write configuration to a
-live game server through the UI. What **hasn't** shipped: byte-exact revert
-(`RevertAsync` throws `NotImplementedException` — the only way back is a new
-plan), and container recreation (`ServerLifecycleService.RecreateAsync` throws
-`NotSupportedException`, so a `RecreateRequired` consequence still means "sits
-on disk until a human recreates the container by hand", even after apply).
-No REST API, MCP tool, or job runner calls `PreviewAsync`/`ApplyAsync` — MCP
+live game server through the UI. The **engine** side of byte-exact revert has
+also shipped: `RevertAsync` is implemented, all-or-nothing (it preflights
+every action's pre-image availability, integrity, reversibility, and
+transport reachability before writing anything) and read-back-verified (each
+restoring write is re-read off the server and rehashed against the recorded
+pre-image, never just trusted from a transport receipt). What **hasn't**
+shipped is an operator surface for it: `ChangePlanPanel` previews and applies
+but renders no revert affordance, so in practice the only way back is still a
+new plan. Container recreation is also still missing its wiring:
+`ServerLifecycleService.RecreateAsync` throws `NotSupportedException`
+unconditionally — not because config editing doesn't exist (it does, via
+`IPlanExecutor`/`ChangePlanPanel`) but because nothing yet lets an approved
+plan carrying a `RecreateRequired` consequence invoke it — so that consequence
+still means "sits on disk until a human recreates the container by hand",
+even after apply.
+No REST API, MCP tool, or job runner calls `PreviewAsync`/`ApplyAsync`/`RevertAsync` — MCP
 support in particular was deliberately not built, since a tool call cannot
 show a human a diff to approve; wiring one up would mean either a model
 self-approving a live config write or a plan id that still routes back through

@@ -443,8 +443,7 @@ files, managed regions are delimited with marker blocks:
 
 **Implemented, DI-registered, and now called from the settings tab.**
 `PlanExecutor` (`src/Infrastructure/Servyx.Config/PlanExecutor.cs`) implements
-`PreviewAsync` and `ApplyAsync`; `RevertAsync` still throws
-`NotImplementedException`. It is registered at
+`PreviewAsync`, `ApplyAsync`, and `RevertAsync`. It is registered at
 `ServyxCoreCompositionExtensions.cs:453-465`. The settings tab's
 `ChangePlanPanel.razor` is the product's only operator-reachable caller: it
 previews a plan from the desired values already recorded for a server (never
@@ -457,6 +456,10 @@ is deliberate rather than an oversight — see the note under "Two other pieces"
 below. `ApplyAsync` never restarts or recreates anything, so the four-column
 view above stays the only place drift after an apply is visible; applying
 closes the "nothing writes" gap but not the "nothing restarts" one.
+`RevertAsync` is implemented but has no caller at all — `ChangePlanPanel.razor`
+previews and applies but renders no revert affordance, and no other surface
+calls it either — so the engine can undo an applied plan but no operator can
+reach that capability yet; the way back today is still a fresh plan.
 
 It is the single funnel through which **every mutation in the product** passes
 — one choke point, so that write-mode enforcement, staleness checking, secret
@@ -508,8 +511,24 @@ such path.
   no rewrite, no retry, no rollback. A human decides. `PlanApplyFidelityException`
   (which does **not** derive from `InvalidOperationException`) is thrown in
   both the pre-flight self-consistency case and the two post-write cases.
-- `RevertAsync` — **not implemented.** Throws `NotImplementedException`
-  today.
+- `RevertAsync` — **implemented, all-or-nothing.** Every action's pre-image
+  availability, self-consistency (the stored pre-image agrees with its own
+  recorded hash), reversibility, and transport reachability is preflighted
+  across the *whole* revert set before the first byte is written; any failure
+  raises `PlanRevertException` naming the offending action(s) with nothing
+  written at all. It refuses a plan whose images the retention sweep has
+  already purged, a plan carrying a non-reversible action, a plan already
+  reverted, or a plan nothing ever reached the server for, and it also
+  refuses when an apply or revert on that plan is already in flight. Each
+  restoring write is verified the honest way — read the file back off the
+  server and rehash the actual bytes against `PreImageHash`, recording the
+  observed digest in its own column — never by trusting a transport's receipt,
+  since every shipped transport only hashes the buffer it was handed rather
+  than reading anything back. A failure partway through the write phase still
+  raises `PlanRevertException`, but by then some restoring writes may have
+  landed; the exception discloses, per action, whether that action's write
+  reached the server. **No operator surface calls it.** There is no revert
+  button anywhere in the product today.
 
 Two other pieces remain unbuilt independently of the caller question.
 `IServerLifecycle.RecreateAsync` has one implementation (`ServerLifecycleService`)
@@ -517,10 +536,12 @@ and it throws `NotSupportedException` unconditionally. An approved plan with a
 `RecreateRequired` consequence is now something an operator can produce, but
 `ApplyAsync` deliberately never acts on that consequence — it writes bytes and
 nothing else — so recreation still has no caller either, and remains a manual,
-outside-Servyx step. (`ServerLifecycleService.RecreateAsync`'s own xmldoc is
-reported to still say recreation is blocked on config editing not existing
-until M5; that is no longer true and is tracked as a follow-up, not corrected
-here.) Separately, Servyx's MCP tools deliberately do not call
+outside-Servyx step. (`ServerLifecycleService.RecreateAsync`'s own xmldoc
+reflects this correctly: config editing exists via `IPlanExecutor` and
+`ChangePlanPanel`, and what's missing is the wiring to let an approved plan
+carrying a `RecreateRequired` consequence invoke `RecreateAsync` — not the
+older "blocked on config editing not existing until M5" reasoning.)
+Separately, Servyx's MCP tools deliberately do not call
 `PreviewAsync`/`ApplyAsync` at all: an MCP tool cannot show a diff to a human
 for approval, so wiring one up would mean either a model self-approving a
 config write to a live server, or the tool handing back a plan id that still
@@ -575,9 +596,10 @@ purged), `PostWriteVerification` (`NotAttempted` / `Verified` /
 transport's write call returns anything, before verification runs, and never
 cleared — the retention purge consults it before discarding `PreImageContent`,
 because after a corrupted write the pre-image is the only way back). The
-pre-image is what makes a future revert *exact*: reverting would restore
+pre-image is what makes a revert *exact*: `RevertAsync` restores those
 recorded bytes rather than re-deriving what the file "should" have said —
-`RevertAsync` does not do this yet; see the `IPlanExecutor` section above.
+see the `IPlanExecutor` section above for the implemented method's preflight,
+refusal, and verification behaviour.
 
 `RowVersion` is the optimistic concurrency token that makes a double-apply
 impossible. It is a plain `Guid` column marked `IsConcurrencyToken()`,
