@@ -441,6 +441,124 @@ public class PlanExecutorRevertTests
         harness.Data.WriteCount.Should().Be(0);
     }
 
+    // ── 4b. Lifecycle guards against an operation that is IN FLIGHT ────────────────────────────────────
+
+    [Fact]
+    public async Task RevertAsync_WhenTwoAttemptsRaceFromTheSameAppliedRow_TheSecondIsRejectedByRowVersion()
+    {
+        using var harness = new Harness();
+        var plan = await harness.ApplyAsync(("SERVER_NAME", "A New Name"));
+        harness.ResetTransportLog();
+
+        // The race is interleaved deterministically rather than hoped for. The first attempt is held at the
+        // exact moment it CLAIMS the plan — after a full pre-flight sweep, before a single restoring write —
+        // so the second attempt runs start to finish against a row that still reads Applied to it too. Both
+        // are genuinely holding the same concurrency token, which is the two-Blazor-circuits shape.
+        var winner = harness.NewExecutor();
+        harness.Store.GateWhen = (row, actions) =>
+            row.Status == ChangePlanStatus.Reverting && actions.Count == 0;
+
+        var held = harness.Executor.RevertAsync(plan.Id);
+        await harness.Store.ReachedGate.Task;
+
+        var receipt = await winner.RevertAsync(plan.Id);
+        receipt.Actions.Should().ContainSingle();
+
+        harness.Store.ReleaseGate.SetResult();
+
+        // The status check alone could not have stopped this: the loser read the row while it still said
+        // Applied. Only the conditional UPDATE could, and this is the assertion that says it did.
+        var loser = async () => await held;
+        (await loser.Should().ThrowAsync<ChangePlanConcurrencyException>())
+            .Which.PlanId.Should().Be(plan.Id);
+
+        // EXACTLY ONE restore reached the server. Two reverts writing the same pre-image over each other is
+        // the outcome the claim exists to make impossible, and a count is the only thing that can see it.
+        harness.Compose.WriteCount.Should().Be(1);
+        harness.RawFile(".env").Should().Equal(Utf8NoBom.GetBytes(Env));
+
+        var stored = await harness.ReadBackAsync(plan.Id);
+        stored.Plan.Status.Should().Be(ChangePlanStatus.Reverted);
+        stored.Actions.Should().OnlyContain(a => a.Status == ChangePlanActionStatus.Reverted);
+    }
+
+    [Fact]
+    public async Task RevertAsync_WhileAnotherRevertIsAlreadyInFlight_RefusesWithoutWritingAnything()
+    {
+        using var harness = new Harness();
+        var plan = await harness.ApplyAsync(("SERVER_NAME", "A New Name"));
+        harness.ResetTransportLog();
+
+        // Held at the first per-action write-ahead: AFTER the claim has been persisted, so storage really
+        // does read Reverting, and BEFORE any restoring write has been attempted, so a second sweep starting
+        // here would be the first thing to touch the file.
+        harness.Store.GateWhen = (_, actions) =>
+            actions.Count == 1 && actions[0].Status == ChangePlanActionStatus.Reverting;
+
+        var inFlight = harness.Executor.RevertAsync(plan.Id);
+        await harness.Store.ReachedGate.Task;
+
+        (await harness.ReadBackAsync(plan.Id)).Plan.Status.Should().Be(ChangePlanStatus.Reverting);
+
+        var second = async () => await harness.NewExecutor().RevertAsync(plan.Id);
+
+        (await second.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("already being reverted");
+
+        // Refused before the pre-flight sweep, let alone before a write. Two sweeps writing the same
+        // pre-images over each other would leave the server in a state neither of them can describe.
+        harness.Compose.WriteCount.Should().Be(0);
+        harness.Data.WriteCount.Should().Be(0);
+
+        harness.Store.ReleaseGate.SetResult();
+        await inFlight;
+
+        harness.Compose.WriteCount.Should().Be(1, "the revert that was already running still finished normally");
+        (await harness.ReadBackAsync(plan.Id)).Plan.Status.Should().Be(ChangePlanStatus.Reverted);
+    }
+
+    [Fact]
+    public async Task RevertAsync_WhileTheApplyIsStillInFlight_RefusesRatherThanRacingItOnTheSameFiles()
+    {
+        using var harness = new Harness();
+        var plan = await harness.PreviewAsync(("SERVER_NAME", "A New Name"));
+
+        // Held at the apply's final ledger write, which is the state that defeats every OTHER guard on the
+        // revert path at once: action #0's row already says WriteReachedServer (so the revert set is not
+        // empty), the plan has no RevertedAt and is not Reverting — and the apply is still running.
+        harness.Store.GateWhen = (row, actions) =>
+            row.Status == ChangePlanStatus.Applied && actions.Count == 0;
+
+        var applying = harness.Executor.ApplyAsync(plan.Id);
+        await harness.Store.ReachedGate.Task;
+
+        var midApply = await harness.ReadBackAsync(plan.Id);
+        midApply.Plan.Status.Should().Be(ChangePlanStatus.Applying);
+        midApply.Actions[0].WriteReachedServer.Should().BeTrue();
+
+        harness.ResetTransportLog();
+
+        var revert = async () => await harness.NewExecutor().RevertAsync(plan.Id);
+
+        (await revert.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("being applied right now");
+
+        // RowVersion cannot cover this one. It would make the APPLY fail at its next ledger write — which is
+        // after the revert's conflicting bytes had already reached a running game server. Nothing may be
+        // written here at all.
+        harness.Compose.WriteCount.Should().Be(0);
+        harness.Compose.Deletes.Should().BeEmpty();
+        harness.Data.WriteCount.Should().Be(0);
+
+        harness.Store.ReleaseGate.SetResult();
+        await applying;
+
+        var stored = await harness.ReadBackAsync(plan.Id);
+        stored.Plan.Status.Should().Be(ChangePlanStatus.Applied);
+        stored.Plan.RevertedAt.Should().BeNull();
+        harness.FileContent(".env").Should().Contain("SERVER_NAME=A New Name");
+    }
+
     // ── 5. PreImageExisted == false means DELETE, not an empty write ───────────────────────────────────
 
     [Fact]
@@ -502,6 +620,63 @@ public class PlanExecutorRevertTests
         stored.Plan.Status.Should().NotBe(ChangePlanStatus.Reverted);
         stored.Actions[0].RevertVerification.Should().Be(PostWriteVerification.Mismatched);
         stored.Actions[0].Status.Should().Be(ChangePlanActionStatus.Failed);
+    }
+
+    [Fact]
+    public async Task RevertAsync_WhenTheFileToDeleteDriftsBetweenTheSweepAndTheDelete_RefusesRatherThanRemovingIt()
+    {
+        using var harness = new Harness();
+        var plan = await harness.ApplyAsync(("SERVER_NAME", "A New Name"));
+
+        await harness.MarkFileDidNotExistAsync(plan.Id, ordinal: 0);
+        harness.ResetTransportLog();
+
+        // Somebody edits the file in the window between the pre-flight sweep reading it and the restore
+        // acting on what it read. The WRITE branch survives this because it hands the sweep's digest to the
+        // transport as FileWriteOptions.ExpectedPreImageHash and lets it refuse; IExecutionTarget.DeleteAsync
+        // takes no such parameter, so nothing but an explicit re-check stands between that edit and a file
+        // removed outright off a live server — the one restore that leaves nothing behind to inspect.
+        harness.Compose.ChangeAfterReadOnPath = ".env";
+
+        var revert = async () => await harness.Executor.RevertAsync(plan.Id);
+
+        var thrown = (await revert.Should().ThrowAsync<PlanRevertException>()).Which;
+        thrown.PlanId.Should().Be(plan.Id);
+        thrown.InnerException.Should().BeOfType<TargetDriftException>();
+        thrown.Message.Should().Contain("drifted");
+        thrown.AnyWriteReachedServer.Should().BeFalse();
+
+        // NOT DELETED, and the edit somebody made is still there. Both halves matter: the first says the
+        // refusal happened, the second says it happened before the destructive call rather than after it.
+        harness.Compose.Deletes.Should().BeEmpty();
+        harness.Compose.WriteCount.Should().Be(0);
+        harness.Exists(".env").Should().BeTrue();
+        harness.FileContent(".env").Should().Be(WritableTarget.ChangedUnderneath);
+
+        var stored = await harness.ReadBackAsync(plan.Id);
+        stored.Plan.Status.Should().Be(ChangePlanStatus.RevertFailed);
+        stored.Plan.Status.Should().NotBe(ChangePlanStatus.Reverted);
+        stored.Actions[0].RevertWriteReachedServer.Should().BeFalse();
+        stored.Actions[0].Status.Should().Be(ChangePlanActionStatus.Failed);
+    }
+
+    [Fact]
+    public async Task RevertAsync_WhenTheFileToDeleteIsUnchangedSinceTheSweep_StillDeletesIt()
+    {
+        using var harness = new Harness();
+        var plan = await harness.ApplyAsync(("SERVER_NAME", "A New Name"));
+
+        await harness.MarkFileDidNotExistAsync(plan.Id, ordinal: 0);
+        harness.ResetTransportLog();
+
+        // The near-miss of the test above: the same re-read, on a file nobody touched. A drift check that
+        // refused here — by comparing against a recorded digest instead of the sweep's own reading, say —
+        // would make every revert-by-delete permanently impossible while looking careful.
+        var receipt = await harness.Executor.RevertAsync(plan.Id);
+
+        receipt.Actions.Should().ContainSingle().Which.WriteReachedServer.Should().BeTrue();
+        harness.Compose.Deletes.Should().ContainSingle().Which.Should().Be(".env");
+        harness.Exists(".env").Should().BeFalse();
     }
 
     // ── 6. Read-back mismatch on a restore: recorded, not thrown ───────────────────────────────────────
@@ -761,6 +936,21 @@ public class PlanExecutorRevertTests
         /// <summary>Return successfully from a delete and leave the file exactly where it was.</summary>
         public string? SwallowDeleteOnPath { get; set; }
 
+        /// <summary>
+        /// Replace this path's content immediately after the next read of it — somebody editing the file in
+        /// the window between the revert's pre-flight sweep and the restore that follows it.
+        /// </summary>
+        /// <remarks>
+        /// One-shot, and applied AFTER the read returns, so the caller sees the original bytes and the file on
+        /// disk is something else by the time it acts on them. That is the TOCTOU window itself, reproduced;
+        /// the alternative (setting the content up front) tests nothing, because the sweep would simply read
+        /// the new content and expect it.
+        /// </remarks>
+        public string? ChangeAfterReadOnPath { get; set; }
+
+        /// <summary>What <see cref="ChangeAfterReadOnPath"/> leaves behind.</summary>
+        public const string ChangedUnderneath = "# somebody edited this after the sweep looked at it\n";
+
         private readonly HashSet<string> _written = new(StringComparer.Ordinal);
 
         public Task<Stream> OpenReadAsync(TargetPath path, CancellationToken ct = default)
@@ -771,9 +961,18 @@ public class PlanExecutorRevertTests
                 throw new IOException($"'{path.Value}' cannot be read back on this session.");
             }
 
-            return content.TryGetValue(path.Value, out var bytes)
-                ? Task.FromResult<Stream>(new MemoryStream(bytes))
-                : throw new FileNotFoundException($"No such file on the target: '{path.Value}'.", path.Value);
+            if (!content.TryGetValue(path.Value, out var bytes))
+            {
+                throw new FileNotFoundException($"No such file on the target: '{path.Value}'.", path.Value);
+            }
+
+            if (string.Equals(ChangeAfterReadOnPath, path.Value, StringComparison.Ordinal))
+            {
+                ChangeAfterReadOnPath = null;
+                content[path.Value] = Utf8NoBom.GetBytes(ChangedUnderneath);
+            }
+
+            return Task.FromResult<Stream>(new MemoryStream(bytes));
         }
 
         public Task<bool> ExistsAsync(TargetPath path, CancellationToken ct = default) =>
@@ -873,6 +1072,66 @@ public class PlanExecutorRevertTests
         public WriteMode Resolve(TargetDescriptor target) => Mode;
     }
 
+    /// <summary>
+    /// The real store, with a one-shot gate that can hold the FIRST <see cref="IChangePlanStore.UpdateAsync"/>
+    /// call matching a predicate, so a test can freeze an apply or a revert at a chosen moment of its ledger
+    /// sequence and let something else happen while it is parked there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A near-copy of <c>PlanExecutorApplyTests.GatedChangePlanStore</c> for the same reason
+    /// <see cref="WritableTarget"/> is a near-copy of that suite's transport double, and widened from "the
+    /// first update" to "the first update matching <see cref="GateWhen"/>" because a revert's interesting
+    /// moments are not all its first one: the claim, and the point just after the claim has been persisted,
+    /// are different states of the world and each has its own guard.
+    /// </para>
+    /// <para>
+    /// Only the interleaving is faked. The concurrency check itself remains the real conditional <c>UPDATE</c>
+    /// underneath — a double that raised <see cref="ChangePlanConcurrencyException"/> itself would be testing
+    /// the double.
+    /// </para>
+    /// </remarks>
+    private sealed class GatedChangePlanStore(IChangePlanStore inner) : IChangePlanStore
+    {
+        private int _tripped;
+
+        /// <summary>Completes when the gated update has been reached and is being held.</summary>
+        public TaskCompletionSource ReachedGate { get; } = new();
+
+        /// <summary>Set by the test to let the held update proceed.</summary>
+        public TaskCompletionSource ReleaseGate { get; } = new();
+
+        /// <summary>Which update to hold, or <see langword="null"/> to hold none.</summary>
+        public Func<ChangePlanRecord, IReadOnlyList<ChangePlanActionRecord>, bool>? GateWhen { get; set; }
+
+        public Task SaveAsync(
+            ChangePlanRecord plan, IReadOnlyList<ChangePlanActionRecord> actions, CancellationToken ct = default) =>
+            inner.SaveAsync(plan, actions, ct);
+
+        public Task<StoredChangePlan?> TryGetAsync(ChangePlanId id, CancellationToken ct = default) =>
+            inner.TryGetAsync(id, ct);
+
+        public async Task UpdateAsync(
+            ChangePlanRecord plan, IReadOnlyList<ChangePlanActionRecord> actions, CancellationToken ct = default)
+        {
+            if (GateWhen is { } gate && gate(plan, actions) && Interlocked.Exchange(ref _tripped, 1) == 0)
+            {
+                ReachedGate.SetResult();
+                await ReleaseGate.Task.ConfigureAwait(false);
+            }
+
+            await inner.UpdateAsync(plan, actions, ct).ConfigureAwait(false);
+        }
+
+        public Task<ChangePlanImagePurgeResult> PurgeImagesAsync(
+            DateTimeOffset now, TimeSpan imageRetention, CancellationToken ct = default) =>
+            inner.PurgeImagesAsync(now, imageRetention, ct);
+
+        public Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+            ServerId serverId, int limit, CancellationToken ct = default) =>
+            inner.ListRecentAsync(serverId, limit, ct);
+    }
+
     private sealed class StubSessions(ServerConfigSessions sessions) : IServerConfigSessionSource
     {
         public Task<ServerConfigSessions?> GetAsync(string serverId, CancellationToken ct = default) =>
@@ -911,6 +1170,15 @@ public class PlanExecutorRevertTests
         private readonly IDbContextFactory<ServyxDbContext> _factory;
         private readonly Dictionary<string, byte[]> _content;
         private readonly MutableWriteModes _writeModes = new();
+        private readonly IServerConfigSessionSource _sessions;
+        private readonly MutableCatalog _catalog;
+        private readonly SurfaceResolver _resolver;
+        private readonly IServerSettingsService _settings;
+        private readonly IConfigMerger _merger;
+        private readonly IConfigAdapter[] _adapters;
+        private readonly IConfigValueCodec[] _codecs;
+        private readonly IServerRepository _servers;
+        private readonly TimeProvider? _time;
 
         public Harness(TimeProvider? time = null)
         {
@@ -986,21 +1254,18 @@ public class PlanExecutorRevertTests
                 ],
                 Surfaces()));
 
-            Executor = new PlanExecutor(
-                sessions,
-                new MutableCatalog(Settings()),
-                new SurfaceResolver(contexts, adapters),
-                new EfServerSettingsService(_factory),
-                new ConfigMerger(codecs),
-                new EfChangePlanStore(_factory),
-                adapters,
-                codecs,
-                time,
-                logger: null,
-                actor: null,
-                new EfServerRepository(_factory));
+            _sessions = sessions;
+            _catalog = new MutableCatalog(Settings());
+            _resolver = new SurfaceResolver(contexts, adapters);
+            _settings = new EfServerSettingsService(_factory);
+            _merger = new ConfigMerger(codecs);
+            _adapters = adapters;
+            _codecs = codecs;
+            _servers = new EfServerRepository(_factory);
+            _time = time;
 
-            Store = new EfChangePlanStore(_factory);
+            Store = new GatedChangePlanStore(new EfChangePlanStore(_factory));
+            Executor = NewExecutor();
         }
 
         public WritableTarget Data { get; }
@@ -1009,7 +1274,22 @@ public class PlanExecutorRevertTests
 
         public PlanExecutor Executor { get; }
 
-        public EfChangePlanStore Store { get; }
+        public GatedChangePlanStore Store { get; }
+
+        /// <summary>A second executor over the same storage and the same sessions — a second Blazor circuit.</summary>
+        public PlanExecutor NewExecutor() => new(
+            _sessions,
+            _catalog,
+            _resolver,
+            _settings,
+            _merger,
+            Store,
+            _adapters,
+            _codecs,
+            _time,
+            logger: null,
+            actor: null,
+            _servers);
 
         public WriteMode WriteMode
         {

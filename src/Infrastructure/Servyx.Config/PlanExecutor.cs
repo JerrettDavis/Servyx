@@ -1151,8 +1151,8 @@ public sealed class PlanExecutor : IPlanExecutor
     /// <exception cref="ArgumentException"><paramref name="planId"/> is null, empty or whitespace.</exception>
     /// <exception cref="InvalidOperationException">
     /// <paramref name="planId"/> is not a plan id, names no stored plan, names a plan that has already been
-    /// reverted or is being reverted, names a plan whose server is no longer tracked, or names a plan
-    /// containing an action this phase cannot carry out.
+    /// reverted or is being reverted or applied, names a plan whose server is no longer tracked, or names a
+    /// plan containing an action this phase cannot carry out.
     /// </exception>
     /// <exception cref="PlanRevertException">
     /// The revert was refused by the pre-flight sweep (nothing written), or a restoring write failed partway
@@ -1190,6 +1190,28 @@ public sealed class PlanExecutor : IPlanExecutor
                 + "neither of them can describe. Nothing was written. If no revert is actually running, this "
                 + "plan's previous attempt did not survive to record its outcome — inspect the files it "
                 + "names directly.");
+        }
+
+        // An APPLY in flight, refused for the same reason and with more urgency. Apply claims the plan the
+        // instant its pre-flight passes and then writes post-images action by action, persisting
+        // WriteReachedServer as each one lands — so by the time a second action is being written, action #0
+        // already satisfies every condition below and this revert would sail through them all and start
+        // restoring pre-images onto surfaces the apply is still writing. Two writers on one live game
+        // server's files, interleaved, with no ordering between them.
+        //
+        // RowVersion does not cover this: it makes the APPLY fail at its next ledger write, which is after
+        // the conflicting bytes have already reached the server. The check has to be here, before the
+        // pre-flight sweep, and it mirrors ApplyAsync's own symmetric refusal of anything that is not
+        // Previewed.
+        if (plan.Status == ChangePlanStatus.Applying)
+        {
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' is being applied right now, so it must not be reverted: the revert "
+                + "would write recorded pre-images onto the very surfaces the apply is still writing "
+                + "post-images to, and nothing orders those two writers against each other. Nothing was "
+                + "written. Wait for the apply to finish — it records its own outcome, including a partial "
+                + "one — and revert then. If no apply is actually running, its attempt did not survive to "
+                + "record an outcome; inspect the files the plan names directly.");
         }
 
         // RevertedAt rather than Status alone, because it is set on a PARTIALLY reverted plan too. A second
@@ -1537,6 +1559,15 @@ public sealed class PlanExecutor : IPlanExecutor
                     // it. Writing zero bytes instead would leave the workload reading a valid, empty
                     // configuration surface it never had — a different state from the one being restored, and
                     // one that looks like a successful revert from every column in this table.
+                    //
+                    // The drift re-check first, because IExecutionTarget.DeleteAsync takes no expectation of
+                    // its own. The write branch below closes the sweep-to-write TOCTOU window by handing the
+                    // sweep's digest to the transport as FileWriteOptions.ExpectedPreImageHash and letting it
+                    // refuse; a delete has no such parameter, so the same window has to be closed here or a
+                    // file somebody edited since the sweep gets removed on the strength of a stale reading.
+                    // Deleting is the one restore that cannot be inspected afterwards.
+                    await RequireUndriftedForDeleteAsync(target, ct).ConfigureAwait(false);
+
                     await target.Surface.Session.Target.DeleteAsync(target.Path, ct).ConfigureAwait(false);
                 }
                 else
@@ -1694,6 +1725,54 @@ public sealed class PlanExecutor : IPlanExecutor
     }
 
     /// <summary>
+    /// Refuses a revert-by-delete whose target no longer holds what the pre-flight sweep saw.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The delete branch's stand-in for <see cref="FileWriteOptions.ExpectedPreImageHash"/>.</strong>
+    /// <see cref="IExecutionTarget.DeleteAsync"/> accepts no expectation, so the optimistic-concurrency check
+    /// the write branch delegates to the transport has to be performed here instead — re-reading the file
+    /// immediately before removing it and comparing against
+    /// <see cref="RevertTarget.ExpectedHash"/>, the digest the sweep captured moments earlier.
+    /// </para>
+    /// <para>
+    /// <strong>A null expectation is no expectation, exactly as it is on the write branch.</strong>
+    /// <see cref="CurrentDigestAsync"/> yields null for a surface that cannot be read at all, and inventing a
+    /// check there would turn an unreadable-but-writable surface into a permanently unrevertible one. A
+    /// surface that COULD be read at sweep time and cannot be read now is a mismatch, not an exemption: the
+    /// honest reading is "this is no longer the file the sweep looked at".
+    /// </para>
+    /// <para>
+    /// Raised as <see cref="TargetDriftException"/> rather than a bespoke type so it travels the identical
+    /// path a transport-refused write already takes — <see cref="RestoreAsync"/>'s catch records the failure,
+    /// leaves the plan <see cref="ChangePlanStatus.PartiallyReverted"/> or
+    /// <see cref="ChangePlanStatus.RevertFailed"/>, and restates it as a
+    /// <see cref="PlanRevertException"/> naming the drifted surface and its hashes.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="TargetDriftException">The file changed since the pre-flight sweep. Nothing was deleted.</exception>
+    private static async Task RequireUndriftedForDeleteAsync(RevertTarget target, CancellationToken ct)
+    {
+        if (target.ExpectedHash is not { } expected)
+        {
+            return;
+        }
+
+        var actual = await CurrentDigestAsync(target.Surface, ct).ConfigureAwait(false);
+
+        if (!string.Equals(expected, actual, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new TargetDriftException(
+                $"Content at '{target.Path.Value}' has drifted since this revert's pre-flight sweep read it, "
+                + "so it was NOT deleted. A revert-by-delete removes a file outright; doing that on the "
+                + "strength of a reading somebody has already overwritten destroys content no plan recorded.",
+                target.Path,
+                expected,
+                actual);
+        }
+    }
+
+    /// <summary>
     /// Confirms a revert-by-delete by asking whether the file is still there.
     /// </summary>
     /// <remarks>
@@ -1787,8 +1866,11 @@ public sealed class PlanExecutor : IPlanExecutor
     /// <param name="Surface">The re-resolved surface and the session it is reachable on.</param>
     /// <param name="Path">Its concrete path, already cross-checked against the recorded one.</param>
     /// <param name="ExpectedHash">
-    /// What the file held when the sweep looked, carried into the write as its optimistic-concurrency
-    /// expectation — see <see cref="CurrentDigestAsync"/> for why it is neither recorded digest.
+    /// What the file held when the sweep looked — the optimistic-concurrency expectation for whichever restore
+    /// this target gets. The write branch hands it to the transport as
+    /// <see cref="FileWriteOptions.ExpectedPreImageHash"/>; the delete branch, whose transport call takes no
+    /// such parameter, checks it itself in <see cref="RequireUndriftedForDeleteAsync"/>. See
+    /// <see cref="CurrentDigestAsync"/> for why it is neither recorded digest.
     /// </param>
     /// <param name="Delete">Whether restoring means removing the file rather than writing bytes to it.</param>
     private sealed record RevertTarget(BoundSurface Surface, TargetPath Path, string? ExpectedHash, bool Delete);
