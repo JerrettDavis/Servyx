@@ -1,0 +1,30 @@
+{
+  "stryker-config": {
+    "solution": "Servyx.sln",
+    "project": "Servyx.Application.csproj",
+    "test-projects": [
+      "tests/Core/Servyx.Application.Tests/Servyx.Application.Tests.csproj",
+      "tests/Servyx.Bdd.Tests/Servyx.Bdd.Tests.csproj"
+    ],
+    "mutate": [
+      "**/*.cs",
+      "!**/obj/**/*.cs",
+      "!**/bin/**/*.cs",
+      "!**/*.feature.cs"
+    ],
+    "thresholds": {
+      "high": 95,
+      "low": 95,
+      "break": 95
+    },
+    "reporters": [
+      "html",
+      "progress",
+      "json"
+    ],
+    "project-info": {
+      "name": "Servyx",
+      "module": "Servyx.Application"
+    }
+  }
+}

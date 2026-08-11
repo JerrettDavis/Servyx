@@ -1,0 +1,31 @@
+{
+  "stryker-config": {
+    "solution": "Servyx.sln",
+    "project": "Servyx.Infrastructure.Persistence.csproj",
+    "test-projects": [
+      "tests/Infrastructure/Servyx.Infrastructure.Persistence.Tests/Servyx.Infrastructure.Persistence.Tests.csproj",
+      "tests/Infrastructure/Servyx.Config.Tests/Servyx.Config.Tests.csproj"
+    ],
+    "mutate": [
+      "**/*.cs",
+      "!**/Migrations/**/*.cs",
+      "!**/obj/**/*.cs",
+      "!**/bin/**/*.cs",
+      "!**/*.feature.cs"
+    ],
+    "thresholds": {
+      "high": 95,
+      "low": 95,
+      "break": 95
+    },
+    "reporters": [
+      "html",
+      "progress",
+      "json"
+    ],
+    "project-info": {
+      "name": "Servyx",
+      "module": "Servyx.Infrastructure.Persistence"
+    }
+  }
+}
