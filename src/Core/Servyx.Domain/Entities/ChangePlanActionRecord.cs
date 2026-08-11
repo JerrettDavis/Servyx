@@ -64,10 +64,30 @@ public sealed class ChangePlanActionRecord
     /// <summary>What kind of action this is — matches <see cref="PlannedActionKind"/>.</summary>
     public required PlannedActionKind Kind { get; set; }
 
-    /// <summary>The surface this action targets.</summary>
+    /// <summary>
+    /// The surface this action targets. <strong>This is the routing key</strong> — see
+    /// <see cref="ResolvedPath"/>'s remarks.
+    /// </summary>
     public required string SurfaceId { get; set; }
 
     /// <summary>The concrete path/location the bound surface resolved to at preview time.</summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Not directly actionable, and carries no session identifier.</strong> This value is relative to
+    /// the root of whichever session the surface resolved on, and a server routinely has more than one — a
+    /// <c>kind: docker</c> deployment reaches <c>${DATA_DIR}</c> inside the container and
+    /// <c>${COMPOSE_DIR}</c> on the host, through two different sessions with two different roots. Nothing in
+    /// this row says which. An apply cannot avoid re-resolving surfaces anyway, because an
+    /// <c>IExecutionTarget</c> is a live connection and cannot be persisted, so the correct sequence is:
+    /// re-resolve by <see cref="SurfaceId"/>, then use the session and path that resolution produces.
+    /// </para>
+    /// <para>
+    /// What this column is for is the cross-check on that re-resolution. If the freshly resolved path differs
+    /// from the one recorded here, the deployment moved underneath the plan (a reconfigured compose
+    /// directory, a re-adopted container with a different mount) and the plan must be treated as stale rather
+    /// than applied to a path the operator never approved.
+    /// </para>
+    /// </remarks>
     public required string ResolvedPath { get; set; }
 
     /// <summary>The transport capabilities required to apply this action.</summary>

@@ -415,6 +415,43 @@ public static class ServyxCoreCompositionExtensions
 
         builder.Services.AddServyxConfig();
 
+        // ── Configuration change plans (IPlanExecutor.PreviewAsync) ─────────────────────────────────────
+        //
+        // Registered here rather than in either Program.cs, like every other composed service in this
+        // process — CompositionRootSingleSourceTests source-scans both hosts' Program.cs and fails a
+        // directly-constructed composed type. Registered here rather than inside AddServyxConfig() for a
+        // different reason: PlanExecutor needs an IChangePlanStore, which is a persistence concern, and
+        // AddServyxConfig() is deliberately self-contained enough to be registered and container-validated
+        // on its own with no database in sight.
+        //
+        // PreviewAsync is READ-ONLY against a game server. It opens the same read sessions the settings tab
+        // already uses, computes and renders the change in memory, and writes only to Servyx's own
+        // ChangePlans/ChangePlanActions tables. Nothing here can apply a plan: ApplyAsync/RevertAsync throw
+        // NotImplementedException, so this registration cannot mutate a workload however the write grant is
+        // set.
+        //
+        // ServyxServerPlanCatalogSource is a leaf over the already-loaded singleDefinition, NOT a lookup
+        // through IServerQueryService — the same rule (and the same deadlock) documented on
+        // ServyxSurfaceResolutionContextSource above.
+        var singleDefinitionVersion = definitionCatalog.DefinitionsById.Count == 1
+            ? definitionCatalog.DefinitionsById.Values.Single().Ref.ContentHash
+            : null;
+
+        builder.Services.AddSingleton<IServerPlanCatalogSource>(
+            new ServyxServerPlanCatalogSource(singleDefinition, singleDefinitionVersion));
+        builder.Services.AddServyxChangePlanStore();
+        builder.Services.AddSingleton<IPlanExecutor>(sp => new PlanExecutor(
+            sp.GetRequiredService<IServerConfigSessionSource>(),
+            sp.GetRequiredService<IServerPlanCatalogSource>(),
+            sp.GetRequiredService<ISurfaceResolver>(),
+            sp.GetRequiredService<IServerSettingsService>(),
+            sp.GetRequiredService<IConfigMerger>(),
+            sp.GetRequiredService<IChangePlanStore>(),
+            sp.GetServices<IConfigAdapter>(),
+            sp.GetServices<IConfigValueCodec>(),
+            sp.GetService<TimeProvider>(),
+            sp.GetService<ILogger<PlanExecutor>>()));
+
         // The old Servyx:Servers:<key>:WriteMode key is now IGNORED for adopted (local docker) servers —
         // neither honoured as an override nor imported as a seed. It is keyed by container NAME while the
         // grant is keyed by container ID, so importing it would attach write access to whatever container

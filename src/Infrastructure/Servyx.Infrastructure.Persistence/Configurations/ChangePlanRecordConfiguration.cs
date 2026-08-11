@@ -78,6 +78,9 @@ public sealed class ChangePlanRecordConfiguration : IEntityTypeConfiguration<Cha
         builder.Property(plan => plan.BlockedJson)
             .IsRequired();
 
+        builder.Property(plan => plan.DiagnosticsJson)
+            .IsRequired();
+
         // Optimistic concurrency token: this is what makes a double-apply impossible. Two concurrent attempts
         // to transition Status on the same row race on this column, and the second SaveChanges throws
         // DbUpdateConcurrencyException instead of silently applying the plan twice.

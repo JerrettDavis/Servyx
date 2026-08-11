@@ -17,6 +17,15 @@
     <PackageReference Include="AwesomeAssertions" />
     <PackageReference Include="TinyBDD" />
     <PackageReference Include="TinyBDD.Xunit" />
+
+    <!-- PlanExecutorTests proves a previewed plan round-trips through the REAL migrated schema: the id
+         PreviewAsync returns must read the same plan and the same ordered actions back out of the database.
+         The SQLite in-memory provider is used over an explicitly opened connection (not the EF InMemory
+         provider) for the reason SqliteDatabaseFixture states — InMemory enforces no foreign keys, no unique
+         indexes and no NOT NULL, so a persistence assertion written against it passes for schemas that could
+         never be created. Both packages are already centrally versioned in Directory.Packages.props. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
   </ItemGroup>
 
   <ItemGroup>
@@ -26,6 +35,11 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Config\Servyx.Config.csproj" />
+
+    <!-- Test-only. Servyx.Config itself references Servyx.Domain and nothing else — PlanExecutor persists
+         through the domain's IChangePlanStore abstraction, never through EF — but the round-trip test needs
+         the real EfChangePlanStore and the real migrations to be worth anything. -->
+    <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Persistence\Servyx.Infrastructure.Persistence.csproj" />
   </ItemGroup>
 
   <ItemGroup>

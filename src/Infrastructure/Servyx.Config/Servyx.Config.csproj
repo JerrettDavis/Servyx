@@ -9,6 +9,12 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" />
 
+    <!-- PlanExecutor logs a warning when a definition's 'derivedFrom' graph turns out to contain a cycle:
+         the plan still reports it as a PlanDiagnostic, but a malformed definition is an operational fact a
+         host's log is the right place for as well. Abstractions only — this project takes no logging
+         implementation, and the logger is optional at the constructor. -->
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />
+
     <!-- YamlConfigAdapter's reader. Servyx.Definitions declares itself "the only project under src/Core
          allowed to depend on YamlDotNet" so that Servyx.Domain stays parser-free; this project sits under
          src/Infrastructure, where owning a format's parser is the whole point — it is already where the

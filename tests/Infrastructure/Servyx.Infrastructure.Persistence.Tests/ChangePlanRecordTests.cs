@@ -42,6 +42,7 @@ public class ChangePlanRecordTests
         ConsequencesJson = """[{"kind":"RestartRequired","description":"Server must restart."}]""",
         SurfaceHashesJson = """{"config-file":"sha256:aaa111"}""",
         BlockedJson = "[]",
+        DiagnosticsJson = "[]",
     };
 
     [Fact]
@@ -322,6 +323,7 @@ public class ChangePlanRecordTests
                 ConsequencesJson = "[]",
                 SurfaceHashesJson = "{}",
                 BlockedJson = "[]",
+                DiagnosticsJson = "[]",
             });
             write.SaveChanges();
         }

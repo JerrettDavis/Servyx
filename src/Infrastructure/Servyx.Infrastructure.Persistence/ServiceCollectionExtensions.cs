@@ -147,4 +147,24 @@ public static class ServiceCollectionExtensions
 
         return services;
     }
+
+    /// <summary>
+    /// Registers <see cref="EfChangePlanStore"/> as the <see cref="IChangePlanStore"/>, backed by the
+    /// <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling of
+    /// <see cref="AddServyxServerSettingsService"/>, and a distinct opt-in decision for the same reason.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching every other store in this file: its consumer is the configuration
+    /// engine's own singleton <c>IPlanExecutor</c>, so there is no scope for a scoped registration to ride
+    /// on. Safe for the same reason <see cref="EfServerSettingsService"/> is — a short-lived context per
+    /// call, never a held scoped dependency.
+    /// </remarks>
+    public static IServiceCollection AddServyxChangePlanStore(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IChangePlanStore, EfChangePlanStore>();
+
+        return services;
+    }
 }

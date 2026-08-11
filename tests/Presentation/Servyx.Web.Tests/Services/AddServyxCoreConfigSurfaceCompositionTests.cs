@@ -4,6 +4,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Composition;
 using Servyx.Config;
 using Servyx.Domain.Configuration;
+using Servyx.Infrastructure.Persistence.Configuration;
 using Servyx.Web.Tests.Documentation;
 
 namespace Servyx.Web.Tests.Services;
@@ -97,6 +98,48 @@ public class AddServyxCoreConfigSurfaceCompositionTests
         host.Services.GetRequiredService<ISurfaceResolver>().Should().BeOfType<SurfaceResolver>();
         host.Services.GetServices<IConfigAdapter>().Select(a => a.FormatId)
             .Should().Contain(["dotenv", "ini", "properties", "json", "yaml"]);
+    }
+
+    [Fact]
+    public void The_plan_executor_and_its_two_new_seams_resolve_from_the_real_container()
+    {
+        var builder = BuildFreshInstallBuilder();
+        builder.AddServyxCore(NullLoggerFactory.Instance);
+
+        using var host = builder.Build();
+
+        // Registered by AddServyxCore, not by either Program.cs — CompositionRootSingleSourceTests forbids
+        // the latter, and IPlanExecutor could not live in AddServyxConfig() anyway because it needs a
+        // persistence-backed IChangePlanStore that package deliberately knows nothing about.
+        host.Services.GetRequiredService<IPlanExecutor>().Should().BeOfType<PlanExecutor>();
+        host.Services.GetRequiredService<IServerPlanCatalogSource>().Should().BeOfType<ServyxServerPlanCatalogSource>();
+        host.Services.GetRequiredService<IChangePlanStore>().Should().BeOfType<EfChangePlanStore>();
+    }
+
+    /// <summary>
+    /// The plan executor sits on exactly the dependencies <c>SettingStateResolverFactory</c> already sits on,
+    /// and deliberately not on <c>IServerQueryService</c> — which optionally consumes
+    /// <see cref="ISettingStateResolverFactory"/>, itself a consumer of
+    /// <see cref="IServerConfigSessionSource"/>, all three singletons. Resolving both in one container is the
+    /// cheap structural check that no such edge was reintroduced: a cycle through singletons fails or hangs
+    /// here rather than at the first operator click.
+    /// </summary>
+    [Fact]
+    public void Resolving_the_plan_executor_alongside_the_settings_pipeline_neither_cycles_nor_hangs()
+    {
+        var builder = BuildFreshInstallBuilder();
+        builder.AddServyxCore(NullLoggerFactory.Instance);
+
+        using var host = builder.Build();
+
+        var act = () =>
+        {
+            host.Services.GetRequiredService<ISettingStateResolverFactory>();
+            host.Services.GetRequiredService<IPlanExecutor>();
+            host.Services.GetRequiredService<IServerConfigSessionSource>();
+        };
+
+        act.Should().NotThrow();
     }
 
     /// <summary>

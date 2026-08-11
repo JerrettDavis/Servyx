@@ -147,6 +147,20 @@ public sealed class ChangePlanRecord
     public required string BlockedJson { get; set; }
 
     /// <summary>
+    /// The plan's advisory notes — a malformed definition worked around, or a downstream surface that only
+    /// regenerates by hand — serialized as JSON by the writer. May be an empty JSON array (<c>"[]"</c>).
+    /// Same opaque-text treatment as <see cref="ConsequencesJson"/>.
+    /// </summary>
+    /// <remarks>
+    /// Persisted rather than left as a return-value-only detail because this table exists precisely so a plan
+    /// survives being read back — across a recycled Blazor circuit, or in a second browser tab. A note saying
+    /// "the surface this change feeds only regenerates when an operator runs the generator by hand" is the
+    /// single piece of a plan whose loss is most dangerous: without it the re-read plan looks unconditionally
+    /// applicable, which is the opposite of what it is.
+    /// </remarks>
+    public required string DiagnosticsJson { get; set; }
+
+    /// <summary>
     /// Optimistic concurrency token. This is the mechanism that makes a double-apply impossible: two
     /// concurrent attempts to transition <see cref="Status"/> on the same row race on this token, and the
     /// second <c>SaveChanges</c> throws <c>DbUpdateConcurrencyException</c> instead of silently applying the
