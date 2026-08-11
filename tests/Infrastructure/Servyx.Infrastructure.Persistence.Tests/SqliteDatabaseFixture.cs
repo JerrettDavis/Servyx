@@ -36,6 +36,12 @@ public sealed class SqliteDatabaseFixture : IDisposable
         context.Database.Migrate();
     }
 
+    /// <summary>
+    /// The open connection this fixture's database lives on, for a test that needs to build its own
+    /// <see cref="DbContextOptions"/> over the same data — capturing the SQL EF generates, say.
+    /// </summary>
+    public SqliteConnection Connection => _connection;
+
     /// <summary>Creates a new context over this fixture's database. Each call is an independent unit of work.</summary>
     public ServyxDbContext CreateContext()
     {

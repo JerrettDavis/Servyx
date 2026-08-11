@@ -85,6 +85,92 @@ public class EfChangePlanStorePurgeTests
         (await store.TryGetAsync(planId))!.Actions.Single().PostImageContent.Should().Be("new-content");
     }
 
+    [Fact]
+    public async Task PurgeImagesAsync_ForAPlanMidRevert_LeavesItAlone()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var planId = Seed(
+            fixture, ChangePlanStatus.Reverting, ChangePlanActionStatus.Reverting, CreatedAt.AddMinutes(1));
+        var store = Store(fixture);
+
+        // A century later, and the row's own flags say nothing landed — which is exactly what makes this the
+        // sharp case. Every age- and evidence-based term in the sweep says "purge these immediately"; the only
+        // thing standing between a live revert and the pre-image it is in the middle of restoring from is the
+        // in-flight status being excluded from the candidate query at all.
+        var result = await store.PurgeImagesAsync(CreatedAt.AddYears(100), Retention);
+
+        result.Any.Should().BeFalse("Reverting is non-terminal, exactly like Applying");
+
+        var stored = await store.TryGetAsync(planId);
+        stored!.Plan.Status.Should().Be(ChangePlanStatus.Reverting);
+        stored.Actions.Single().PreImageContent.Should().Be("old-content");
+        stored.Actions.Single().PostImageContent.Should().Be("new-content");
+    }
+
+    [Fact]
+    public async Task PurgeImagesAsync_SweepingOtherPlans_DoesNotTouchAnInFlightRevertAlongsideThem()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var server = NewServer();
+        var reverting = ChangePlanId.New();
+        var terminal = ChangePlanId.New();
+
+        // Both plans belong to the same server and are the same age. A sweep that reaches the terminal one
+        // must reach it without dragging its neighbour in: "the sweep found nothing to do" is not the property
+        // being pinned here — the property is that it did its job AND left the in-flight row alone.
+        using (var write = fixture.CreateContext())
+        {
+            write.Servers.Add(server);
+            write.ChangePlans.Add(NewPlan(reverting, server.Id, ChangePlanStatus.Reverting, CreatedAt.AddMinutes(1)));
+            write.ChangePlans.Add(NewPlan(terminal, server.Id, ChangePlanStatus.Failed, CreatedAt.AddMinutes(1)));
+            write.ChangePlanActions.Add(NewAction(reverting, 0, ChangePlanActionStatus.Reverting));
+            write.ChangePlanActions.Add(NewAction(terminal, 0, ChangePlanActionStatus.Failed));
+            write.SaveChanges();
+        }
+
+        var store = Store(fixture);
+
+        var result = await store.PurgeImagesAsync(CreatedAt.AddMinutes(2), Retention);
+
+        result.PlansPurged.Should().Be(1, "only the terminal plan was a candidate");
+        (await store.TryGetAsync(terminal))!.Actions.Single().PreImageContent.Should().BeNull();
+        (await store.TryGetAsync(reverting))!.Actions.Single().PreImageContent.Should().Be("old-content");
+    }
+
+    [Fact]
+    public async Task UpdateAsync_WithAnActionSnapshotReadBeforeASweep_DoesNotResurrectThePurgedImages()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var appliedAt = CreatedAt.AddMinutes(1);
+        var planId = Seed(fixture, ChangePlanStatus.Applied, ChangePlanActionStatus.Applied, appliedAt);
+        var store = Store(fixture);
+
+        // THE REVERT PATH'S EXACT SHAPE. RevertAsync reads the whole plan once, then spends however long a
+        // live server takes writing files, updating each action's row as it goes — all from that one detached
+        // snapshot, which still carries the plaintext image content it was read with.
+        var snapshot = await store.TryGetAsync(planId);
+        snapshot!.Actions[0].PreImageContent.Should().Be("old-content");
+        snapshot.Actions[0].ContainsSecrets.Should().BeTrue();
+
+        (await store.PurgeImagesAsync(appliedAt + Retention, Retention)).PlansPurged.Should().Be(1);
+
+        snapshot.Plan.Status = ChangePlanStatus.Reverting;
+        snapshot.Actions[0].Status = ChangePlanActionStatus.Reverting;
+        await store.UpdateAsync(snapshot.Plan, snapshot.Actions);
+
+        var reread = await store.TryGetAsync(planId);
+
+        // The retention guarantee is one-way: once those bytes are discarded nothing may put them back, and a
+        // whole-row UPDATE from a stale snapshot is the one thing in this system that could.
+        reread!.Actions[0].PreImageContent.Should().BeNull();
+        reread.Actions[0].PostImageContent.Should().BeNull();
+
+        // And the columns the caller really does own were still written — this is a narrowed update, not a
+        // skipped one.
+        reread.Actions[0].Status.Should().Be(ChangePlanActionStatus.Reverting);
+        reread.Plan.Status.Should().Be(ChangePlanStatus.Reverting);
+    }
+
     // ── An applied plan's revert capability is protected for the whole window ──────────────────────────
 
     [Fact]

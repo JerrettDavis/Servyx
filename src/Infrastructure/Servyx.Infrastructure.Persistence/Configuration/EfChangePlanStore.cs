@@ -99,14 +99,15 @@ public sealed class EfChangePlanStore : IChangePlanStore
     /// materialized into a tracked entity first and discarded.
     /// </para>
     /// <para>
-    /// <strong>The ordering and the <paramref name="limit"/> are applied in memory, not in the plan query's
-    /// SQL.</strong> Not a style choice: the SQLite provider refuses to translate an <c>ORDER BY</c> over a
-    /// <see cref="DateTimeOffset"/> column at all (<c>NotSupportedException</c>), the same provider-dependent
-    /// ordering hazard <see cref="PurgeImagesAsync"/> already works around for its own
-    /// <see cref="ChangePlanRecord.ExpiresAt"/> comparison — see that method's own remarks. The plan query
-    /// still filters by <paramref name="serverId"/> in SQL against the indexed <c>ServerId</c> column, so what
-    /// is pulled client-side is one server's plans, not the whole table; change plans are short-lived and few
-    /// per server, matching the same assumption <see cref="PurgeImagesAsync"/> already relies on.
+    /// <strong>The ordering and the <paramref name="limit"/> happen in SQL, over
+    /// <see cref="ChangePlanRecord.CreatedAtTicks"/>.</strong> They used to happen in memory, after a
+    /// <c>ToListAsync</c> that materialized every plan a server had ever had in order to return the newest
+    /// twenty-five, because the SQLite provider refuses to translate an <c>ORDER BY</c> over a
+    /// <see cref="DateTimeOffset"/> column at all (<c>NotSupportedException</c>). The workaround for that is a
+    /// sortable twin column, not a client-side sort: plans accumulate until the retention sweep removes them —
+    /// the sweep exists precisely because they do — so "short-lived and few per server" was never a property
+    /// anything enforced. <c>(ServerId, CreatedAtTicks)</c> is indexed together, in that order, so the filter
+    /// and the sort are one index range.
     /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
@@ -119,27 +120,28 @@ public sealed class EfChangePlanStore : IChangePlanStore
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        var plans = (await context.ChangePlans.AsNoTracking()
-                .Where(row => row.ServerId == serverId)
-                .Select(row => new
-                {
-                    row.Id,
-                    row.ServerId,
-                    row.Status,
-                    row.CreatedAt,
-                    row.CreatedBy,
-                    row.AppliedAt,
-                    row.AppliedBy,
-                    row.RevertedAt,
-                    row.RevertedBy,
-                })
-                .ToListAsync(ct).ConfigureAwait(false))
-            .OrderByDescending(row => row.CreatedAt)
-            // .Id is a ChangePlanId record struct with no IComparable of its own — order by its underlying
-            // Guid, which does, rather than let the default comparer fail at runtime.
-            .ThenByDescending(row => row.Id.Value)
+        var plans = await context.ChangePlans.AsNoTracking()
+            .Where(row => row.ServerId == serverId)
+            .OrderByDescending(row => row.CreatedAtTicks)
+            // The tiebreak for two plans previewed in the same instant, so a history view is deterministically
+            // ordered rather than merely usually ordered. Ordered by the mapped Id column — the value
+            // converter puts a ChangePlanId on disk as its underlying Guid, and it is that column the database
+            // sorts, so the record struct never needs an IComparable of its own.
+            .ThenByDescending(row => row.Id)
             .Take(limit)
-            .ToList();
+            .Select(row => new
+            {
+                row.Id,
+                row.ServerId,
+                row.Status,
+                row.CreatedAt,
+                row.CreatedBy,
+                row.AppliedAt,
+                row.AppliedBy,
+                row.RevertedAt,
+                row.RevertedBy,
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
 
         if (plans.Count == 0)
         {
@@ -219,6 +221,18 @@ public sealed class EfChangePlanStore : IChangePlanStore
     /// The rotation mutates the very instance the caller passed in, which is what satisfies this member's
     /// contract that the token is refreshed in place for a subsequent update.
     /// </para>
+    /// <para>
+    /// <strong>The two image columns are excluded from the <c>UPDATE</c>, and that exclusion is a safety
+    /// property rather than an optimization.</strong> An action arrives here detached, carrying whatever
+    /// <see cref="ChangePlanActionRecord.PreImageContent"/>/<see cref="ChangePlanActionRecord.PostImageContent"/>
+    /// it held when the caller read it — and an apply or a revert holds that snapshot across many seconds of
+    /// live I/O, during which <see cref="PurgeImagesAsync"/> can run and null those columns. A whole-row
+    /// attach would then write the caller's stale, unmasked, possibly secret-bearing copy straight back over
+    /// the purge, silently undoing the retention guarantee. Nothing legitimately writes those two columns
+    /// through this method: they are captured once at preview time by <see cref="SaveAsync"/>'s insert, and
+    /// cleared only by the sweep, which uses its own tracked read. Marking them unmodified makes the
+    /// resurrection impossible by construction rather than by getting every sweep predicate right.
+    /// </para>
     /// </remarks>
     public async Task UpdateAsync(
         ChangePlanRecord plan,
@@ -233,7 +247,11 @@ public sealed class EfChangePlanStore : IChangePlanStore
         context.ChangePlans.Attach(plan).State = EntityState.Modified;
         foreach (var action in actions)
         {
-            context.ChangePlanActions.Attach(action).State = EntityState.Modified;
+            var entry = context.ChangePlanActions.Attach(action);
+            entry.State = EntityState.Modified;
+
+            entry.Property(row => row.PreImageContent).IsModified = false;
+            entry.Property(row => row.PostImageContent).IsModified = false;
         }
 
         try
@@ -260,8 +278,9 @@ public sealed class EfChangePlanStore : IChangePlanStore
     /// </para>
     /// <para>
     /// Only candidate plans are loaded — plans that are terminal, or expired and never applied. A plan that
-    /// is <see cref="ChangePlanStatus.Previewed"/> and unexpired, or <see cref="ChangePlanStatus.Applying"/>,
-    /// is never read here at all, so this sweep cannot interfere with an apply in flight.
+    /// is <see cref="ChangePlanStatus.Previewed"/> and unexpired, <see cref="ChangePlanStatus.Applying"/>, or
+    /// <see cref="ChangePlanStatus.Reverting"/> is never read here at all, so this sweep cannot interfere with
+    /// an apply or a revert in flight.
     /// </para>
     /// </remarks>
     public async Task<ChangePlanImagePurgeResult> PurgeImagesAsync(
@@ -273,16 +292,23 @@ public sealed class EfChangePlanStore : IChangePlanStore
 
         await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
 
-        // Everything except a plan whose apply is in flight. Expressed as "not Applying" rather than as a
-        // list of terminal statuses so that a status added later is swept by default rather than silently
-        // exempted; Previewed rows are then filtered by expiry below, in memory.
+        // Everything except a plan whose apply or revert is IN FLIGHT. Both in-flight statuses are named
+        // because both are non-terminal claims over a live server: Applying still needs its post-image to
+        // write, and Reverting still needs its pre-image to restore from. Purging either mid-flight destroys
+        // the bytes the operation is in the middle of using.
+        //
+        // Note the shape deliberately changed from "not Applying" to an explicit exclusion of both. The old
+        // form was written as a single negation on the theory that a status added later would be swept by
+        // default rather than silently exempted — and then Reverting was added and swept by default, which is
+        // exactly the bug that theory was meant to prevent. Non-terminal statuses must be opted OUT by name;
+        // there are two of them and adding a third is a decision, not an oversight.
         //
         // The expiry comparison is deliberately NOT in the SQL. ExpiresAt is a DateTimeOffset, whose ordering
-        // comparison is provider-dependent, and a sweep that quietly matched nothing on one provider would
-        // look exactly like a sweep with nothing to do. Change plans are short-lived and few; loading them is
-        // cheaper than a provider-specific predicate nobody would notice failing.
+        // comparison is provider-dependent (the SQLite provider refuses to translate it at all), and a sweep
+        // that quietly matched nothing on one provider would look exactly like a sweep with nothing to do.
         var candidates = await context.ChangePlans
-            .Where(row => row.Status != ChangePlanStatus.Applying)
+            .Where(row => row.Status != ChangePlanStatus.Applying
+                && row.Status != ChangePlanStatus.Reverting)
             .ToListAsync(ct).ConfigureAwait(false);
 
         candidates.RemoveAll(row => row.Status == ChangePlanStatus.Previewed && row.ExpiresAt > now);

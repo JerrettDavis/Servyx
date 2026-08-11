@@ -38,6 +38,12 @@ public sealed class ChangePlanRecordConfiguration : IEntityTypeConfiguration<Cha
         builder.Property(plan => plan.CreatedAt)
             .IsRequired();
 
+        // The sortable twin of CreatedAt. Mapped explicitly (rather than left to convention) because it has a
+        // private setter and exists solely so ORDER BY works: see ChangePlanRecord.CreatedAtTicks for why a
+        // DateTimeOffset column cannot carry that job on SQLite.
+        builder.Property(plan => plan.CreatedAtTicks)
+            .IsRequired();
+
         builder.Property(plan => plan.CreatedBy)
             .IsRequired()
             .HasMaxLength(200);
@@ -106,9 +112,15 @@ public sealed class ChangePlanRecordConfiguration : IEntityTypeConfiguration<Cha
             .HasForeignKey(plan => plan.ServerId)
             .OnDelete(DeleteBehavior.Cascade);
 
-        // A server detail page's "current/recent plans for this server" query is the expected entry point for
-        // reading this table, so it is indexed rather than left to a full table scan.
-        builder.HasIndex(plan => plan.ServerId);
+        // A server detail page's "recent plans for this server" query is the expected entry point for reading
+        // this table, and it is one query: filter by ServerId, order by CreatedAtTicks descending, take a
+        // page. Composite in exactly that order so the index serves both halves — a plain ServerId index
+        // would still leave the storage engine sorting a whole server's history to return twenty-five rows.
+        //
+        // This REPLACES the previous single-column ServerId index rather than sitting alongside it: an index
+        // whose leading column is ServerId already answers every ServerId-only lookup (including the foreign
+        // key's), so keeping both would be a second copy of the same data to maintain on every insert.
+        builder.HasIndex(plan => new { plan.ServerId, plan.CreatedAtTicks });
 
         // A future expiry sweep (promoting stale Previewed rows to Stale) filters on Status the same way an
         // orphan sweep filters ProvisionedResourceRecord.State — indexed for the same reason.

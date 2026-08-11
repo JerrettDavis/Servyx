@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Servyx.Domain.Common;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Entities;
@@ -127,6 +128,47 @@ public class EfChangePlanStoreListRecentTests
         var result = await store.ListRecentAsync(server.Id, 10);
 
         result.Select(row => row.Id).Should().Equal(higherId, lowerId);
+    }
+
+    [Fact]
+    public async Task ListRecentAsync_OverALongHistory_OrdersAndLimitsInSql_RatherThanAfterLoadingTheTable()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var server = NewServer();
+
+        // Far more plans than the page asks for. Change plans accumulate until the retention sweep removes
+        // them — the sweep exists precisely because they do — so a server's history is not bounded by
+        // anything a listing may assume.
+        const int history = 400;
+        const int page = 25;
+        Seed(fixture, server, history);
+
+        var sql = new List<string>();
+        var store = new EfChangePlanStore(new CapturingFactory(fixture, sql));
+
+        var result = await store.ListRecentAsync(server.Id, page);
+
+        // Seed writes plan i at CreatedAt + i minutes, so the newest page is the last `page` of them, newest
+        // first. Asserted as exact values rather than as "is descending": a query that returned the OLDEST
+        // twenty-five would satisfy a descending-order check on its own.
+        var expected = Enumerable.Range(history - page, page)
+            .Reverse()
+            .Select(i => CreatedAt.AddMinutes(i));
+
+        result.Should().HaveCount(page);
+        result.Select(row => row.CreatedAt).Should().Equal(expected);
+
+        // AND THE ORDERING HAPPENED IN THE DATABASE. Every assertion above is equally satisfied by loading all
+        // four hundred rows and sorting them in application memory, which is what this method used to do and
+        // what a well-meaning revert to `.ToListAsync().OrderByDescending(...)` would restore. The generated
+        // SQL is the only thing that tells the two apart.
+        var planQuery = sql.Should()
+            .ContainSingle(statement => statement.Contains("FROM \"ChangePlans\"", StringComparison.Ordinal))
+            .Which;
+
+        planQuery.Should().Contain("ORDER BY");
+        planQuery.Should().Contain("CreatedAtTicks");
+        planQuery.Should().Contain("LIMIT");
     }
 
     // ── Server filtering ────────────────────────────────────────────────────────────────────────────────
@@ -264,6 +306,30 @@ public class EfChangePlanStoreListRecentTests
     private sealed class FixtureFactory(SqliteDatabaseFixture fixture) : IDbContextFactory<ServyxDbContext>
     {
         public ServyxDbContext CreateDbContext() => fixture.CreateContext();
+    }
+
+    /// <summary>
+    /// The same database, through contexts that record every SQL statement they execute.
+    /// </summary>
+    /// <remarks>
+    /// Built here rather than on <see cref="SqliteDatabaseFixture"/> so no suite that does not want logging
+    /// pays for it, following <c>EfChangePlanStorePurgeTests</c>'s own reason for a local factory. What it is
+    /// for is stated at its one call site: "the ordering is correct" and "the ordering was done by the
+    /// database" are different claims, and only the second one is what stops this method loading a whole
+    /// table to return a page of it.
+    /// </remarks>
+    private sealed class CapturingFactory(SqliteDatabaseFixture fixture, List<string> statements)
+        : IDbContextFactory<ServyxDbContext>
+    {
+        public ServyxDbContext CreateDbContext()
+        {
+            var options = new DbContextOptionsBuilder<ServyxDbContext>()
+                .UseSqlite(fixture.Connection)
+                .LogTo(statements.Add, [RelationalEventId.CommandExecuted])
+                .Options;
+
+            return new ServyxDbContext(options);
+        }
     }
 
     /// <summary>Seeds <paramref name="count"/> plans for <paramref name="server"/>, each a minute apart.</summary>

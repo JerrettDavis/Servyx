@@ -152,9 +152,11 @@ public interface IChangePlanStore
     /// A caller that needs the full content of one specific plan already has <see cref="TryGetAsync"/>.
     /// </para>
     /// <para>
-    /// Ordered newest first by <see cref="ChangePlanRecord.CreatedAt"/>, with <see cref="ChangePlanRecord.Id"/>
-    /// descending as a tiebreak for plans previewed in the same instant — a history view must be
-    /// deterministically ordered, not merely "usually" ordered.
+    /// Ordered newest first by <see cref="ChangePlanRecord.CreatedAt"/> (through its sortable twin
+    /// <see cref="ChangePlanRecord.CreatedAtTicks"/>), with <see cref="ChangePlanRecord.Id"/> descending as a
+    /// tiebreak for plans previewed in the same instant — a history view must be deterministically ordered,
+    /// not merely "usually" ordered. Both the ordering and <paramref name="limit"/> are the store's job to
+    /// apply at the database, not an implementation's job to apply after loading the table.
     /// </para>
     /// </remarks>
     /// <param name="serverId">The server whose plans to list.</param>
@@ -191,6 +193,14 @@ public interface IChangePlanStore
     /// <see cref="ChangePlanActionRecord"/> carries no token: the plan row is the gate every writer must pass
     /// through first, so whoever holds the plan's current token is by construction the only writer for its
     /// actions.
+    /// </para>
+    /// <para>
+    /// <strong>This member must not write <see cref="ChangePlanActionRecord.PreImageContent"/> or
+    /// <see cref="ChangePlanActionRecord.PostImageContent"/>.</strong> Those two columns are written once, by
+    /// <see cref="SaveAsync"/>, and cleared only by <see cref="PurgeImagesAsync"/>. A caller holds its action
+    /// snapshot across seconds of live server I/O, so an implementation that wrote every column would let a
+    /// stale snapshot restore plaintext content the retention sweep had already discarded — see
+    /// <see cref="PurgeImagesAsync"/> for why that content is what it is.
     /// </para>
     /// </remarks>
     /// <param name="plan">The plan row to update. Must already exist; its current <see cref="ChangePlanRecord.RowVersion"/> is the expected token.</param>
@@ -244,9 +254,10 @@ public interface IChangePlanStore
     /// </para>
     /// <para>
     /// <strong>Non-terminal plans are never touched, at any age.</strong> A plan still
-    /// <see cref="ChangePlanStatus.Previewed"/> and not yet expired is about to be applied, and one in
-    /// <see cref="ChangePlanStatus.Applying"/> is mid-flight; discarding either one's post-image would break
-    /// the apply that is happening right now.
+    /// <see cref="ChangePlanStatus.Previewed"/> and not yet expired is about to be applied, one in
+    /// <see cref="ChangePlanStatus.Applying"/> is mid-flight, and one in
+    /// <see cref="ChangePlanStatus.Reverting"/> is mid-restore; discarding a post-image would break the apply
+    /// happening right now, and discarding a pre-image would break the revert happening right now.
     /// </para>
     /// <para>
     /// <strong>What is given up, stated plainly.</strong> Once an applied plan's images are purged, that plan

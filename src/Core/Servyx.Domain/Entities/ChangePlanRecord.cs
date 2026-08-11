@@ -92,6 +92,8 @@ public sealed class ChangePlanRecord
     /// </remarks>
     public static readonly TimeSpan DefaultTtl = TimeSpan.FromMinutes(15);
 
+    private DateTimeOffset _createdAt;
+
     /// <summary>This plan's identifier — the <c>planId</c> that must survive across Blazor Server circuits.</summary>
     public required ChangePlanId Id { get; set; }
 
@@ -102,7 +104,39 @@ public sealed class ChangePlanRecord
     public required ChangePlanStatus Status { get; set; }
 
     /// <summary>When this plan was previewed (written).</summary>
-    public required DateTimeOffset CreatedAt { get; set; }
+    public required DateTimeOffset CreatedAt
+    {
+        get => _createdAt;
+        set
+        {
+            _createdAt = value;
+            CreatedAtTicks = value.UtcTicks;
+        }
+    }
+
+    /// <summary>
+    /// <see cref="CreatedAt"/> expressed as UTC ticks — the column a "recent plans for this server" listing
+    /// actually sorts on.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Denormalized because <see cref="DateTimeOffset"/> cannot be ordered in SQL on every
+    /// provider.</strong> EF Core's SQLite provider refuses to translate a comparison over a
+    /// <see cref="DateTimeOffset"/> column at all, which forced <c>IChangePlanStore.ListRecentAsync</c> to
+    /// materialize every one of a server's plans and sort them client-side. Change plans accumulate until the
+    /// retention sweep removes them, so "few per server" was never a property anything enforced. A plain
+    /// <see cref="long"/> orders identically on SQLite and PostgreSQL and can carry an index.
+    /// </para>
+    /// <para>
+    /// <strong>It cannot drift from <see cref="CreatedAt"/>.</strong> There is exactly one place this value is
+    /// ever assigned — <see cref="CreatedAt"/>'s own setter, above — so a caller cannot set one without the
+    /// other, and the setter is private precisely so no caller can try. <see cref="DateTimeOffset.UtcTicks"/>
+    /// rather than <see cref="DateTimeOffset.Ticks"/>: the ordering must be by absolute instant, and
+    /// <c>Ticks</c> is local-to-the-offset, so two plans a second apart written from different offsets would
+    /// otherwise sort backwards.
+    /// </para>
+    /// </remarks>
+    public long CreatedAtTicks { get; private set; }
 
     /// <summary>Who requested the preview. Servyx has one shared operator identity; see <see cref="ServerSettingValue.UpdatedBy"/>.</summary>
     public required string CreatedBy { get; set; }

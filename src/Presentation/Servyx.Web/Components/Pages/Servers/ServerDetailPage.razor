@@ -106,7 +106,7 @@ else
                 <ServerConsoleTab Logs="@_logs" Commands="@_rconChannels.Catalog.Commands" WriteMode="@_writeMode" ResolveSession="@ResolveConsoleSessionAsync" />
                 break;
             case "Settings":
-                <ServerSettingsTab Settings="@_settings" Descriptors="@_settingDescriptorsByKey" ServerId="@Id" WriteMode="@_writeMode" />
+                <ServerSettingsTab Settings="@_settings" Descriptors="@_settingDescriptorsByKey" ServerId="@(_containerId ?? string.Empty)" WriteMode="@_writeMode" />
                 break;
             case "Saves":
                 <ServerSavesTab Result="@_saves" />
