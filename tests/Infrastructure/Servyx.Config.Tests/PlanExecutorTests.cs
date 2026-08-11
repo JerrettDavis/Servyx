@@ -702,15 +702,34 @@ public class PlanExecutorTests
     }
 
     [Fact]
-    public async Task RevertAsync_RefusesClearly_RatherThanSilentlyDoingNothing()
+    public async Task RevertAsync_ForAnIdThatIsNotAPlanId_RefusesClearly_RatherThanSilentlyDoingNothing()
     {
         var harness = new Harness();
 
         var revert = async () => await harness.Executor.RevertAsync("any-plan");
 
-        // Apply is implemented (see PlanExecutorApplyTests); revert deliberately is not yet, and says so
-        // rather than returning a task that quietly completes having reverted nothing.
-        (await revert.Should().ThrowAsync<NotImplementedException>()).Which.Message.Should().Contain("not implemented");
+        // Revert is implemented now (see PlanExecutorRevertTests for the whole contract). What this pins is
+        // the property the previous NotImplementedException stood in for: an unrevertable request REFUSES,
+        // loudly and by name, rather than returning a task that quietly completes having reverted nothing.
+        (await revert.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("is not a change plan identifier");
+
+        harness.Mutations.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task RevertAsync_ForAWellFormedIdThatNamesNoStoredPlan_RefusesWithoutTouchingTheServer()
+    {
+        var harness = new Harness();
+
+        var revert = async () => await harness.Executor.RevertAsync(ChangePlanId.New().ToString());
+
+        // The other half of "no plan": a syntactically valid id whose row is gone. A discarded plan takes its
+        // pre-images with it, so this can never be downgraded into a best-effort revert.
+        (await revert.Should().ThrowAsync<InvalidOperationException>())
+            .Which.Message.Should().Contain("is stored");
+
+        harness.Mutations.Should().BeEmpty();
     }
 
     [Fact]
@@ -1070,6 +1089,10 @@ public class PlanExecutorTests
         public Task<ChangePlanImagePurgeResult> PurgeImagesAsync(
             DateTimeOffset now, TimeSpan imageRetention, CancellationToken ct = default) =>
             throw new InvalidOperationException("Previewing a change plan must never purge a stored plan.");
+
+        public Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+            ServerId serverId, int limit, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Previewing a change plan must never list a server's plans.");
     }
 
     private sealed class FakeTimeProvider(DateTimeOffset now) : TimeProvider

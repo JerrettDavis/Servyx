@@ -1,3 +1,5 @@
+using Servyx.Domain.Entities;
+
 namespace Servyx.Domain.Configuration;
 
 /// <summary>
@@ -19,8 +21,32 @@ public interface IPlanExecutor
     /// </summary>
     Task<ChangeReceipt> ApplyAsync(string planId, CancellationToken ct = default);
 
-    /// <summary>Reverts a previously applied plan using its recorded pre-images.</summary>
-    Task RevertAsync(string planId, CancellationToken ct = default);
+    /// <summary>
+    /// Reverts a previously applied plan using its recorded pre-images: every surface whose apply write
+    /// reached the server is put back to the literal bytes recorded before that write, or deleted when the
+    /// row says the file did not exist beforehand.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>All-or-nothing, bought by preflighting rather than by a transaction.</strong> Live-server
+    /// writes cannot be rolled back, so every failure-prone check — pre-image availability, the pre-image
+    /// agreeing with its own recorded digest, reversibility, surface reachability — runs across the WHOLE
+    /// revert set before the first byte is written. Any failure raises
+    /// <see cref="PlanRevertException"/> naming the offending action(s) with nothing written at all. A plan
+    /// whose images the retention sweep has already discarded is refused here, never partially reverted.
+    /// </para>
+    /// <para>
+    /// <strong>The revert set is keyed on <c>ChangePlanActionRecord.WriteReachedServer</c>, not on
+    /// <c>Applied</c>.</strong> An action that errored after its bytes landed still changed the server and
+    /// still has to be undone.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="PlanRevertException">
+    /// The plan cannot be reverted (raised before anything is written), or a revert write failed partway
+    /// through — in which case the exception enumerates, per action, whether its restoring write reached the
+    /// server.
+    /// </exception>
+    Task<RevertReceipt> RevertAsync(string planId, CancellationToken ct = default);
 }
 
 /// <summary>
@@ -171,3 +197,113 @@ public sealed class PlanApplyFidelityException : Exception
 /// <param name="AppliedAt">When the plan was applied.</param>
 /// <param name="Actions">The actions that were applied.</param>
 public sealed record ChangeReceipt(string PlanId, DateTimeOffset AppliedAt, IReadOnlyList<PlannedAction> Actions);
+
+/// <summary>What reverting one action did — the per-action honesty a whole-plan outcome cannot carry.</summary>
+/// <remarks>
+/// <para>
+/// <strong><paramref name="WriteReachedServer"/> is the load-bearing field.</strong> A revert is a sequence of
+/// unrollbackable writes against a live server, so the only useful thing a partial outcome can say is which
+/// files were put back and which were left holding the applied content. It travels on the receipt AND on
+/// <see cref="PlanRevertException"/> for that reason: the answer is equally needed whether the revert finished
+/// or stopped.
+/// </para>
+/// <para>
+/// <paramref name="Verification"/> is <see langword="null"/> when no revert write was attempted for this
+/// action at all — distinct from <see cref="PostWriteVerification.NotAttempted"/>, which means one was
+/// attempted and nothing then read the surface back.
+/// </para>
+/// </remarks>
+/// <param name="Ordinal">The action's ordinal within the plan.</param>
+/// <param name="SurfaceId">The surface it targets.</param>
+/// <param name="WriteReachedServer">Whether this action's restoring write or delete reached the server.</param>
+/// <param name="Verification">What reading the surface back after that write found, if it was read at all.</param>
+public sealed record RevertedAction(
+    int Ordinal,
+    string SurfaceId,
+    bool WriteReachedServer,
+    PostWriteVerification? Verification);
+
+/// <summary>Record of a completed revert.</summary>
+/// <remarks>
+/// Returned for a revert that reached the end of its action list, which is NOT the same as one where every
+/// surface was confirmed restored: a read-back that could not be performed, or that found something other than
+/// the pre-image, is reported through <see cref="RevertedAction.Verification"/> and durably through the plan's
+/// own <c>ChangePlanStatus</c> rather than by throwing. Callers that need "fully restored" must ask for it —
+/// see <see cref="FullyVerified"/>.
+/// </remarks>
+/// <param name="PlanId">The plan that was reverted.</param>
+/// <param name="RevertedAt">When the revert was recorded.</param>
+/// <param name="Actions">Every action in the revert set, with what its revert did.</param>
+public sealed record RevertReceipt(
+    string PlanId,
+    DateTimeOffset RevertedAt,
+    IReadOnlyList<RevertedAction> Actions)
+{
+    /// <summary>Whether every action's revert write was read back and found to hold the recorded pre-image.</summary>
+    public bool FullyVerified =>
+        Actions.Count > 0 && Actions.All(a => a.Verification == PostWriteVerification.Verified);
+}
+
+/// <summary>
+/// Thrown when a plan cannot be reverted, or when a revert stopped partway through.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Two very different forces, told apart by <see cref="AnyWriteReachedServer"/>.</strong> Raised from
+/// the pre-flight phase it means the revert was REFUSED and nothing whatsoever was written — a purged
+/// pre-image, a pre-image that disagrees with its own recorded digest, an action the plan itself marked
+/// non-reversible, an unreachable surface. Raised from the write phase it means some restoring writes landed
+/// and one did not, and the server is now in a state that is neither the applied one nor the pre-apply one.
+/// </para>
+/// <para>
+/// <strong><see cref="Actions"/> is not decoration.</strong> A revert cannot be rolled back any more than the
+/// apply it was undoing could, so the only actionable thing a failure can hand an operator is the per-action
+/// account of which surfaces were put back. Reporting a bare failure would leave them with a server whose
+/// state is unknown from the exception alone.
+/// </para>
+/// </remarks>
+public sealed class PlanRevertException : Exception
+{
+    /// <summary>Creates a <see cref="PlanRevertException"/> with a default message.</summary>
+    public PlanRevertException()
+        : base("The change plan could not be reverted.")
+    {
+    }
+
+    /// <summary>Creates a <see cref="PlanRevertException"/> with the given message.</summary>
+    public PlanRevertException(string message) : base(message) { }
+
+    /// <summary>Creates a <see cref="PlanRevertException"/> with the given message and inner exception.</summary>
+    public PlanRevertException(string message, Exception innerException) : base(message, innerException) { }
+
+    /// <summary>Creates a <see cref="PlanRevertException"/> naming the plan and disclosing what each action's revert did.</summary>
+    /// <param name="message">The message.</param>
+    /// <param name="planId">The plan whose revert stopped or was refused.</param>
+    /// <param name="actions">Every action in the revert set, with what its revert did.</param>
+    /// <param name="innerException">The failure that stopped the revert, when there was one.</param>
+    public PlanRevertException(
+        string message,
+        string planId,
+        IReadOnlyList<RevertedAction> actions,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        PlanId = planId;
+        Actions = actions ?? [];
+    }
+
+    /// <summary>The plan whose revert stopped or was refused, if known.</summary>
+    public string? PlanId { get; }
+
+    /// <summary>
+    /// Every action in the revert set with what its revert did. Empty for a failure raised before the revert
+    /// set could be determined at all (an unknown plan id, a plan whose server is no longer tracked).
+    /// </summary>
+    public IReadOnlyList<RevertedAction> Actions { get; } = [];
+
+    /// <summary>
+    /// Whether ANY restoring write reached the server. <see langword="false"/> is the pre-flight refusal's
+    /// guarantee: the plan is exactly as it was and the server was not touched.
+    /// </summary>
+    public bool AnyWriteReachedServer => Actions.Any(a => a.WriteReachedServer);
+}

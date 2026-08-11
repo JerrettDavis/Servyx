@@ -69,6 +69,14 @@ public sealed class ChangePlanActionRecordConfiguration : IEntityTypeConfigurati
         // remarks), whose size is entirely surface-defined.
         builder.Property(action => action.PreImageContent);
 
+        // Not nullable, and NOT given a store-side HasDefaultValue: EF omits a property sitting at its CLR
+        // default from an INSERT when the column has a store default, so `false` — the value that means
+        // "delete this file to revert" — would silently become `true` on the way to the database. The
+        // migration backfills existing rows to true instead, which is a one-off statement about history
+        // rather than a standing rule about writes.
+        builder.Property(action => action.PreImageExisted)
+            .IsRequired();
+
         builder.Property(action => action.PostImageContent);
 
         builder.Property(action => action.PostImageHash)
@@ -105,6 +113,29 @@ public sealed class ChangePlanActionRecordConfiguration : IEntityTypeConfigurati
         builder.Property(action => action.RevertedAt);
 
         builder.Property(action => action.FailureReason);
+
+        // ── Revert evidence ────────────────────────────────────────────────────────────────────────────
+        // The revert-phase counterparts of WriteReachedServer / ObservedPostImageHash / PostWriteVerification
+        // / FailureReason above, in their own columns for the same reason those are in theirs: what a revert
+        // did and what an apply did are different facts about the same row, and a revert must never be able
+        // to overwrite the account of the apply it is undoing.
+
+        // Same "no write reached the server is a real answer" reasoning as WriteReachedServer.
+        builder.Property(action => action.RevertWriteReachedServer)
+            .IsRequired();
+
+        // A bare hex SHA-256, the same shape as PreImageHash and ObservedPostImageHash.
+        builder.Property(action => action.RevertObservedImageHash)
+            .HasMaxLength(128);
+
+        // Stored by name like every other enum column here, and NULLABLE rather than defaulted: "no revert
+        // was attempted" and PostWriteVerification.NotAttempted ("a revert ran and never looked") are
+        // different statements, and only a nullable column can hold both.
+        builder.Property(action => action.RevertVerification)
+            .HasConversion<string>()
+            .HasMaxLength(32);
+
+        builder.Property(action => action.RevertFailureReason);
 
         // Real referential integrity to ChangePlanRecord.Id, with cascade delete: an action row has no
         // independent existence — deleting a plan (including transitively, via ChangePlanRecord's own cascade

@@ -1102,15 +1102,696 @@ public sealed class PlanExecutor : IPlanExecutor
         }
     }
 
+    // ── Revert ─────────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>The operation name <see cref="RequireRevertWritesEnabled"/> phrases its refusal around.</summary>
+    private const string RevertOperation = "revert a configuration change";
+
     /// <inheritdoc />
-    public Task RevertAsync(string planId, CancellationToken ct = default) =>
-        throw new NotImplementedException(
-            "Reverting an applied plan is not implemented yet. The ChangePlanActionRecord.PreImageContent it "
-            + "will restore from is recorded at preview time and kept for the configured retention window "
-            + "after a plan takes effect — see IChangePlanStore.PurgeImagesAsync, whose sweep eventually "
-            + "discards it. A plan whose images have been purged must be REFUSED by this method with a "
-            + "message saying so, never silently succeed and never revert only the actions whose images "
-            + "survive.");
+    /// <remarks>
+    /// <para>
+    /// <strong>Every failure-prone check runs across the WHOLE revert set before the first byte is
+    /// written.</strong> A live server offers no transaction, so all-or-nothing has to be bought rather than
+    /// declared, and the only currency available is front-loading. <see cref="PreflightRevertAsync"/> proves
+    /// each action reversible, each pre-image present and agreeing with its own recorded digest, each surface
+    /// still resolving to the path the plan recorded, and each session reachable — performing exactly two
+    /// read-only calls per action and no write at all. Any failure raises
+    /// <see cref="PlanRevertException"/> naming every offending ordinal, with nothing written.
+    /// </para>
+    /// <para>
+    /// <strong>The revert set is <c>WriteReachedServer</c>, never <c>Status == Applied</c>.</strong> The
+    /// action that most needs undoing is precisely the one apply left <see cref="ChangePlanActionStatus.Failed"/>
+    /// after its bytes had already landed — a read-back fidelity mismatch has exactly that shape. Keying on
+    /// status would skip it and report a clean revert over a server still holding content nobody approved.
+    /// </para>
+    /// <para>
+    /// <strong>A purged pre-image is a refusal, not a skip.</strong>
+    /// <c>IChangePlanStore.PurgeImagesAsync</c> nulls <see cref="ChangePlanActionRecord.PreImageContent"/>
+    /// while deliberately keeping <see cref="ChangePlanActionRecord.PreImageHash"/>, so a swept row still
+    /// claims a digest it can no longer produce the bytes for.
+    /// <see cref="ChangePlanActionRecord.PreImageExisted"/> is what tells that row apart from one whose file
+    /// genuinely did not exist (whose revert is a delete) — without it every file-creating plan would be
+    /// permanently unrevertible, or every purged one would be silently deleted off a live server.
+    /// </para>
+    /// <para>
+    /// <strong>Expiry and definition drift are NOT checked, and both omissions are deliberate.</strong> Apply
+    /// refuses an expired plan because the operator's approval was given against a picture of the server that
+    /// is no longer being verified, and refuses a changed definition because the rules the plan was derived
+    /// from moved. A revert derives nothing: it writes literal recorded bytes back. Every applied plan is by
+    /// definition long past its 15-minute preview TTL, so enforcing expiry would make this method unreachable,
+    /// and refusing on a definition change would strand exactly the server whose definition change is the
+    /// reason an operator wants the old file back.
+    /// </para>
+    /// <para>
+    /// <strong>Nothing is restarted or recreated</strong>, for the same reason
+    /// <see cref="ApplyAsync"/> restarts nothing: the receipt means the bytes are back on disk, not that the
+    /// running workload has re-read them.
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentException"><paramref name="planId"/> is null, empty or whitespace.</exception>
+    /// <exception cref="InvalidOperationException">
+    /// <paramref name="planId"/> is not a plan id, names no stored plan, names a plan that has already been
+    /// reverted or is being reverted, names a plan whose server is no longer tracked, or names a plan
+    /// containing an action this phase cannot carry out.
+    /// </exception>
+    /// <exception cref="PlanRevertException">
+    /// The revert was refused by the pre-flight sweep (nothing written), or a restoring write failed partway
+    /// through (in which case <see cref="PlanRevertException.Actions"/> says which ones landed).
+    /// </exception>
+    /// <exception cref="WritesDisabledException">The server's write mode is not <see cref="WriteMode.Enabled"/>.</exception>
+    /// <exception cref="ChangePlanConcurrencyException">Another attempt claimed this plan's revert first.</exception>
+    public async Task<RevertReceipt> RevertAsync(string planId, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(planId);
+
+        if (!ChangePlanId.TryParse(planId, out var id))
+        {
+            throw new InvalidOperationException(
+                $"'{planId}' is not a change plan identifier, so there is no plan to revert.");
+        }
+
+        var stored = await _store.TryGetAsync(id, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"No change plan '{planId}' is stored, so there is nothing to revert — and a discarded plan "
+                + "takes its recorded pre-images with it, so there is no way back through this route. Nothing "
+                + "was written.");
+
+        var plan = stored.Plan;
+        var actions = stored.Actions;
+
+        // A revert already in flight. The RowVersion claim further down is what makes this race-proof rather
+        // than merely usually right; this check is what stops the far more common sequential case with a
+        // message about the plan instead of a storage error about a token.
+        if (plan.Status == ChangePlanStatus.Reverting)
+        {
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' is already being reverted, so a second revert must not start: two "
+                + "sweeps writing the same pre-images over each other would leave the server in a state "
+                + "neither of them can describe. Nothing was written. If no revert is actually running, this "
+                + "plan's previous attempt did not survive to record its outcome — inspect the files it "
+                + "names directly.");
+        }
+
+        // RevertedAt rather than Status alone, because it is set on a PARTIALLY reverted plan too. A second
+        // sweep over one of those would rewrite pre-images onto surfaces whose current content nobody has
+        // re-examined since the first attempt stopped.
+        if (plan.RevertedAt is { } revertedAt)
+        {
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' was already reverted at {revertedAt:u} by "
+                + $"'{plan.RevertedBy ?? "an unrecorded actor"}' and is recorded as {plan.Status}, so it "
+                + "cannot be reverted again. Nothing was written. Preview a new plan to change this server.");
+        }
+
+        // WriteReachedServer, NOT Status == Applied — see this method's own remarks for why the distinction
+        // decides whether the most damaged action in the plan gets undone at all.
+        var revertSet = actions.Where(a => a.WriteReachedServer).OrderBy(a => a.Ordinal).ToList();
+
+        if (revertSet.Count == 0)
+        {
+            throw new PlanRevertException(
+                $"No action of change plan '{planId}' recorded a write that reached the server, so there is "
+                + "nothing to undo and nothing was written. A plan that was refused, that expired, or whose "
+                + "every write was rejected before any I/O leaves the server exactly as it was; reverting it "
+                + "would write pre-images over files this plan never touched.",
+                planId,
+                []);
+        }
+
+        // Out of scope for this phase and refused for the WHOLE revert, mirroring ApplyAsync's own refusal:
+        // undoing the file half of a change whose control-channel half stays in force would leave the server
+        // in a state neither the plan nor its reversal describes.
+        if (revertSet.Exists(a => a.Kind == PlannedActionKind.WriteControlChannel))
+        {
+            var offending = revertSet
+                .Where(a => a.Kind == PlannedActionKind.WriteControlChannel)
+                .Select(a => $"#{a.Ordinal} ('{a.SurfaceId}')");
+
+            throw new InvalidOperationException(
+                $"Change plan '{planId}' contains control-channel action(s) {string.Join(", ", offending)} "
+                + "that reached the server, and Servyx cannot yet undo one. The whole revert is refused and "
+                + "NOTHING was written: restoring only its file actions would leave the server half-reverted "
+                + "in a way no plan describes.");
+        }
+
+        var servers = _servers
+            ?? throw new InvalidOperationException(
+                $"This {nameof(PlanExecutor)} was constructed without an {nameof(IServerRepository)}, so a "
+                + "stored plan's server cannot be resolved back to the container id its sessions are keyed "
+                + "by. Reverting a plan is unavailable in this composition; previewing one is not.");
+
+        var server = await servers.TryGetAsync(plan.ServerId, ct).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(
+                $"Change plan '{planId}' targets a server Servyx no longer tracks, so there is nothing to "
+                + "revert it on. Nothing was written.");
+
+        var serverId = server.ContainerId;
+
+        var sessions = await _sessions.GetAsync(serverId, ct).ConfigureAwait(false);
+        if (sessions is null || sessions.Sessions.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No configuration session is open for server '{serverId}', so change plan '{planId}' cannot "
+                + "be reverted. Nothing was written.");
+        }
+
+        // THE WRITE-MODE GATE, ahead of every side effect and across every session — the same house idiom
+        // ApplyAsync states its own reasoning for. A revert is a write like any other and a read-only posture
+        // refuses it; saying so up front, about the server's posture, beats a failure about a file halfway
+        // through.
+        foreach (var session in sessions.Sessions)
+        {
+            RequireRevertWritesEnabled(session.Target, serverId);
+        }
+
+        // The catalogue is fetched only because BindAsync takes a settings list; its identity is deliberately
+        // NOT compared against the plan's — see this method's remarks. A server whose definition has since
+        // been unbound entirely can still have its files put back, which is the point.
+        var catalog = await _catalogs.GetAsync(serverId, ct).ConfigureAwait(false);
+
+        // Surfaces are re-resolved rather than taken from ChangePlanActionRecord.ResolvedPath, exactly as
+        // apply does: an IExecutionTarget is a live connection that cannot be persisted. The stored path is
+        // the cross-check on this resolution, applied in the sweep below.
+        var context = await BindAsync(serverId, catalog?.Settings ?? [], ct).ConfigureAwait(false);
+
+        var targets = await PreflightRevertAsync(revertSet, context, planId, serverId, ct).ConfigureAwait(false);
+
+        // THE CLAIM. Write-ahead and RowVersion-guarded, the same shape ApplyAsync uses: durable "a revert is
+        // starting" before the first restoring write, and the point at which a second concurrent attempt that
+        // read the same row loses.
+        plan.Status = ChangePlanStatus.Reverting;
+        await _store.UpdateAsync(plan, [], ct).ConfigureAwait(false);
+
+        return await RestoreAsync(plan, revertSet, targets, planId, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>Refuses a revert when the target carries a write guard that is not <see cref="WriteMode.Enabled"/>.</summary>
+    /// <remarks>
+    /// Delegated to <see cref="ExecutionTargetWriteMode"/> for the same reason
+    /// <see cref="RequireWritesEnabled"/> is, and phrased around reverting rather than applying so an
+    /// operator is told which operation their posture refused.
+    /// </remarks>
+    private static void RequireRevertWritesEnabled(IExecutionTarget target, string serverId) =>
+        ExecutionTargetWriteMode.RequireWritesEnabled(
+            target,
+            RevertOperation,
+            serverId,
+            "Previewing a change, reading current values, and inspecting an already-recorded plan all remain "
+            + "available.");
+
+    /// <summary>
+    /// The revert pre-flight sweep: proves every action in the revert set can be put back, and captures each
+    /// surface's CURRENT digest, before a single byte is written.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Refusals are accumulated, not thrown at the first one.</strong> The whole set is examined even
+    /// once one action has already failed, so an operator whose plan has three purged pre-images learns that
+    /// once rather than three times — and, more importantly, so the message names every ordinal that will
+    /// still be a problem after they fix the first.
+    /// </para>
+    /// <para>
+    /// <strong>Nothing here writes.</strong> The only I/O is an existence probe (which is what proves the
+    /// session is actually reachable, rather than assuming it from the surface having resolved) and, where
+    /// the surface advertises <see cref="TransportCapabilities.FileRead"/>, one read to capture the current
+    /// digest.
+    /// </para>
+    /// </remarks>
+    /// <returns>One <see cref="RevertTarget"/> per action, keyed by ordinal.</returns>
+    /// <exception cref="PlanRevertException">Any action cannot be reverted. Nothing was written.</exception>
+    private async Task<Dictionary<int, RevertTarget>> PreflightRevertAsync(
+        IReadOnlyList<ChangePlanActionRecord> revertSet,
+        PlanContext context,
+        string planId,
+        string serverId,
+        CancellationToken ct)
+    {
+        var refusals = new List<string>();
+        var targets = new Dictionary<int, RevertTarget>();
+
+        foreach (var action in revertSet)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            var named = $"Action #{action.Ordinal} (surface '{action.SurfaceId}')";
+
+            // The plan's own verdict, recorded at preview. Honoured for the whole revert rather than for this
+            // action alone: a partial restore is the outcome this phasing exists to make impossible.
+            if (!action.Reversible)
+            {
+                refusals.Add(
+                    $"{named} was recorded as NOT reversible when the plan was previewed, so the bytes it "
+                    + "overwrote were never captured in a form this method can restore.");
+                continue;
+            }
+
+            if (PreImageUnavailable(action, named) is { } unavailable)
+            {
+                refusals.Add(unavailable);
+                continue;
+            }
+
+            if (!context.Bound.TryGetValue(action.SurfaceId, out var surface)
+                || surface.Surface.Path is not { } path)
+            {
+                var reason = context.Failures.TryGetValue(action.SurfaceId, out var failure)
+                    ? " " + failure.Reason
+                    : string.Empty;
+
+                refusals.Add(
+                    $"{named} targets a surface that no longer resolves to a reachable file on server "
+                    + $"'{serverId}'.{reason}");
+                continue;
+            }
+
+            // ResolvedPath's one job, applied here for the same reason apply applies it: a deployment that
+            // moved underneath the plan would have this revert write a pre-image into a file the operator
+            // never saw, which is strictly worse than leaving the applied change in place.
+            if (!string.Equals(path.Value, action.ResolvedPath, StringComparison.Ordinal))
+            {
+                refusals.Add(
+                    $"{named} was applied to '{action.ResolvedPath}' and that surface resolves to "
+                    + $"'{path.Value}' now, so the deployment moved underneath the plan.");
+                continue;
+            }
+
+            if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite))
+            {
+                refusals.Add(
+                    $"{named} resolved without TransportCapabilities.FileWrite, so the session it is "
+                    + "reachable on cannot put the file back.");
+                continue;
+            }
+
+            // Reachability, proved rather than inferred. A surface resolves from cached deployment facts; a
+            // session that has since dropped its connection still resolves and would fail at the write, by
+            // which time earlier actions in the set would already have landed.
+            try
+            {
+                await surface.Session.Target.ExistsAsync(path, ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                refusals.Add(
+                    $"{named} could not be reached at '{path.Value}' via {surface.Session.Description}: "
+                    + $"{ex.Message}");
+                continue;
+            }
+
+            targets[action.Ordinal] = new RevertTarget(
+                surface,
+                path,
+                await CurrentDigestAsync(surface, ct).ConfigureAwait(false),
+                Delete: !action.PreImageExisted);
+        }
+
+        if (refusals.Count > 0)
+        {
+            throw new PlanRevertException(
+                $"Change plan '{planId}' cannot be reverted on server '{serverId}' and NOTHING was written. "
+                + string.Join(" ", refusals)
+                + " A revert is all-or-nothing: restoring only the actions whose pre-images survive would "
+                + "leave the server in a state no plan describes and no operator ever approved.",
+                planId,
+
+                // Every action in the set, each saying plainly that its write did not happen. This is the
+                // pre-flight refusal's whole guarantee, stated in data rather than left to the prose.
+                [.. revertSet.Select(a => new RevertedAction(a.Ordinal, a.SurfaceId, false, null))]);
+        }
+
+        return targets;
+    }
+
+    /// <summary>
+    /// Names why an action's pre-image cannot be restored from, or <see langword="null"/> when it can.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The digest is re-computed, not merely checked for presence.</strong> A purged row is the
+    /// obvious failure and the easy one; a row whose <see cref="ChangePlanActionRecord.PreImageContent"/> was
+    /// truncated by a botched migration, a half-committed write or a column-width change is the dangerous one,
+    /// because it is fully present and looks restorable right up until it is written over a live
+    /// configuration file. Hashing it here is the only way to tell the two apart, and it costs one SHA-256
+    /// over content already in memory.
+    /// </para>
+    /// <para>
+    /// <see cref="ChangePlanActionRecord.PreImageExisted"/> is consulted FIRST and short-circuits everything
+    /// else: an action whose file did not exist has no content and no digest by construction, and demanding
+    /// them would refuse exactly the revert that is simplest to perform correctly.
+    /// </para>
+    /// </remarks>
+    private static string? PreImageUnavailable(ChangePlanActionRecord action, string named)
+    {
+        if (!action.PreImageExisted)
+        {
+            return null;
+        }
+
+        if (action.PreImageContent is not { } preImage)
+        {
+            return $"{named} records that a file was there before the write but holds no pre-image content "
+                + "for it, so the bytes to restore are gone — most often because the retention sweep "
+                + "(IChangePlanStore.PurgeImagesAsync) discarded them once the window for reverting had "
+                + "passed.";
+        }
+
+        if (action.PreImageHash is not { } recorded)
+        {
+            return $"{named} records pre-image content but no digest for it, so there would be no way to "
+                + "check that restoring it actually landed.";
+        }
+
+        var rendered = Hash(StrictUtf8.GetBytes(preImage));
+
+        return string.Equals(rendered, recorded, StringComparison.OrdinalIgnoreCase)
+            ? null
+            : $"{named} has a stored pre-image whose content hashes to {rendered} but whose recorded digest "
+                + $"is {recorded}. The stored row disagrees with itself, so neither can be trusted as the "
+                + "file's original content — writing it would overwrite a live file with bytes that are "
+                + "provably not what was there.";
+    }
+
+    /// <summary>
+    /// The digest of what is on the server RIGHT NOW, or <see langword="null"/> when it cannot be read.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This — not <see cref="ChangePlanActionRecord.PostImageHash"/> and not
+    /// <see cref="ChangePlanActionRecord.PreImageHash"/> — is what the restoring write carries as its
+    /// <see cref="FileWriteOptions.ExpectedPreImageHash"/>, and the choice matters in both directions.</strong>
+    /// The pre-image hash is what the file should hold AFTER the revert, so expecting it would refuse every
+    /// revert there was ever any point in performing. The post-image hash looks right — it is what apply put
+    /// there — and fails on the single most important case: an apply whose read-back found a mismatch left
+    /// content that is NOT the post-image, and that corrupted file is precisely the one an operator reverts.
+    /// </para>
+    /// <para>
+    /// What the expectation is actually for is the TOCTOU window between this sweep and the write moments
+    /// later — the same job it does in apply — so the honest value is whatever the file holds now. A surface
+    /// that cannot be read yields no expectation rather than a guessed one: a wrong expectation refuses every
+    /// write, which would turn an unreadable-but-writable surface into a permanently unrevertible one.
+    /// </para>
+    /// </remarks>
+    private static async Task<string?> CurrentDigestAsync(BoundSurface surface, CancellationToken ct)
+    {
+        if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileRead))
+        {
+            return null;
+        }
+
+        var (bytes, error) = await ReadRawAsync(surface, ct).ConfigureAwait(false);
+        return error is not null || bytes is null ? null : Hash(bytes);
+    }
+
+    /// <summary>
+    /// Walks the revert set in ordinal order, restoring each surface write-ahead-logged, and returns the
+    /// receipt once every one has been attempted.
+    /// </summary>
+    private async Task<RevertReceipt> RestoreAsync(
+        ChangePlanRecord plan,
+        IReadOnlyList<ChangePlanActionRecord> revertSet,
+        IReadOnlyDictionary<int, RevertTarget> targets,
+        string planId,
+        CancellationToken ct)
+    {
+        var outcomes = new List<RevertedAction>(revertSet.Count);
+
+        foreach (var action in revertSet)
+        {
+            var target = targets[action.Ordinal];
+
+            // Write-ahead, exactly as WriteAsync claims each action before attempting it: the row says "this
+            // restore is being attempted" BEFORE it is, so a process that dies mid-revert leaves a row naming
+            // the file to go and look at rather than no trace at all.
+            action.Status = ChangePlanActionStatus.Reverting;
+            await _store.UpdateAsync(plan, [action], ct).ConfigureAwait(false);
+
+            try
+            {
+                if (target.Delete)
+                {
+                    // The file did not exist before this plan created it, so putting it back means REMOVING
+                    // it. Writing zero bytes instead would leave the workload reading a valid, empty
+                    // configuration surface it never had — a different state from the one being restored, and
+                    // one that looks like a successful revert from every column in this table.
+                    await target.Surface.Session.Target.DeleteAsync(target.Path, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    var bytes = StrictUtf8.GetBytes(action.PreImageContent!);
+                    using var content = new MemoryStream(bytes, writable: false);
+
+                    await target.Surface.Session.Target.WriteFileAsync(
+                            target.Path,
+                            content,
+                            new FileWriteOptions(target.ExpectedHash)
+                            {
+                                Strategy = FileWriteStrategy.AtomicRename,
+                            },
+                            ct)
+                        .ConfigureAwait(false);
+                }
+
+                // Set the moment the call returns anything at all, and BEFORE any verification — the same
+                // rule WriteReachedServer follows on the apply path, and for the same reason: a failure after
+                // this point must never be reported as "nothing happened".
+                action.RevertWriteReachedServer = true;
+
+                // READ-BACK, the only check here that speaks to the server rather than to a return value. A
+                // FileWriteReceipt is computed by every transport over the buffer it was HANDED, so comparing
+                // one to the digest of the bytes we handed it is a tautology that cannot catch a transport
+                // mangling them on the way to disk — see VerifyWrittenAsync's own remarks.
+                var (verification, observed) = target.Delete
+                    ? await VerifyDeletedAsync(target, ct).ConfigureAwait(false)
+                    : await VerifyWrittenAsync(target.Surface, action.PreImageHash!, ct).ConfigureAwait(false);
+
+                // The observed digest goes in its OWN column. PreImageHash stays what it always was — the
+                // digest of the bytes this revert restored from — so the two can be compared long after the
+                // images themselves are purged.
+                action.RevertVerification = verification;
+                action.RevertObservedImageHash = observed;
+
+                if (verification == PostWriteVerification.Mismatched)
+                {
+                    // RECORDED, NOT THROWN, and this is the one place the revert path deliberately diverges
+                    // from apply's. Apply throws on a mismatch because it must stop before writing further
+                    // unapproved bytes. A revert has no such reason to abort: the remaining actions each
+                    // restore a DIFFERENT surface whose own pre-image is still perfectly good, and refusing to
+                    // attempt them would leave more of the server holding applied content than continuing
+                    // does. The failure is not softened — the action is Failed, the plan lands
+                    // PartiallyReverted, and the receipt says which surface was not restored.
+                    action.Status = ChangePlanActionStatus.Failed;
+                    action.RevertFailureReason =
+                        $"Reverting action #{action.Ordinal} wrote surface '{action.SurfaceId}' at "
+                        + $"'{action.ResolvedPath}', but reading it back found content hashing to "
+                        + $"{observed ?? "<nothing>"} where the recorded pre-image "
+                        + $"{action.PreImageHash ?? "<none>"} was expected. The surface was NOT restored.";
+
+                    _logger?.LogError(
+                        "Reverting action #{Ordinal} of change plan {PlanId} wrote surface {SurfaceId}, but "
+                        + "reading it back found different content. The surface was NOT restored and is "
+                        + "recorded as such; nothing was rewritten or retried.",
+                        action.Ordinal,
+                        planId,
+                        action.SurfaceId);
+                }
+                else
+                {
+                    action.Status = ChangePlanActionStatus.Reverted;
+                    action.RevertedAt = _time.GetUtcNow();
+
+                    if (verification == PostWriteVerification.Unverifiable)
+                    {
+                        _logger?.LogWarning(
+                            "Reverting action #{Ordinal} of change plan {PlanId} restored surface "
+                            + "{SurfaceId}, but the restore could not be confirmed by reading it back. The "
+                            + "change is believed to have landed; nothing has looked at the file.",
+                            action.Ordinal,
+                            planId,
+                            action.SurfaceId);
+                    }
+                }
+
+                await _store.UpdateAsync(plan, [action], ct).ConfigureAwait(false);
+
+                outcomes.Add(new RevertedAction(action.Ordinal, action.SurfaceId, true, verification));
+            }
+            catch (Exception ex)
+            {
+                // This action's own outcome first, reading its state off the row rather than off a local so
+                // the account cannot drift from what storage says, then every action after it — none of which
+                // was attempted, stated as a positive fact rather than left absent.
+                outcomes.Add(new RevertedAction(
+                    action.Ordinal,
+                    action.SurfaceId,
+                    action.RevertWriteReachedServer,
+                    action.RevertVerification));
+
+                foreach (var later in revertSet.Where(a => a.Ordinal > action.Ordinal))
+                {
+                    outcomes.Add(new RevertedAction(later.Ordinal, later.SurfaceId, false, null));
+                }
+
+                // CancellationToken.None: the ledger write must happen even when the reason we are here is a
+                // cancelled token. Losing the record of a restore that already landed is strictly worse than
+                // honouring a cancellation promptly.
+                await RecordRevertFailureAsync(plan, action, ex, outcomes, CancellationToken.None)
+                    .ConfigureAwait(false);
+
+                var landed = outcomes.Count(o => o.WriteReachedServer);
+
+                _logger?.LogError(
+                    ex,
+                    "Reverting change plan {PlanId} failed at action #{Ordinal} (surface {SurfaceId}); "
+                    + "{Landed} of {Total} restore(s) reached the server. The plan is recorded as {Status}.",
+                    planId,
+                    action.Ordinal,
+                    action.SurfaceId,
+                    landed,
+                    revertSet.Count,
+                    plan.Status);
+
+                // Deliberately PlanRevertException even for a TargetDriftException, where ApplyAsync restates
+                // the drift as PlanStaleException. Two reasons. "Stale" is a statement about a plan that was
+                // never applied and must not be — this one WAS applied and its record is accurate; and
+                // PlanStaleException carries no per-action account, which is the one thing an operator staring
+                // at a half-reverted server actually needs. The drift travels as the inner exception with its
+                // hashes intact, and the message says plainly which surface moved.
+                throw new PlanRevertException(
+                    $"Reverting change plan '{planId}' stopped at action #{action.Ordinal} (surface "
+                    + $"'{action.SurfaceId}' at '{action.ResolvedPath}')"
+                    + (ex is TargetDriftException drift
+                        ? $": that file drifted between this revert's pre-flight sweep and the restoring "
+                            + $"write itself (expected content hash {drift.ExpectedHash ?? "<none>"}, found "
+                            + $"{drift.ActualHash ?? "<none>"}), so nothing was written for it. "
+                        : $": {ex.Message} ")
+                    + $"{landed} of {revertSet.Count} restore(s) reached the server and were NOT rolled back "
+                    + "— a revert is no more undoable than the apply it undoes. The plan is recorded as "
+                    + $"{plan.Status} and each action's own row says whether its restore landed.",
+                    planId,
+                    outcomes,
+                    ex);
+            }
+        }
+
+        var revertedAt = _time.GetUtcNow();
+
+        // PartiallyReverted when any surface came back holding something other than its pre-image. Every
+        // write returned successfully on that path, so "Reverted" would be defensible from the return values
+        // alone and would be a lie about the server — the whole reason the read-back exists.
+        plan.Status = outcomes.Exists(o => o.Verification == PostWriteVerification.Mismatched)
+            ? ChangePlanStatus.PartiallyReverted
+            : ChangePlanStatus.Reverted;
+
+        plan.RevertedAt = revertedAt;
+        plan.RevertedBy = _actor;
+        await _store.UpdateAsync(plan, [], ct).ConfigureAwait(false);
+
+        return new RevertReceipt(planId, revertedAt, outcomes);
+    }
+
+    /// <summary>
+    /// Confirms a revert-by-delete by asking whether the file is still there.
+    /// </summary>
+    /// <remarks>
+    /// The delete path's counterpart to <see cref="VerifyWrittenAsync"/>, and it reports through the same
+    /// enum on purpose: "the file is gone" is <see cref="PostWriteVerification.Verified"/>, "it is still
+    /// there" is <see cref="PostWriteVerification.Mismatched"/> — a delete that returned successfully and left
+    /// the file in place is exactly the read-back contradiction that member exists for — and a probe that
+    /// throws is <see cref="PostWriteVerification.Unverifiable"/> rather than a failure, because the delete
+    /// itself already succeeded and only the confirmation did not. The observed hash is always
+    /// <see langword="null"/>: an absent file has no content to digest, and echoing one would read as a
+    /// measurement nobody took.
+    /// </remarks>
+    private static async Task<(PostWriteVerification Verification, string? ObservedHash)> VerifyDeletedAsync(
+        RevertTarget target,
+        CancellationToken ct)
+    {
+        try
+        {
+            var exists = await target.Surface.Session.Target.ExistsAsync(target.Path, ct).ConfigureAwait(false);
+            return (exists ? PostWriteVerification.Mismatched : PostWriteVerification.Verified, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            return (PostWriteVerification.Unverifiable, null);
+        }
+    }
+
+    /// <summary>Records a failed restore and settles the plan's own status.</summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Deliberately NOT the <see cref="ChangePlanActionStatus.Skipped"/> sweep
+    /// <see cref="RecordFailureAsync"/> performs.</strong> The actions after this one are sitting at
+    /// <see cref="ChangePlanActionStatus.Applied"/> — a true statement about an apply that really happened —
+    /// and overwriting it to record a fact about the revert would destroy the apply ledger to describe its
+    /// failed undo. "This restore was never attempted" belongs to the revert, and travels on
+    /// <see cref="PlanRevertException.Actions"/> where it can say so without lying about anything else.
+    /// </para>
+    /// <para>
+    /// <see cref="ChangePlanRecord.RevertedAt"/> is set even though the revert failed, which is what makes the
+    /// already-reverted guard refuse a blind retry. That is the intent: after a partial revert the server
+    /// holds a mixture of pre-apply and applied content, and a second sweep would write pre-images over
+    /// surfaces whose current state nobody has looked at since. Recovery is a human's decision, exactly as it
+    /// is after a partial apply.
+    /// </para>
+    /// <para>
+    /// A ledger write that itself fails is swallowed and logged, never rethrown — the caller is already about
+    /// to surface the real failure, and replacing it with a storage error would lose the reason the revert
+    /// stopped.
+    /// </para>
+    /// </remarks>
+    private async Task RecordRevertFailureAsync(
+        ChangePlanRecord plan,
+        ChangePlanActionRecord failed,
+        Exception failure,
+        IReadOnlyList<RevertedAction> outcomes,
+        CancellationToken ct)
+    {
+        failed.Status = ChangePlanActionStatus.Failed;
+        failed.RevertFailureReason = failure.Message;
+
+        // PartiallyReverted only when something really was put back, RevertFailed otherwise — matching those
+        // members' own definitions rather than overstating either the damage or the progress.
+        plan.Status = outcomes.Any(o => o.WriteReachedServer)
+            ? ChangePlanStatus.PartiallyReverted
+            : ChangePlanStatus.RevertFailed;
+
+        plan.RevertedAt = _time.GetUtcNow();
+        plan.RevertedBy = _actor;
+
+        try
+        {
+            await _store.UpdateAsync(plan, [failed], ct).ConfigureAwait(false);
+        }
+        catch (Exception ledgerFailure)
+        {
+            _logger?.LogError(
+                ledgerFailure,
+                "Reverting change plan {PlanId} failed at action #{Ordinal} AND the ledger could not be "
+                + "updated to say so. The plan and that action remain in their in-flight state: their real "
+                + "outcome is unknown from storage alone and the file must be inspected directly.",
+                plan.Id,
+                failed.Ordinal);
+        }
+    }
+
+    /// <summary>Everything one action's restore needs, resolved once by the pre-flight sweep.</summary>
+    /// <param name="Surface">The re-resolved surface and the session it is reachable on.</param>
+    /// <param name="Path">Its concrete path, already cross-checked against the recorded one.</param>
+    /// <param name="ExpectedHash">
+    /// What the file held when the sweep looked, carried into the write as its optimistic-concurrency
+    /// expectation — see <see cref="CurrentDigestAsync"/> for why it is neither recorded digest.
+    /// </param>
+    /// <param name="Delete">Whether restoring means removing the file rather than writing bytes to it.</param>
+    private sealed record RevertTarget(BoundSurface Surface, TargetPath Path, string? ExpectedHash, bool Delete);
 
     // ── Binding ────────────────────────────────────────────────────────────────────────────────────────
 
@@ -1504,6 +2185,14 @@ public sealed class PlanExecutor : IPlanExecutor
             // column and the plan's SurfaceHashes entry for the same surface can never disagree.
             PreImageHash = read.Hash,
             PreImageContent = before,
+
+            // Recorded at the one place a pre-image is ever captured, and derived rather than assumed: an
+            // action only reaches this point for a surface this previewer READ and PARSED, and a file that
+            // was read existed. Writing it explicitly is what stops a later revert having to guess whether a
+            // null PreImageContent means "there was no file" or "the retention sweep took it" — see
+            // ChangePlanActionRecord.PreImageExisted. A future create-if-absent write path records false here
+            // and inherits a correct revert (a delete) for free.
+            PreImageExisted = true,
             PostImageContent = after,
             PostImageHash = Hash(StrictUtf8.GetBytes(after)),
 

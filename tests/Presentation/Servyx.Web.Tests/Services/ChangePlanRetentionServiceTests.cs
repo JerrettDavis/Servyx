@@ -159,5 +159,9 @@ public class ChangePlanRetentionServiceTests
         public Task UpdateAsync(
             ChangePlanRecord plan, IReadOnlyList<ChangePlanActionRecord> actions, CancellationToken ct = default) =>
             throw new InvalidOperationException("The retention sweep must never transition a plan itself.");
+
+        public Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+            ServerId serverId, int limit, CancellationToken ct = default) =>
+            throw new InvalidOperationException("The retention sweep must never list a server's plans.");
     }
 }

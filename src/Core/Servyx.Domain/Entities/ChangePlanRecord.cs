@@ -23,8 +23,29 @@ public enum ChangePlanStatus
     /// <summary>Previewed, never applied, and no longer safe to apply — e.g. its TTL elapsed or a bound surface drifted.</summary>
     Stale,
 
+    /// <summary>
+    /// A revert is in progress: the plan has been claimed for reverting and at least one restoring write has
+    /// started. The mirror of <see cref="Applying"/>, and the write-ahead claim that makes two concurrent
+    /// reverts race on <see cref="ChangePlanRecord.RowVersion"/> instead of both proceeding.
+    /// </summary>
+    Reverting,
+
     /// <summary>Applied, then reverted from its recorded pre-images.</summary>
     Reverted,
+
+    /// <summary>
+    /// A revert stopped partway through: at least one surface was put back, at least one was not. The mirror
+    /// of <see cref="PartiallyApplied"/>, and it also covers a revert whose writes all landed but whose
+    /// read-back found something other than the pre-image on at least one surface — that surface was not
+    /// restored, however successfully the write call returned.
+    /// </summary>
+    PartiallyReverted,
+
+    /// <summary>
+    /// A revert did not complete and nothing was put back — the mirror of <see cref="Failed"/>. The plan's
+    /// applied changes are all still in force.
+    /// </summary>
+    RevertFailed,
 
     /// <summary>Never applied because a later plan for the same server was previewed and applied instead.</summary>
     Superseded,

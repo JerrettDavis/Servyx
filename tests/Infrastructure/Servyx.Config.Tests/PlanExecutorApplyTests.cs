@@ -1053,6 +1053,10 @@ public class PlanExecutorApplyTests
         public Task<ChangePlanImagePurgeResult> PurgeImagesAsync(
             DateTimeOffset now, TimeSpan imageRetention, CancellationToken ct = default) =>
             inner.PurgeImagesAsync(now, imageRetention, ct);
+
+        public Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+            ServerId serverId, int limit, CancellationToken ct = default) =>
+            inner.ListRecentAsync(serverId, limit, ct);
     }
 
     /// <summary>

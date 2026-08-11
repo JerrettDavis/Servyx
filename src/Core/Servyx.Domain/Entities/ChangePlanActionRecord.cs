@@ -22,6 +22,13 @@ public enum ChangePlanActionStatus
     /// <summary>This action was never attempted because an earlier action in the same plan failed.</summary>
     Skipped,
 
+    /// <summary>
+    /// This action's revert write is in flight — recorded write-ahead, before the transport is called, so a
+    /// process that dies mid-revert leaves a row naming the file to go and look at. The mirror of
+    /// <see cref="Applying"/>, and needed for the same reason.
+    /// </summary>
+    Reverting,
+
     /// <summary>This action was applied, then reverted from <see cref="PreImageContent"/>.</summary>
     Reverted,
 }
@@ -159,6 +166,28 @@ public sealed class ChangePlanActionRecord
     /// <summary>The surface's full content before this action, at preview time. Unmasked — see this type's own remarks. Null when there was no prior content.</summary>
     public string? PreImageContent { get; set; }
 
+    /// <summary>
+    /// Whether the surface this action targets EXISTED before the action was applied — the discriminator that
+    /// makes a null <see cref="PreImageContent"/> unambiguous.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Without this column a null <see cref="PreImageContent"/> means two opposite things.</strong> It
+    /// is what a file that did not exist before the write looks like (whose revert is a DELETE), and it is
+    /// equally what a purged pre-image looks like after <c>IChangePlanStore.PurgeImagesAsync</c> has swept the
+    /// row (whose revert must be REFUSED, because the bytes to restore are gone). Guessing between them is not
+    /// an option in either direction: guessing "purged" makes every file-creating plan permanently
+    /// non-revertible, and guessing "did not exist" deletes a real configuration file off a live server on the
+    /// strength of a column the retention sweep nulled.
+    /// </para>
+    /// <para>
+    /// <strong><see langword="true"/> for every row written before this column existed</strong> — the
+    /// migration backfills it that way on purpose. A legacy row therefore refuses its revert (no content, and
+    /// the row claims a file was there) instead of performing a delete nobody can justify from the data.
+    /// </para>
+    /// </remarks>
+    public bool PreImageExisted { get; set; } = true;
+
     /// <summary>The surface's full content this action will write, rendered once at preview time. Unmasked — see this type's own remarks.</summary>
     public string? PostImageContent { get; set; }
 
@@ -262,4 +291,53 @@ public sealed class ChangePlanActionRecord
 
     /// <summary>Why this action failed, if <see cref="Status"/> is <see cref="ChangePlanActionStatus.Failed"/>.</summary>
     public string? FailureReason { get; set; }
+
+    /// <summary>
+    /// Whether a REVERT write for this action reached the server — the revert-phase counterpart of
+    /// <see cref="WriteReachedServer"/>, set the moment the restoring write or delete returns and never
+    /// cleared.
+    /// </summary>
+    /// <remarks>
+    /// A separate column rather than a reuse of <see cref="WriteReachedServer"/>, because the two answer
+    /// questions about opposite operations and a revert must never be able to erase the record that an apply
+    /// touched the server. It is this column that lets a partial revert be reported honestly: an operator
+    /// reading a failed revert needs to know which files were put back and which were left holding the applied
+    /// content.
+    /// </remarks>
+    public bool RevertWriteReachedServer { get; set; }
+
+    /// <summary>
+    /// The digest reverting this action actually found on the server when it read the surface back, or
+    /// <see langword="null"/> when nothing was read (or the revert was a delete, which has no content to hash).
+    /// </summary>
+    /// <remarks>
+    /// The revert-phase counterpart of <see cref="ObservedPostImageHash"/>, and separate from
+    /// <see cref="PreImageHash"/> for exactly the reason that one is separate from
+    /// <see cref="PostImageHash"/>: <see cref="PreImageHash"/> is what SHOULD be there once the revert lands
+    /// and stays the row's statement of what was restored from; this is what WAS there. Overwriting the
+    /// expectation with the observation would destroy the only pair a mismatch can be diagnosed from.
+    /// </remarks>
+    public string? RevertObservedImageHash { get; set; }
+
+    /// <summary>
+    /// What reading this action's surface back after its REVERT write found, or <see langword="null"/> when no
+    /// revert was ever attempted for this action.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately the same <see cref="Entities.PostWriteVerification"/> enum the apply path uses rather than
+    /// a parallel revert-only one: the four states a read-back can land in — never attempted, confirmed,
+    /// impossible to check, contradicted — do not change because the bytes being written happen to be a
+    /// pre-image. Nullable so "no revert has been attempted" is a distinct answer from
+    /// <see cref="Entities.PostWriteVerification.NotAttempted"/>, which on this column would mean a revert ran
+    /// and got as far as writing without ever looking.
+    /// </remarks>
+    public PostWriteVerification? RevertVerification { get; set; }
+
+    /// <summary>Why reverting this action failed, if it was attempted and did not succeed.</summary>
+    /// <remarks>
+    /// Kept apart from <see cref="FailureReason"/>, which belongs to the apply attempt. A revert that fails on
+    /// an action whose apply also failed would otherwise overwrite the account of the original failure with
+    /// the account of the failed recovery, and an operator needs both.
+    /// </remarks>
+    public string? RevertFailureReason { get; set; }
 }

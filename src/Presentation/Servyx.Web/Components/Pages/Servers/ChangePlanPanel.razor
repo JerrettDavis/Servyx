@@ -161,8 +161,8 @@
 
             <p data-testid="plan-reversibility-note" class="plan-reversibility-note">
                 @(plan.IsFullyReversible
-                    ? "Every action in this plan is individually reversible. Revert is not implemented; the only way back is a new plan."
-                    : "Revert is not implemented; the only way back is a new plan.")
+                    ? "Every action in this plan is individually reversible: Servyx recorded the exact bytes each file held beforehand and can put them back. Reverting is refused — as a whole, never partially — if any action turns out not to be reversible, if those recorded bytes have aged out of the retention window, or if the plan has already been reverted."
+                    : "At least one action in this plan is not reversible, so the plan as a whole cannot be reverted: a revert is all-or-nothing. The only way back for those changes is a new plan.")
             </p>
 
             @* ── Approve and apply ────────────────────────────────────────────────────────────────────
@@ -188,8 +188,9 @@
                             Nothing has been written yet. Confirming writes the
                             @plan.Actions.Count change@(plan.Actions.Count == 1 ? "" : "s") diffed above to
                             this server — exactly those bytes and nothing else. Servyx will not restart or
-                            recreate the workload afterwards, and there is no revert: the only way back is a
-                            new plan.
+                            recreate the workload afterwards. Reverting this plan later restores the exact
+                            bytes each file holds now, but it is refused once those recorded bytes age out of
+                            the retention window, so do not treat it as an indefinite undo.
                             @if (plan.Feasibility == PlanFeasibility.PartiallyAchievable)
                             {
                                 <text>

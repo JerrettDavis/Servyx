@@ -271,8 +271,14 @@ public class ChangePlanPanelTests : BunitContext
 
         panel.Find("[data-testid='plan-preview-button']").Click();
 
-        panel.Find("[data-testid='plan-reversibility-note']").TextContent
-            .Should().Contain("Revert is not implemented; the only way back is a new plan.");
+        // The note now describes a revert that EXISTS, with its real preconditions. Asserting the
+        // preconditions rather than a whole sentence is deliberate: this copy must stay true to what
+        // IPlanExecutor.RevertAsync actually refuses on, and those are the three refusals it names.
+        var note = panel.Find("[data-testid='plan-reversibility-note']").TextContent;
+        note.Should().Contain("reversible");
+        note.Should().Contain("retention window");
+        note.Should().Contain("already been reverted");
+        note.Should().NotContain("Revert is not implemented");
     }
 
     [Fact]
