@@ -74,10 +74,28 @@ public sealed class ChangePlanActionRecordConfiguration : IEntityTypeConfigurati
         builder.Property(action => action.PostImageHash)
             .HasMaxLength(128);
 
+        // Same shape as PostImageHash — a bare hex SHA-256 — and deliberately a second column rather than an
+        // overwrite of that one: approved and observed are different facts and both have to outlive the
+        // images. See the entity's own remarks.
+        builder.Property(action => action.ObservedPostImageHash)
+            .HasMaxLength(128);
+
+        // Not nullable: "no write reached the server" is a real answer, not a missing one, and the retention
+        // sweep reads this column to decide whether a plan's pre-images may be discarded.
+        builder.Property(action => action.WriteReachedServer)
+            .IsRequired();
+
         builder.Property(action => action.ContainsSecrets)
             .IsRequired();
 
         builder.Property(action => action.Status)
+            .IsRequired()
+            .HasConversion<string>()
+            .HasMaxLength(32);
+
+        // Stored by name, like Status and Kind above: an operator reads this column while deciding whether a
+        // change they were told landed was ever actually confirmed on disk.
+        builder.Property(action => action.PostWriteVerification)
             .IsRequired()
             .HasConversion<string>()
             .HasMaxLength(32);

@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Servyx.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using Servyx.Infrastructure.Persistence;
 namespace Servyx.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ServyxDbContext))]
-    partial class ServyxDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260811024907_AddChangePlanActionPostWriteVerification")]
+    partial class AddChangePlanActionPostWriteVerification
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.10");
@@ -37,10 +40,6 @@ namespace Servyx.Infrastructure.Persistence.Migrations
                     b.Property<string>("Kind")
                         .IsRequired()
                         .HasMaxLength(32)
-                        .HasColumnType("TEXT");
-
-                    b.Property<string>("ObservedPostImageHash")
-                        .HasMaxLength(128)
                         .HasColumnType("TEXT");
 
                     b.Property<int>("Ordinal")
@@ -92,9 +91,6 @@ namespace Servyx.Infrastructure.Persistence.Migrations
                     b.Property<string>("UnifiedDiff")
                         .IsRequired()
                         .HasColumnType("TEXT");
-
-                    b.Property<bool>("WriteReachedServer")
-                        .HasColumnType("INTEGER");
 
                     b.HasKey("Id");
 

@@ -27,6 +27,60 @@ public enum ChangePlanActionStatus
 }
 
 /// <summary>
+/// What happened when an action's write was read back off the server afterwards — confirmed, contradicted,
+/// impossible to check, or never looked at.
+/// </summary>
+/// <remarks>
+/// <para>
+/// <strong>Separate from <see cref="ChangePlanActionStatus.Applied"/> because they answer different
+/// questions.</strong> <see cref="ChangePlanActionStatus.Applied"/> means the write call returned without
+/// error. This says whether anyone then went and looked. The two are not the same, and conflating them is
+/// how a reflowed, re-encoded or truncated file gets recorded as a clean success.
+/// </para>
+/// <para>
+/// <strong>Why a write receipt is not enough on its own.</strong> Every current transport computes
+/// <c>FileWriteReceipt.PostImageSha256</c> over the bytes it was HANDED, before or independently of placing
+/// them — it is not a read-back. So the receipt attests that the transport agrees about its input, and
+/// nothing more. Only <see cref="Verified"/> reflects bytes actually observed on the server.
+/// </para>
+/// </remarks>
+public enum PostWriteVerification
+{
+    /// <summary>
+    /// No read-back was performed. The state of every action that has not been applied, and of an applied
+    /// action whose verification never ran.
+    /// </summary>
+    NotAttempted,
+
+    /// <summary>The surface was read back after the write and its content hashed to the approved post-image digest.</summary>
+    Verified,
+
+    /// <summary>
+    /// The write completed but could NOT be confirmed — the session does not advertise
+    /// <c>TransportCapabilities.FileRead</c> for this surface, or the read-back itself failed. The change is
+    /// believed to have landed; nobody has looked. Deliberately a distinct value rather than folding into
+    /// <see cref="NotAttempted"/>, so "we could not check" is visible to an operator instead of being
+    /// indistinguishable from "we did not get that far".
+    /// </summary>
+    Unverifiable,
+
+    /// <summary>
+    /// The surface WAS read back after the write and its content did NOT hash to the approved post-image
+    /// digest: a live server is holding bytes nobody approved. The observed digest is recorded on
+    /// <see cref="ChangePlanActionRecord.ObservedPostImageHash"/> and the approved one stays on
+    /// <see cref="ChangePlanActionRecord.PostImageHash"/>, so the two can be compared long after the images
+    /// themselves are purged.
+    /// </summary>
+    /// <remarks>
+    /// The one member that can accompany <see cref="ChangePlanActionStatus.Failed"/> and still mean the server
+    /// changed. It exists because the alternative — leaving the row at <see cref="NotAttempted"/>, whose
+    /// documented meaning is that nobody looked — states the exact opposite of what happened on the single
+    /// highest-stakes path in the apply engine. No auto-repair follows it: a mismatch is a human's decision.
+    /// </remarks>
+    Mismatched,
+}
+
+/// <summary>
 /// One persisted, ordered action within a <see cref="ChangePlanRecord"/> — the durable counterpart of
 /// <c>PlannedAction</c>.
 /// </summary>
@@ -108,14 +162,90 @@ public sealed class ChangePlanActionRecord
     /// <summary>The surface's full content this action will write, rendered once at preview time. Unmasked — see this type's own remarks.</summary>
     public string? PostImageContent { get; set; }
 
-    /// <summary>Content hash of <see cref="PostImageContent"/>, recorded so apply-time drift against the previewed render is detectable.</summary>
+    /// <summary>
+    /// Content hash of <see cref="PostImageContent"/> — the digest the operator approved. Written once, at
+    /// preview time, and never overwritten afterwards.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This column is an invariant, not a scratch pad.</strong> While <see cref="PostImageContent"/>
+    /// is present this must equal the hash of it; <c>IPlanExecutor.ApplyAsync</c> re-checks exactly that
+    /// before it writes anything and refuses a row where the two disagree. Apply therefore never assigns to
+    /// this property — whatever it observes on the server goes to
+    /// <see cref="ObservedPostImageHash"/> instead. Overwriting this one would break the pre-flight check that
+    /// depends on it, and would destroy the only surviving record of what was approved once the retention
+    /// sweep nulls <see cref="PostImageContent"/>.
+    /// </para>
+    /// </remarks>
     public string? PostImageHash { get; set; }
+
+    /// <summary>
+    /// The post-image digest apply actually saw for this action, or <see langword="null"/> when apply never
+    /// got far enough to see one. Written only by <c>IPlanExecutor.ApplyAsync</c>, never at preview time.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The counterpart to <see cref="PostImageHash"/>, never a replacement for it.</strong> That one
+    /// says what was approved; this one says what was found. Keeping them in two columns is what lets an
+    /// operator — or a query, rather than a human reading
+    /// <see cref="FailureReason"/> prose — compare the two after the images are gone.
+    /// </para>
+    /// <para>
+    /// <strong>Where the value came from is stated by <see cref="PostWriteVerification"/></strong>, which apply
+    /// writes on the same paths:
+    /// <see cref="Entities.PostWriteVerification.Verified"/> and
+    /// <see cref="Entities.PostWriteVerification.Mismatched"/> mean this is the digest of bytes read back off
+    /// the server; <see cref="Entities.PostWriteVerification.NotAttempted"/> on a
+    /// <see cref="ChangePlanActionStatus.Failed"/> row means no read-back happened and this is the transport's
+    /// own write receipt, recorded because that receipt disagreed with <see cref="PostImageHash"/>;
+    /// <see cref="Entities.PostWriteVerification.Unverifiable"/> means nothing was observed at all and this
+    /// stays <see langword="null"/>.
+    /// </para>
+    /// </remarks>
+    public string? ObservedPostImageHash { get; set; }
+
+    /// <summary>
+    /// Whether a write for this action reached the server — set the moment the transport's write call returns
+    /// a receipt, BEFORE any verification is attempted, and never cleared.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Not the same question as <see cref="Status"/>, and the retention sweep depends on the
+    /// difference.</strong> A read-back fidelity mismatch leaves this action
+    /// <see cref="ChangePlanActionStatus.Failed"/> and every later one
+    /// <see cref="ChangePlanActionStatus.Skipped"/>, so no action in the plan says
+    /// <see cref="ChangePlanActionStatus.Applied"/> — yet a write did land, wrongly, and
+    /// <see cref="PreImageContent"/> is the only way back. This flag is how that fact survives on the row
+    /// itself instead of only in the plan's summary status, and it is what
+    /// <c>IChangePlanStore.PurgeImagesAsync</c> consults before discarding images.
+    /// </para>
+    /// <para>
+    /// Deliberately true for a write that landed and then failed verification: the server was touched either
+    /// way. It stays false for refusals that happen before any I/O — a revoked write grant, a drift the
+    /// transport detects during its own pre-image check — because nothing was sent on those paths.
+    /// </para>
+    /// </remarks>
+    public bool WriteReachedServer { get; set; }
 
     /// <summary>Whether <see cref="PreImageContent"/>/<see cref="PostImageContent"/> may contain secret values.</summary>
     public required bool ContainsSecrets { get; set; }
 
     /// <summary>This action's current lifecycle state.</summary>
     public required ChangePlanActionStatus Status { get; set; }
+
+    /// <summary>
+    /// What reading this action's surface back after the write found — see
+    /// <see cref="Entities.PostWriteVerification"/> for why this is not implied by
+    /// <see cref="ChangePlanActionStatus.Applied"/>, and why
+    /// <see cref="Entities.PostWriteVerification.Mismatched"/> can sit on a
+    /// <see cref="ChangePlanActionStatus.Failed"/> row.
+    /// </summary>
+    /// <remarks>
+    /// Defaulted rather than <c>required</c> so every existing construction site — the previewer, and every
+    /// test that builds an action row — keeps compiling and keeps meaning what it meant before: nobody has
+    /// read anything back yet.
+    /// </remarks>
+    public PostWriteVerification PostWriteVerification { get; set; } = PostWriteVerification.NotAttempted;
 
     /// <summary>When this action was applied, if it ever was.</summary>
     public DateTimeOffset? AppliedAt { get; set; }

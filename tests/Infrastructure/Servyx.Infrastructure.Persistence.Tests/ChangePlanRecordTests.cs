@@ -108,9 +108,59 @@ public class ChangePlanRecordTests
         loadedActions[0].AppliedAt.Should().BeNull();
         loadedActions[0].RevertedAt.Should().BeNull();
 
+        // A freshly previewed action has neither observation nor a write behind it, and both columns say so
+        // rather than being absent from the schema.
+        loadedActions[0].ObservedPostImageHash.Should().BeNull();
+        loadedActions[0].WriteReachedServer.Should().BeFalse();
+        loadedActions[0].PostWriteVerification.Should().Be(PostWriteVerification.NotAttempted);
+
         loadedActions[1].Ordinal.Should().Be(1);
         loadedActions[1].SurfaceId.Should().Be("control-channel");
         loadedActions[1].Kind.Should().Be(PlannedActionKind.WriteControlChannel);
+    }
+
+    /// <summary>
+    /// The three columns apply writes to describe what happened at the server, round-tripped through a new
+    /// context so the mapping is exercised rather than the in-memory object graph.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PostWriteVerification.Mismatched"/> specifically: it is persisted BY NAME into a 32-char
+    /// column, so a member added to that enum without checking the mapping would fail here rather than at
+    /// three in the morning on the one path where a live server is holding unapproved bytes.
+    /// </remarks>
+    [Fact]
+    public void ChangePlanAction_RecordingAWriteThatLandedButFailedItsReadBack_RoundTripsAllThreeFacts()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var server = NewServer();
+        var planId = ChangePlanId.New();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Servers.Add(server);
+            write.ChangePlans.Add(NewPlan(planId, server.Id, ChangePlanStatus.PartiallyApplied));
+
+            var action = NewAction(planId, ordinal: 0);
+            action.Status = ChangePlanActionStatus.Failed;
+            action.WriteReachedServer = true;
+            action.PostWriteVerification = PostWriteVerification.Mismatched;
+            action.ObservedPostImageHash = new string('f', 64);
+
+            write.ChangePlanActions.Add(action);
+            write.SaveChanges();
+        }
+
+        using var read = fixture.CreateContext();
+        var loaded = read.ChangePlanActions.Single(a => a.ChangePlanId == planId);
+
+        loaded.Status.Should().Be(ChangePlanActionStatus.Failed);
+        loaded.WriteReachedServer.Should().BeTrue();
+        loaded.PostWriteVerification.Should().Be(PostWriteVerification.Mismatched);
+        loaded.ObservedPostImageHash.Should().Be(new string('f', 64));
+
+        // The approved digest is a separate column and survives the whole affair unchanged.
+        loaded.PostImageHash.Should().Be("sha256:post");
+        loaded.PostImageHash.Should().NotBe(loaded.ObservedPostImageHash);
     }
 
     [Fact]
