@@ -2,15 +2,15 @@
 
 ## What works today
 
-Servyx **reads** configuration and **records** what you want it to be. It does not yet **apply** anything.
+Servyx **reads** configuration and **records** what you want it to be. There is no button, page, or command anywhere in the product that applies it yet.
 
 | You can | You cannot yet |
 |---|---|
-| See all four columns for a setting, computed by reading the real files on the real server. | Have Servyx write a new value to `.env`, a compose file, or anything else. |
-| See genuine drift — Servyx compares what it actually read, not what it assumes. | Apply, preview-and-apply, or revert a change. |
+| See all four columns for a setting, computed by reading the real files on the real server. | Have Servyx write a new value to `.env`, a compose file, or anything else — there is no control in the product that triggers a write. |
+| See genuine drift — Servyx compares what it actually read, not what it assumes. | Preview-and-apply, or revert a change, from anywhere in the UI. |
 | Record a desired value, so your intent is stored and shows up in the Desired column. | Recreate a container to pick up a changed value. |
 
-The component that would perform a write — the plan executor — is a defined interface with **no implementation**. Recording a desired value is therefore exactly that: a note to yourself and to a future Servyx, stored in Servyx's database. Nothing reaches the server. Change the server the way you normally would; Servyx will show you the result honestly in the columns below.
+The component that would perform a write — the plan executor — is now built internally (it computes and safely applies a change, byte-exact, with drift checks and post-write verification), but nothing in Servyx calls it: no settings-page button, no API endpoint, no MCP tool. Recording a desired value is therefore still exactly that: a note to yourself and to a future Servyx, stored in Servyx's database. Nothing reaches the server through any path you can use today. Change the server the way you normally would; Servyx will show you the result honestly in the columns below.
 
 ## The four columns
 

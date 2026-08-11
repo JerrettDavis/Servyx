@@ -441,39 +441,82 @@ files, managed regions are delimited with marker blocks:
 
 ### `IPlanExecutor`
 
-**Declared, and not implemented.** `IPlanExecutor` has zero implementations and
-zero callers anywhere in `src/`. Every member below is a signature; no
-configuration change reaches a running server today. This is the single largest
-gap between this document's model and the shipped product, and it is the reason
-the four-column view above is a *diagnosis* rather than a control.
+**Implemented, and DI-registered — but uncalled.** `PlanExecutor`
+(`src/Infrastructure/Servyx.Config/PlanExecutor.cs`) implements `PreviewAsync`
+and `ApplyAsync`; `RevertAsync` still throws `NotImplementedException`. It is
+registered at `ServyxCoreCompositionExtensions.cs:453-465`. What is still
+missing is a **caller from any operator surface** — no UI, no REST API, no MCP
+tool, and no job runner invokes `PreviewAsync` or `ApplyAsync` today, so no
+configuration change reaches a running server through any path an operator can
+actually use. That remaining gap is why the four-column view above is still a
+*diagnosis* rather than a control in the shipped product.
 
-It is designed as the single funnel through which **every mutation in the
-product** passes — one choke point, so that write-mode enforcement, staleness
-checking, secret masking, audit and revert are implemented once rather than per
-adapter. A code path that mutates configuration without producing a receipt is a
-bug by construction, and that property is only worth anything if there is
-exactly one such path.
+It is the single funnel through which **every mutation in the product** passes
+— one choke point, so that write-mode enforcement, staleness checking, secret
+masking, and audit are implemented once rather than per adapter. A code path
+that mutates configuration without producing a receipt is a bug by
+construction, and that property is only worth anything if there is exactly one
+such path.
 
-- `PreviewAsync` — read-only; produces a unified diff with secrets masked, a
+- `PreviewAsync` — read-only against the live server; only
+  `IExecutionTarget.OpenReadAsync` is called, never a write. It renders the
+  post-image once, computes a unified diff with secrets masked, a
   reversibility flag per action, the capabilities the plan requires, and any
-  restart consequences.
-- `ApplyAsync` — bound to a specific, already-approved plan id; throws
-  `PlanStaleException` if any surface has drifted since the plan was
-  previewed.
-- `RevertAsync` — reverses a previously applied plan.
+  restart/recreate consequences, then persists a `ChangePlanRecord` /
+  `ChangePlanActionRecord` set. Every desired value that cannot be turned into
+  a write becomes a `BlockedChange` (not an exception, not a silent
+  omission), and `ConfigChangePlan.Feasibility` — `FullyAchievable` /
+  `PartiallyAchievable` / `Blocked` — is derived from `Actions`/`Blocked`.
+- `ApplyAsync` — bound to a specific, already-`Previewed` plan id. Refuses
+  before any side effect for write mode, plan status/expiry, control-channel
+  actions (not yet supported — the whole plan is refused rather than
+  half-applied), a changed governing definition, and a pre-flight sweep that
+  re-reads **every** surface the plan recorded a hash for, not merely the
+  ones it writes, raising `PlanStaleException` if any has drifted. Every
+  hash, throughout, is a bare lowercase hex SHA-256 over raw bytes — no
+  `sha256:` prefix, no re-decoding to text. Each write is
+  `FileWriteStrategy.AtomicRename`, and writes exactly the bytes rendered at
+  preview time — nothing is re-derived from the desired values a second
+  time.
 
-Two other pieces are staged behind the same gap. `IServerLifecycle.RecreateAsync`
-has one implementation (`ServerLifecycleService`) and it throws
-`NotSupportedException` unconditionally — recreation only means anything as the
-applied consequence of an approved plan, so there is no plan it could be
-honouring. And the `strategy` field on a pointer binding (`publish-udp`,
-`publish-tcp`) is parsed by the definition parser and stored on
-`SettingBinding.ByPointer`, but **no code reads it**. Nothing interprets a
-strategy, so the four shipped compose port bindings — palworld `PORT`, ark
-`ASA_PORT`, minecraft `SERVER_PORT`, factorio `PORT` — are unappliable twice
-over: they name a sequence container pointer (`/services/<service>/ports`) that
-`YamlConfigAdapter` cannot address, and the strategy that would splice a port
-into that list has no implementation.
+  Two checks guard each write, and they mean different things. *Check 1*
+  compares the transport's own receipt digest (`FileWriteReceipt.PostImageSha256`)
+  to the approved hash — this proves only that the transport agrees about the
+  bytes it was *handed*. All four shipped file transports compute that digest
+  from the input buffer with no read-back, so today this check is a tautology
+  against every transport that exists; it is kept to catch transport
+  bookkeeping bugs, not overstated as proof of what landed. *Check 2* is real:
+  the file is read back and rehashed against the approved digest
+  (`PostWriteVerification`: `Verified` / `Unverifiable` / `Mismatched`).
+  `Unverifiable`'s *capability* arm — no `FileRead` on the surface — is
+  unreachable in production because `SurfaceResolver` requires `FileRead` on
+  every resolved surface; the *read-back-failure* arm is live, so read-back
+  verification is effectively always-on in practice, and an operator can
+  still see `Unverifiable` when a read-back itself fails.
+
+  On a mismatch — either check — the action is recorded `Failed` with both
+  digests, every later action is `Skipped`, and the plan becomes
+  `PartiallyApplied`, including when action #0 is the one that failed,
+  because the server was touched. **There is deliberately no auto-repair**:
+  no rewrite, no retry, no rollback. A human decides. `PlanApplyFidelityException`
+  (which does **not** derive from `InvalidOperationException`) is thrown in
+  both the pre-flight self-consistency case and the two post-write cases.
+- `RevertAsync` — **not implemented.** Throws `NotImplementedException`
+  today.
+
+Two other pieces are staged behind the remaining "no caller" gap.
+`IServerLifecycle.RecreateAsync` has one implementation (`ServerLifecycleService`)
+and it throws `NotSupportedException` unconditionally — recreation only means
+anything as the applied consequence of an approved plan, and nothing today
+produces one through an operator surface. And the `strategy` field on a
+pointer binding (`publish-udp`, `publish-tcp`) is parsed by the definition
+parser and stored on `SettingBinding.ByPointer`, but **no code reads it**.
+Nothing interprets a strategy, so the four shipped compose port bindings —
+palworld `PORT`, ark `ASA_PORT`, minecraft `SERVER_PORT`, factorio `PORT` —
+are unappliable twice over: they name a sequence container pointer
+(`/services/<service>/ports`) that `YamlConfigAdapter` cannot address (there
+is no `YamlConfigAdapter` at all yet), and the strategy that would splice a
+port into that list has no implementation.
 
 A related sharp edge sits in `SettingDescriptor.WritableSurface`, which is
 `Bindings.FirstOrDefault(b => b.Direction == Write)`. Those same four port
@@ -484,8 +527,10 @@ setting" rule is a doc comment, not an enforced invariant.
 
 ### `ChangePlanRecord` / `ChangePlanActionRecord`
 
-The durable half of the plan model exists and is migrated, even though the
-executor that would use it does not. Migration
+The durable half of the plan model exists, is migrated, and is now actively
+read and written by `PlanExecutor` — both on the preview path (every call
+persists a plan and its actions) and on the apply path (status/hash columns
+are updated write-ahead, before and during each write). Migration
 `20260810032112_AddChangePlans` creates two tables.
 
 `ChangePlans` holds one row per preview: `Id`, `ServerId`, `Status`, `CreatedAt`
@@ -503,8 +548,19 @@ rather than collapsed into `Failed`.
 `Reversible`, `ContainsSecrets`, per-action `Status` / `AppliedAt` /
 `RevertedAt` / `FailureReason`, and — the point of the table —
 `PreImageContent` / `PreImageHash` and `PostImageContent` / `PostImageHash`.
-The pre-image is what makes revert *exact*: reverting restores recorded bytes
-rather than re-deriving what the file "should" have said.
+`PostImageHash` is the *approved* digest, written once at preview and never
+overwritten by apply. Three columns exist specifically for the apply path:
+`ObservedPostImageHash` (what apply actually saw, on either the receipt-only
+or read-back path — two different facts from `PostImageHash`, in two
+different columns, so they can be compared long after the images are
+purged), `PostWriteVerification` (`NotAttempted` / `Verified` /
+`Unverifiable` / `Mismatched`), and `WriteReachedServer` (set the moment the
+transport's write call returns anything, before verification runs, and never
+cleared — the retention purge consults it before discarding `PreImageContent`,
+because after a corrupted write the pre-image is the only way back). The
+pre-image is what makes a future revert *exact*: reverting would restore
+recorded bytes rather than re-deriving what the file "should" have said —
+`RevertAsync` does not do this yet; see the `IPlanExecutor` section above.
 
 `RowVersion` is the optimistic concurrency token that makes a double-apply
 impossible. It is a plain `Guid` column marked `IsConcurrencyToken()`,
@@ -514,8 +570,9 @@ modified `ChangePlanRecord` immediately before the save. It is scoped to that on
 entity — the only entity in the model carrying a concurrency token today.
 `ChangePlanActionRecord` has none.
 
-Nothing in production code reads or writes either table yet. The schema is
-storage waiting for `IPlanExecutor` to be built against it.
+`PlanExecutor` reads and writes both tables today. What no production code
+does yet is *reach* `PlanExecutor` in the first place — see the "no caller"
+note above.
 
 ### `IGameControlChannel` / `IControlChannelReachability` / `IGameControlSession`
 
@@ -570,9 +627,9 @@ Servers pin a definition by **content hash**, never by a mutable version tag.
 | `BackupPolicy` | — |
 | `Backup` | `ownership` (`Servyx` \| `Foreign`) |
 | `Operation` / `Job` | — |
-| `ChangePlanRecord` (table `ChangePlans`) | `surfaceHashesJson`, `status` (`Previewed` \| `Applying` \| `Applied` \| `PartiallyApplied` \| `Failed` \| `Stale` \| `Reverted` \| `Superseded`), `expiresAt`, `revertedAt` / `revertedBy`, `rowVersion` (concurrency token). Migrated; not yet written by any production code. |
-| `ChangePlanActionRecord` (table `ChangePlanActions`) | `ordinal` (unique per plan), `preImageContent` / `preImageHash`, `postImageContent` / `postImageHash`, `containsSecrets`, per-action `status`. Migrated; not yet written by any production code. |
-| `ChangeReceipt` | Declared record; no table, no producer. |
+| `ChangePlanRecord` (table `ChangePlans`) | `surfaceHashesJson`, `status` (`Previewed` \| `Applying` \| `Applied` \| `PartiallyApplied` \| `Failed` \| `Stale` \| `Reverted` \| `Superseded`), `expiresAt`, `revertedAt` / `revertedBy`, `rowVersion` (concurrency token). Migrated, and written by `PlanExecutor` on every preview and apply — but `PlanExecutor` itself has no caller yet (see `IPlanExecutor` above). |
+| `ChangePlanActionRecord` (table `ChangePlanActions`) | `ordinal` (unique per plan), `preImageContent` / `preImageHash`, `postImageContent` / `postImageHash`, `observedPostImageHash`, `postWriteVerification`, `writeReachedServer`, `containsSecrets`, per-action `status`. Migrated and written by `PlanExecutor`, same caveat as above. |
+| `ChangeReceipt` | Declared record; no table (ephemeral, returned by `ApplyAsync`, not persisted). Now has a producer: `PlanExecutor.ApplyAsync`. |
 | `ConfigSnapshot` | content-addressed |
 | `ModInstall` | — |
 | `AuditEvent` | `prevHash` / `hash` (hash chain) |

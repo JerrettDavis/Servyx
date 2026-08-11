@@ -635,8 +635,25 @@ public enum MergePolicy
     ManagedBlock,
 }
 
-/// <summary>A previewed, not-yet-applied set of configuration changes.</summary>
-public sealed record ConfigChangePlan(string Id, IReadOnlyList<PlannedAction> Actions, IReadOnlyList<Consequence> Consequences, IReadOnlyDictionary<string, string> SurfaceHashes);
+/// <summary>
+/// A previewed, not-yet-applied set of configuration changes. <c>Blocked</c> and <c>Diagnostics</c>
+/// are init-only properties with an empty-list default (not shown here), so this remains
+/// source-compatible with the four-parameter constructor every caller uses.
+/// </summary>
+public sealed record ConfigChangePlan(string Id, IReadOnlyList<PlannedAction> Actions, IReadOnlyList<Consequence> Consequences, IReadOnlyDictionary<string, string> SurfaceHashes)
+{
+    public IReadOnlyList<BlockedChange> Blocked { get; init; } = [];
+    public IReadOnlyList<PlanDiagnostic> Diagnostics { get; init; } = [];
+
+    /// <summary>Derived from <c>Actions</c>/<c>Blocked</c>, never stored, so it cannot disagree with them.</summary>
+    public PlanFeasibility Feasibility => Blocked.Count == 0
+        ? PlanFeasibility.FullyAchievable
+        : Actions.Count == 0 ? PlanFeasibility.Blocked : PlanFeasibility.PartiallyAchievable;
+
+    public bool IsFullyReversible => Actions.Count > 0 && Actions.All(a => a.Reversible);
+    public bool RequiresRestart => Consequences.Any(c => c.Kind == ConsequenceKind.RestartRequired);
+    public bool RequiresRecreate => Consequences.Any(c => c.Kind == ConsequenceKind.RecreateRequired);
+}
 
 public enum PlannedActionKind { WriteSurface, WriteControlChannel }
 
@@ -649,19 +666,46 @@ public enum ConsequenceKind { RestartRequired, RecreateRequired, ServiceInterrup
 public sealed record Consequence(ConsequenceKind Kind, string Description);
 
 /// <summary>
+/// One desired value <c>PreviewAsync</c> could NOT turn into a <see cref="PlannedAction"/>, and why.
+/// Exists in <c>src/</c> today — see the correction below; earlier drafts of this document and of
+/// <c>provisioning.md</c>/<c>control-plane.md</c> said this type did not exist yet. It does, though
+/// with a narrower shape than those documents' sketch (no <c>MissingAlternatives</c>, no
+/// <c>UnlockedAtTier</c>).
+/// </summary>
+public sealed record BlockedChange(string SettingKey, string SurfaceId, string Reason, string RemediationHint);
+
+/// <summary>How much of what an operator asked for a plan can actually deliver. Exists in <c>src/</c> today.</summary>
+public enum PlanFeasibility { FullyAchievable, PartiallyAchievable, Blocked }
+
+/// <summary>
+/// An advisory note attached to a plan that is neither a <see cref="Consequence"/> nor a
+/// <see cref="BlockedChange"/> — e.g. a malformed definition worked around, or a downstream
+/// surface that only regenerates manually. Exists in <c>src/</c> today; not previously documented
+/// here.
+/// </summary>
+public enum PlanDiagnosticKind { DefinitionDefect, ManualRegenerationRequired }
+public sealed record PlanDiagnostic(PlanDiagnosticKind Kind, string SurfaceId, string Message);
+
+/// <summary>
 /// The single funnel through which every mutation in the product passes.
 /// No other interface applies a configuration write directly.
 ///
-/// STATUS: declared only. There are ZERO implementations and ZERO callers of this interface
-/// anywhere in src/. Nothing in Servyx applies a configuration change to a running server today;
-/// every member below is a signature. The single-funnel design is the point — one choke point
-/// means write-mode enforcement, staleness checking, secret masking, audit and revert are built
-/// once rather than per adapter — but the funnel is currently empty.
+/// STATUS: implemented (<c>PlanExecutor</c>, <c>Servyx.Config</c>) and DI-registered
+/// (<c>ServyxCoreCompositionExtensions.cs:453-465</c>). PreviewAsync computes and persists a
+/// ConfigChangePlan against Servyx's own database, reading the live server but never writing to
+/// it. ApplyAsync writes the previewed bytes verbatim, gated by write mode and a pre-flight drift
+/// sweep, and verified after each write both by the transport's own receipt (proves only that the
+/// transport agrees about the bytes it was handed — no shipped transport reads back, so this is a
+/// tautology today) and by a genuine read-back-and-rehash (PostWriteVerification). What remains
+/// missing is a CALLER: no UI, REST API, MCP tool, or job runner invokes PreviewAsync or
+/// ApplyAsync anywhere in src/, so no configuration change reaches a running server through any
+/// path an operator can use. RevertAsync still throws NotImplementedException.
 ///
-/// Two adjacent pieces are staged behind the same gap: <c>IServerLifecycle.RecreateAsync</c> has
-/// one implementation and it throws <c>NotSupportedException</c> unconditionally, and the
-/// <c>strategy</c> field on a pointer binding (<c>publish-udp</c>/<c>publish-tcp</c>) is parsed
-/// and stored but read by no code.
+/// Two adjacent pieces are staged behind the same "no caller" gap: <c>IServerLifecycle.RecreateAsync</c>
+/// has one implementation and it throws <c>NotSupportedException</c> unconditionally — recreation
+/// only means anything as the applied consequence of an approved plan, and nothing produces one
+/// through an operator surface yet — and the <c>strategy</c> field on a pointer binding
+/// (<c>publish-udp</c>/<c>publish-tcp</c>) is parsed and stored but read by no code.
 /// </summary>
 public interface IPlanExecutor
 {
@@ -675,12 +719,14 @@ public interface IPlanExecutor
     /// <summary>
     /// Applies a previously previewed and approved plan by id. Throws
     /// <see cref="PlanStaleException"/> if any bound surface has drifted
-    /// since preview, and <see cref="WritesDisabledException"/> if the
-    /// server's write mode does not permit it.
+    /// since preview, <see cref="PlanApplyFidelityException"/> if a write's
+    /// content cannot be verified against what was approved, and
+    /// <c>WritesDisabledException</c> if the server's write mode does not
+    /// permit it.
     /// </summary>
     Task<ChangeReceipt> ApplyAsync(string planId, CancellationToken ct = default);
 
-    /// <summary>Reverts a previously applied plan using its recorded pre-images.</summary>
+    /// <summary>Reverts a previously applied plan using its recorded pre-images. NOT YET IMPLEMENTED — throws <see cref="NotImplementedException"/>.</summary>
     Task RevertAsync(string planId, CancellationToken ct = default);
 }
 
@@ -690,17 +736,33 @@ public sealed class PlanStaleException : Exception
     public PlanStaleException(string message) : base(message) { }
 }
 
+/// <summary>
+/// Thrown when an applied action's content does not match the post-image the operator approved.
+/// Does NOT derive from <see cref="InvalidOperationException"/>. Raised from three places: a
+/// pre-flight self-consistency check (stored content and stored digest disagree — nothing is
+/// written), a receipt mismatch (the transport disagrees about the bytes it was handed — the
+/// write already landed), and a read-back mismatch (the file on the server does not hash to the
+/// approved digest — the write already landed and is the real fidelity failure). In the two
+/// post-write cases the write is NOT undone, retried, or repaired; the action is recorded
+/// <c>Failed</c> with both digests, and the plan becomes <c>PartiallyApplied</c>.
+/// </summary>
+public sealed class PlanApplyFidelityException : Exception
+{
+    public PlanApplyFidelityException(string message) : base(message) { }
+}
+
 /// <summary>Record of a successfully applied plan.</summary>
 public sealed record ChangeReceipt(string PlanId, DateTimeOffset AppliedAt, IReadOnlyList<PlannedAction> Actions);
 ```
 
 ### Plan persistence
 
-The durable half of the plan model exists and is migrated
+The durable half of the plan model exists, is migrated
 (`20260810032112_AddChangePlans`, tables `ChangePlans` and `ChangePlanActions`),
-even though the executor that would drive it does not. These are EF entities in
-`Servyx.Domain.Entities` rather than `Servyx.Domain.Configuration` records, and
-no production code reads or writes either table yet.
+and is now actively read and written by `PlanExecutor` on both the preview and
+apply paths — see the `IPlanExecutor` STATUS note above for what's still
+missing (a caller). These are EF entities in `Servyx.Domain.Entities` rather
+than `Servyx.Domain.Configuration` records.
 
 ```csharp
 namespace Servyx.Domain.Entities;
@@ -715,6 +777,15 @@ public enum ChangePlanStatus
 }
 
 public enum ChangePlanActionStatus { Pending, Applying, Applied, Failed, Skipped, Reverted }
+
+/// <summary>
+/// What happened when an action's write was read back off the server afterwards. Separate from
+/// ChangePlanActionStatus.Applied because they answer different questions: Applied means the write
+/// call returned without error; this says whether anyone then looked. Unverifiable's capability arm
+/// (no FileRead on the surface) is unreachable in production — SurfaceResolver requires FileRead on
+/// every resolved surface — but its read-back-failure arm is live.
+/// </summary>
+public enum PostWriteVerification { NotAttempted, Verified, Unverifiable, Mismatched }
 ```
 
 `ChangePlanRecord` carries `Id`, `ServerId`, `Status`, `CreatedAt`/`CreatedBy`,
@@ -735,11 +806,21 @@ one entity, the only one in the model carrying a concurrency token today;
 by `Ordinal` (unique per plan, zero-based, and the order apply must follow). It
 adds `ResolvedPath`, `ContainsSecrets`, a per-action
 `Status`/`AppliedAt`/`RevertedAt`/`FailureReason`, and the images:
-`PreImageContent`/`PreImageHash` and `PostImageContent`/`PostImageHash`. The
-pre-image is what makes revert **exact** — reverting restores recorded bytes
-rather than re-deriving what the file should have said. Note that
-`PreImageContent` stores real bytes, unmasked, because a masked pre-image would
-revert a secret to the mask.
+`PreImageContent`/`PreImageHash` and `PostImageContent`/`PostImageHash`.
+`PostImageHash` is the *approved* digest — written once at preview, and
+`ApplyAsync` never overwrites it. Three more columns exist for the apply path
+specifically: `ObservedPostImageHash` (what apply actually saw — a distinct
+fact from `PostImageHash`, in a distinct column, so the two survive
+comparison even after the images are purged), `PostWriteVerification` (above),
+and `WriteReachedServer` (`bool`, set the instant the transport's write call
+returns anything at all, before verification runs, and never cleared — the
+retention sweep consults it before discarding `PreImageContent`, because
+after a corrupted write the pre-image is the only way back). The pre-image is
+what would make a future revert **exact** — reverting would restore recorded
+bytes rather than re-deriving what the file should have said; `RevertAsync`
+does not do this yet, see the STATUS note above. `PreImageContent` stores
+real bytes, unmasked, because a masked pre-image would revert a secret to the
+mask.
 
 ## §4 Lifecycle
 

@@ -108,10 +108,23 @@ an explicit per-server grant (see [Enabling writes](user-guide/enabling-writes.m
 Start/Restart/Stop/Kill execute through the stop ladder with two-step
 confirmation (see [Lifecycle control](user-guide/lifecycle-control.md)), and
 mutating RCON commands reach the target the same way, with their own
-confirm step (see [The RCON console](user-guide/rcon-console.md)). What
-hasn't shipped: `.env`/`compose.yaml` writes, pre-image snapshots,
-byte-exact revert, `PlanStaleException`, and container recreation — config
-editing overall is still not implemented.
+confirm step (see [The RCON console](user-guide/rcon-console.md)).
+
+Configuration writes are a split picture. The **engine** has shipped:
+`IPlanExecutor` is implemented (`PlanExecutor`, `Servyx.Config`) and
+DI-registered, `.env`/other authoritative-surface writes are atomic
+(temp-file-and-rename), pre-image snapshots are recorded, `PlanStaleException`
+is real (a pre-flight sweep re-reads every bound surface and a per-write
+TOCTOU check backs it up), and every write is verified two ways after landing
+(a transport receipt check, and a genuine read-back-and-rehash). What
+**hasn't** shipped: byte-exact revert (`RevertAsync` throws
+`NotImplementedException`), container recreation
+(`ServerLifecycleService.RecreateAsync` throws `NotSupportedException`), and
+— the practical blocker — **any operator-facing caller of the engine at
+all**: no UI, no REST API, no MCP tool, and no job runner invokes
+`PreviewAsync`/`ApplyAsync`. An operator today cannot make Servyx write
+configuration to a server through any surface the product exposes, even
+though the code path that would do it, and do it safely, now exists.
 
 **Goal:** Allow real, guarded, reversible writes.
 

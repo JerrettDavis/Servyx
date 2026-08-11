@@ -435,9 +435,12 @@ and possibly `servers-list.png`. See Risks.
 **Goal:** the settings tab becomes editable and records what the operator *intends*, clearly labelled
 as not yet applied.
 
-Verified constraint: `IPlanExecutor` (`src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`) has
-**no implementation, no DI registration, and no callers anywhere in `src\`**. It is an aspirational
-contract that several docs describe as though it exists. Phase 4a therefore does not touch it.
+Verified constraint: `IPlanExecutor` (`src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`) now
+**has an implementation** — `PlanExecutor` (`src\Infrastructure\Servyx.Config\PlanExecutor.cs`) — and
+**is DI-registered** at `src\Hosting\Servyx.Composition\ServyxCoreCompositionExtensions.cs:453-465`.
+What it still lacks is **a caller from any operator surface**: no UI, no REST API, no MCP tool, and no
+job runner invokes `PreviewAsync`/`ApplyAsync` today. `RevertAsync` still throws
+`NotImplementedException`. Phase 4a therefore does not touch it.
 
 `ServerSettingsTab.razor` currently takes only `IReadOnlyList<SettingRow> Settings` and never
 passes `Enabled` to its `GatedControl`/`GatedButton`, so it is locked *by construction*; making it
@@ -466,19 +469,32 @@ at Phase 4b.
 
 **Goal:** desired values actually reach the server.
 
-This remains the largest single piece of remaining work, but it is **not** a build-from-nothing. The
+This remains a large piece of remaining work, but the apply engine itself is no longer the
+build-from-nothing it was: `IPlanExecutor` is implemented and DI-registered (see below), so what's
+left is primarily an operator-facing surface to call it from, plus `YamlConfigAdapter`. The
 config-surface read/write layer largely exists: four `IConfigAdapter` implementations —
 `DotEnvConfigAdapter`, `IniConfigAdapter`, `PropertiesConfigAdapter`, `JsonConfigAdapter` — live in
 `src\Infrastructure\Servyx.Config\` and are registered `AddSingleton<IConfigAdapter, X>()` at
 `src\Infrastructure\Servyx.Config\ServiceCollectionExtensions.cs:21-24`.
 
-What is missing is the **orchestration above the adapters**, plus one adapter:
-- `IPlanExecutor` — declared at `src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`, with no
-  implementation, no DI registration, and no callers anywhere in `src\`. Docs describe it as though
-  it exists; it does not.
-- `ConfigChangePlan` computation, drift comparison across the four states the README advertises
-  (intent, authoritative file, rendered config, live server), reversibility, and `PlanStaleException`
-  handling.
+What is missing is **an operator-facing surface above the orchestration**, plus one adapter:
+- `IPlanExecutor` — declared at `src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`, and now
+  **implemented** by `PlanExecutor` (`src\Infrastructure\Servyx.Config\PlanExecutor.cs`) and
+  DI-registered at `ServyxCoreCompositionExtensions.cs:453-465`. `PreviewAsync` computes a
+  `ConfigChangePlan` — including drift comparison, reversibility, and `PlanStaleException` handling —
+  entirely in memory and against Servyx's own database; `ApplyAsync` writes the previewed bytes to the
+  live server, verified two ways (see below) and gated by write mode. What remains missing is a
+  **caller**: no UI, REST API, MCP tool, or job runner invokes either method, so none of this is
+  reachable by an operator yet. `RevertAsync` still throws `NotImplementedException`.
+- `ApplyAsync`'s fidelity model, briefly, since it is easy to overstate: it hashes bare lowercase hex
+  SHA-256 over raw bytes throughout. Two checks guard a write — the transport's own receipt digest
+  (which only proves the transport agrees about the bytes it was *handed*; every shipped transport
+  computes it from the input buffer with no read-back, so today this check is a tautology kept to
+  catch transport bookkeeping bugs) and a genuine read-back-and-rehash (`PostWriteVerification`:
+  `Verified` / `Unverifiable` / `Mismatched`). On a mismatch the action is `Failed` with both digests
+  recorded, later actions are `Skipped`, and the plan becomes `PartiallyApplied` — including when the
+  very first action fails, because the server was touched. There is **no auto-repair**: no rewrite, no
+  retry, no rollback.
 - **`YamlConfigAdapter` — does not exist, and must be written from scratch.** `DeclaredConfigSurface.Format`
   includes `Yaml`, and shipped game definitions declare YAML surfaces, so this is a hard blocker for
   those games rather than a nice-to-have. It is also the hardest of the five adapters to get right:
@@ -487,8 +503,10 @@ What is missing is the **orchestration above the adapters**, plus one adapter:
   exist and deliberately preserve line and column information — **worth investigating for reuse, but
   treat that as an open question, not a solved problem**; a read path that tracks positions is not
   automatically a faithful write path.
-- Unblocks `ServerLifecycleService.RecreateAsync`, which throws `NotSupportedException` today with
-  the explicit rationale that recreate is meaningless until an approved `ConfigChangePlan` exists.
+- `ServerLifecycleService.RecreateAsync` throws `NotSupportedException` today, documenting that
+  recreate only means anything as the applied consequence of an approved plan. `ConfigChangePlan` and
+  `IPlanExecutor.ApplyAsync` exist now, but no operator surface produces an approved plan yet, so this
+  is unblocked only once Phase 4b's UI/API surface lands.
 
 Do not size this from within this plan. **Phase 4a delivers visible user value without any of it**,
 which is the whole reason for the split.
@@ -575,9 +593,9 @@ so the confirmation copy should say so.
 | `WritableServers` frozen (3 capture sites) | 2 | Must change together or the UI lies. |
 | Two identical enums, no mapping | 2 | Total mapping + parity test. |
 | No per-server setting persistence | 4a | The only EF migration in this plan. |
-| `IPlanExecutor` declared but never implemented | **4b** | Declared, never implemented, no callers. The four non-YAML config adapters DO exist and are registered — 4b is orchestration plus one missing adapter, not a greenfield build. |
+| `IPlanExecutor` has no caller | **4b** | **Now implemented and DI-registered** (`PlanExecutor`, `src\Infrastructure\Servyx.Config\PlanExecutor.cs`). What remains is a caller — no UI, REST API, MCP tool, or job runner invokes it. The four non-YAML config adapters DO exist and are registered — 4b is now a UI/API surface on top of a working engine, not orchestration from scratch. |
 | `YamlConfigAdapter` missing | **4b** | No YAML `IConfigAdapter` exists despite `DeclaredConfigSurface.Format` including `Yaml` and shipped definitions declaring YAML surfaces. Hardest adapter of the five: needs byte-exact round-trip with comment and key-order preservation. |
-| `RecreateAsync` throws | **4b** | Unblocked by `ConfigChangePlan` implementation; meaningless without it. |
+| `RecreateAsync` throws | **4b** | `ServerLifecycleService.RecreateAsync` throws `NotSupportedException`, documenting that recreate only means anything as the applied consequence of an approved plan. `ConfigChangePlan`/`IPlanExecutor.ApplyAsync` exist now, but nothing produces an *approved* plan through an operator surface yet, so this remains unblocked in practice. |
 | No persisted audit store | **Deferred** | Structured logging in Phase 2; queryable store is future work. |
 | `IServerDefinitionBindingStore` / `EfServerDefinitionBindingStore` | 1 | Real and implemented, registered via `AddServyxServerDefinitionBindingStore()`. This is the singleton-over-`IDbContextFactory` precedent Phase 1 should copy. Phase 1 gains no work here. |
 
