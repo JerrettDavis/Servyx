@@ -1,5 +1,6 @@
 using Servyx.Composition;
 using Servyx.Domain.Configuration;
+using Servyx.Domain.Entities;
 using Servyx.Domain.Transport;
 
 namespace Servyx.Web.Services;
@@ -123,6 +124,33 @@ public static class ChangePlanPresentation
     };
 
     /// <summary>
+    /// What a <see cref="PostWriteVerification"/> value means, spelled out for an operator reading a history
+    /// row rather than abbreviated to the enum member's own name.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PostWriteVerification.NotAttempted"/> and <see cref="PostWriteVerification.Unverifiable"/>
+    /// are given visibly different sentences on purpose: the first means the read-back never ran, the second
+    /// means it ran or was wanted and could not be performed. Both amount to "nobody has confirmed this", and
+    /// neither may be phrased as if someone had.
+    /// </remarks>
+    public static string Describe(PostWriteVerification verification) => verification switch
+    {
+        PostWriteVerification.NotAttempted =>
+            "not read back — nothing looked at the surface after the write",
+
+        PostWriteVerification.Verified =>
+            "read back, and it held exactly the approved bytes",
+
+        PostWriteVerification.Unverifiable =>
+            "could not be read back — the write is believed to have landed, and nobody has looked",
+
+        PostWriteVerification.Mismatched =>
+            "read back, and it did NOT hold the approved bytes",
+
+        _ => verification.ToString(),
+    };
+
+    /// <summary>
     /// The qualitative half of the feasibility banner's copy for <paramref name="feasibility"/>. Counts (how
     /// many of how many) are the caller's job — this returns only the phrase that does not depend on them, so
     /// a plan with zero requested changes reads the same as one with a hundred.
@@ -189,8 +217,12 @@ public static class ChangePlanPresentation
                     + "bytes against a picture of the server that no longer holds. That refusal normally "
                     + "happens before a single byte is written — the exception to that is drift caught partway "
                     + "through, and the detail below says which happened and how many actions had already "
-                    + "landed. Nothing was rolled back either way; there is no revert. Preview again to build "
-                    + $"a fresh plan against the server as it is now. Detail: {failure.Message}"),
+                    + "landed. Nothing was rolled back automatically: reverting an applied plan is a separate "
+                    + "step an operator has to take deliberately, and it is refused outright — as a whole, "
+                    + "never partially — if any action was recorded as not reversible, if the recorded "
+                    + "pre-images have aged out of the retention window, if the plan has already been "
+                    + "reverted, or if no write ever reached the server. Preview again to build a fresh plan "
+                    + $"against the server as it is now. Detail: {failure.Message}"),
 
             WritesDisabledException =>
                 new ApplyFailure(ApplyFailureKind.WritesDisabled,
@@ -227,9 +259,12 @@ public static class ChangePlanPresentation
     /// <remarks>
     /// The "not undone, not rewritten, not retried" statement is unconditional because it is true on every arm
     /// of this failure — <c>PlanExecutor</c> has no repair path at all, by design: a second write chasing a bad
-    /// first one risks turning one damaged file into two, and <c>RevertAsync</c> throws
-    /// <see cref="NotImplementedException"/>. The hedge is only about <em>whether the write already happened</em>,
-    /// which this exception genuinely does not carry — see <see cref="Explain"/>'s remarks.
+    /// first one risks turning one damaged file into two. <c>IPlanExecutor.RevertAsync</c> does exist, but it
+    /// is a separate call an operator has to make deliberately, never something the apply path reaches for on
+    /// its own, and it refuses a plan whose recorded pre-images the retention sweep has already discarded, one
+    /// with a non-reversible action, one already reverted, and one where nothing ever reached the server. The
+    /// hedge is only about <em>whether the write already happened</em>, which this exception genuinely does not
+    /// carry — see <see cref="Explain"/>'s remarks.
     /// </remarks>
     private static string Fidelity(PlanApplyFidelityException failure)
     {
@@ -241,15 +276,247 @@ public static class ChangePlanPresentation
         return $"Action {ordinal} of this plan, on surface '{surface}', failed its content-fidelity check. "
             + $"Approved digest: {approved}. Observed: {observed}. "
             + "Servyx did not undo it, rewrite it, or retry it, and that is deliberate rather than an "
-            + "oversight: a second write chasing a bad first one risks turning one damaged file into two, and "
-            + "there is no revert. If the check that failed was one of the post-write checks — the transport's "
+            + "oversight: a second write chasing a bad first one risks turning one damaged file into two. "
+            + "Reverting this plan is a separate step you would have to take deliberately — it restores the "
+            + "exact bytes each surface held before the write, all of them or none, and it is refused if any "
+            + "action was recorded as not reversible, if the recorded pre-images have aged out of the "
+            + "retention window, if this plan has already been reverted, or if no write ever reached the "
+            + "server. "
+            + "If the check that failed was one of the post-write checks — the transport's "
             + "own receipt, or reading the surface back off the server — then the write already happened, "
             + "those bytes are on the server now, the plan's remaining actions were skipped, and the plan is "
             + "left partially applied. The detail below says which check failed and states plainly when "
             + "nothing was written. Servyx will not resolve this on its own: a human has to look at the "
             + $"surface on the server and decide what to do. Detail: {failure.Message}";
     }
+
+    // ── History ───────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// What actually happened to a stored plan, phrased for an operator reading a recent-plans list.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The apply outcome is derived from the ACTIONS, never from
+    /// <see cref="ChangePlanSummary.Status"/> alone,</strong> for the same reason
+    /// <c>IChangePlanStore.PurgeImagesAsync</c> makes its retention decision from action state: a plan's
+    /// summary status is a rollup, and the situations that matter most here are exactly the ones a rollup
+    /// smooths over. A plan whose every write landed but whose read-back found bytes nobody approved is the
+    /// case the whole read-back-verification design exists to catch, and it must never render as a clean
+    /// "Applied" — so a digest disagreement between <see cref="ChangePlanActionSummary.PostImageHash"/> (what
+    /// was approved) and <see cref="ChangePlanActionSummary.ObservedPostImageHash"/> (what was seen) demotes
+    /// the whole plan on its own, regardless of how many writes reached the server or what the plan row says.
+    /// </para>
+    /// <para>
+    /// <strong>Status still decides the non-apply outcomes, and is checked first.</strong> Reverted,
+    /// partially reverted, revert-failed, previewed, stale and superseded are facts about the plan's lifecycle
+    /// its actions cannot express — a reverted plan's actions still record the apply writes that reached the
+    /// server, so deriving from them alone would report a plan that has been fully put back as one that
+    /// changed the server.
+    /// </para>
+    /// <para>
+    /// <strong><see cref="ChangePlanOutcome.AppliedUnverified"/> is a distinct outcome on purpose.</strong>
+    /// <see cref="PostWriteVerification.Unverifiable"/> means the write is believed to have landed and nobody
+    /// looked — folding that into <see cref="ChangePlanOutcome.Applied"/> would claim a confirmation nobody
+    /// obtained, and folding it into <see cref="ChangePlanOutcome.PartiallyApplied"/> would claim an
+    /// incompleteness nobody observed. Neither is true, so it gets its own badge.
+    /// </para>
+    /// </remarks>
+    /// <param name="plan">The stored plan summary, as <c>IChangePlanStore.ListRecentAsync</c> returns it.</param>
+    /// <returns>The outcome, its badge label, and the sentence explaining it.</returns>
+    public static PlanOutcome Outcome(ChangePlanSummary plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+
+        return plan.Status switch
+        {
+            ChangePlanStatus.Reverting => new PlanOutcome(ChangePlanOutcome.Reverting, "Reverting",
+                "A revert for this plan is in flight: it was claimed for reverting and at least one restoring "
+                + "write has started."),
+
+            ChangePlanStatus.Reverted => new PlanOutcome(ChangePlanOutcome.Reverted, "Reverted",
+                "Every surface this plan wrote was put back to the exact bytes recorded before that write. "
+                + "That restored the files; it did not restart or recreate the workload."),
+
+            ChangePlanStatus.PartiallyReverted => new PlanOutcome(
+                ChangePlanOutcome.PartiallyReverted, "Partially reverted",
+                "The revert stopped partway through, or a restored surface did not read back as the recorded "
+                + "pre-image. Some surfaces hold the pre-apply bytes and some still hold what this plan "
+                + "wrote — resolving that is a human decision."),
+
+            ChangePlanStatus.RevertFailed => new PlanOutcome(ChangePlanOutcome.RevertFailed, "Revert failed",
+                "A revert was attempted and nothing was put back, so every change this plan made is still in "
+                + "force on the server."),
+
+            ChangePlanStatus.Previewed => new PlanOutcome(ChangePlanOutcome.Previewed, "Previewed",
+                "Previewed and not applied. Nothing was written to the server."),
+
+            ChangePlanStatus.Applying => new PlanOutcome(ChangePlanOutcome.Applying, "Applying",
+                "An apply for this plan is in flight: it was claimed for applying and at least one write has "
+                + "started."),
+
+            ChangePlanStatus.Stale => new PlanOutcome(ChangePlanOutcome.Stale, "Stale",
+                "Previewed, never applied, and no longer safe to apply — its preview window elapsed or a "
+                + "bound surface drifted. Nothing was written to the server."),
+
+            ChangePlanStatus.Superseded => new PlanOutcome(ChangePlanOutcome.Superseded, "Superseded",
+                "Never applied: a later plan for this server was applied instead. Nothing was written to the "
+                + "server for this one."),
+
+            _ => ApplyOutcome(plan),
+        };
+    }
+
+    /// <summary>
+    /// The apply outcome for a plan whose status says an apply was attempted
+    /// (<see cref="ChangePlanStatus.Applied"/>, <see cref="ChangePlanStatus.PartiallyApplied"/> or
+    /// <see cref="ChangePlanStatus.Failed"/>), read off the actions in a fixed order.
+    /// </summary>
+    /// <remarks>
+    /// The order is load-bearing: more than one of these can hold at once and the operator needs the most
+    /// alarming true one. A digest disagreement outranks a partial reach because bytes nobody approved sitting
+    /// on a live server is worse news than a write that never went out, and both outrank the reached-and-
+    /// verified arm that is the only path to a clean <see cref="ChangePlanOutcome.Applied"/>.
+    /// </remarks>
+    private static PlanOutcome ApplyOutcome(ChangePlanSummary plan)
+    {
+        var actions = plan.Actions;
+        var reached = actions.Count(a => a.WriteReachedServer);
+
+        if (actions.Count == 0 || reached == 0)
+        {
+            return new PlanOutcome(ChangePlanOutcome.NotApplied, "Not applied",
+                "No action of this plan recorded a write that reached the server, so nothing here changed the "
+                + "server.");
+        }
+
+        var mismatched = actions.Count(DigestMismatch);
+        if (mismatched > 0)
+        {
+            return new PlanOutcome(ChangePlanOutcome.PartiallyApplied, "Partially applied",
+                $"{mismatched} of {actions.Count} action{(actions.Count == 1 ? "" : "s")} wrote content whose "
+                + "digest does not match the one that was approved, so a live server is holding bytes nobody "
+                + "approved — the content was changed in transit or afterwards. Servyx did not rewrite, retry "
+                + "or undo it: resolving this is a human decision.");
+        }
+
+        if (reached < actions.Count)
+        {
+            return new PlanOutcome(ChangePlanOutcome.PartiallyApplied, "Partially applied",
+                $"{reached} of {actions.Count} actions recorded a write that reached the server; the rest did "
+                + "not. This plan changed the server incompletely, and nothing rolled back what did land.");
+        }
+
+        if (actions.All(a => a.PostWriteVerification == PostWriteVerification.Verified))
+        {
+            return new PlanOutcome(ChangePlanOutcome.Applied, "Applied",
+                "Every action's write reached the server and read back as exactly the approved bytes. That "
+                + "means those bytes are on disk — not that the workload has re-read them.");
+        }
+
+        return new PlanOutcome(ChangePlanOutcome.AppliedUnverified, "Applied, not verified",
+            "Every action's write reached the server, but at least one of them was never read back "
+            + "afterwards — the surface could not be read, or the read-back never ran. The change is believed "
+            + "to have landed and nothing has looked.");
+    }
+
+    /// <summary>
+    /// Whether this action's approved post-image digest and the digest actually observed for it disagree.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A missing <see cref="ChangePlanActionSummary.ObservedPostImageHash"/> is deliberately NOT a mismatch.
+    /// Apply records that column only when something produced a digest — a transport receipt, or a read-back —
+    /// and leaves it null when nothing did, which is the <see cref="PostWriteVerification.Unverifiable"/>
+    /// story ("nobody looked"), not the <see cref="PostWriteVerification.Mismatched"/> one ("someone looked
+    /// and found the wrong bytes"). Treating null as a disagreement would report every unverifiable write as
+    /// a mangled one.
+    /// </para>
+    /// <para>
+    /// Compared case-insensitively because both sides are a bare hex SHA-256 and <c>PlanExecutor</c> compares
+    /// them the same way — a badge that disagreed with the engine over letter case would flag a correct write
+    /// as mangled.
+    /// </para>
+    /// </remarks>
+    /// <param name="action">The action summary to inspect.</param>
+    public static bool DigestMismatch(ChangePlanActionSummary action)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+
+        return !string.IsNullOrEmpty(action.PostImageHash)
+            && !string.IsNullOrEmpty(action.ObservedPostImageHash)
+            && !string.Equals(
+                action.PostImageHash, action.ObservedPostImageHash, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// A digest shortened for display, with the absence of one said in words rather than rendered as a blank.
+    /// </summary>
+    /// <remarks>
+    /// Callers are expected to carry the full value in a <c>title</c> attribute: a truncated digest is enough
+    /// to see that two of them differ, never enough to check one against a file.
+    /// </remarks>
+    /// <param name="digest">The digest, or <see langword="null"/> when none was recorded.</param>
+    public static string ShortDigest(string? digest) =>
+        string.IsNullOrWhiteSpace(digest)
+            ? "(none recorded)"
+            : digest.Length <= 12 ? digest : digest[..12] + "…";
 }
+
+/// <summary>
+/// What happened to a stored change plan, as a recent-plans list has to state it. Named after what an
+/// operator is being told, not after the <see cref="ChangePlanStatus"/> or action state that produced it.
+/// </summary>
+public enum ChangePlanOutcome
+{
+    /// <summary>Previewed and never applied. Nothing was written.</summary>
+    Previewed,
+
+    /// <summary>An apply is in flight.</summary>
+    Applying,
+
+    /// <summary>Every action reached the server and read back as exactly the approved bytes.</summary>
+    Applied,
+
+    /// <summary>
+    /// Every action reached the server, but at least one was never read back — believed landed, unconfirmed.
+    /// See <see cref="PostWriteVerification.Unverifiable"/>.
+    /// </summary>
+    AppliedUnverified,
+
+    /// <summary>
+    /// Some actions reached the server and some did not, or an action's observed digest disagrees with the
+    /// approved one. Either way the server does not hold, in whole, what was approved.
+    /// </summary>
+    PartiallyApplied,
+
+    /// <summary>No action's write reached the server, so this plan changed nothing.</summary>
+    NotApplied,
+
+    /// <summary>A revert is in flight.</summary>
+    Reverting,
+
+    /// <summary>Every surface this plan wrote was put back to its recorded pre-image.</summary>
+    Reverted,
+
+    /// <summary>The revert stopped partway, or a restored surface did not read back as the pre-image.</summary>
+    PartiallyReverted,
+
+    /// <summary>A revert was attempted and nothing was put back.</summary>
+    RevertFailed,
+
+    /// <summary>Previewed, never applied, and no longer safe to apply.</summary>
+    Stale,
+
+    /// <summary>Never applied because a later plan for the same server was applied instead.</summary>
+    Superseded,
+}
+
+/// <summary>One stored plan's outcome, its badge label, and the sentence that explains it.</summary>
+/// <param name="Kind">Which outcome this is. Reaches the DOM as a class, so two outcomes can never style alike.</param>
+/// <param name="Label">The short badge text.</param>
+/// <param name="Detail">The operator-facing account of what that badge means for this plan.</param>
+public sealed record PlanOutcome(ChangePlanOutcome Kind, string Label, string Detail);
 
 /// <summary>
 /// Which of <c>IPlanExecutor.ApplyAsync</c>'s distinct failure modes a caught exception is. Named after what

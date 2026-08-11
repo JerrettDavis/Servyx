@@ -1,0 +1,270 @@
+@using Servyx.Domain.Configuration
+@using Servyx.Domain.Entities
+@using Servyx.Web.Services
+@inject IServiceProvider Services
+
+@* Lists this server's recent change plans and what each one actually did to the server. Read-only, and
+   deliberately so:
+
+     * It renders NO mutation affordance at all — no apply, no revert. IPlanExecutor.RevertAsync exists, but a
+       revert is an unrollbackable sequence of writes against a live server and needs its own confirm-flow
+       design; a button next to a history row would be the least considered place in the product to put it.
+     * It is a SIBLING of ChangePlanPanel rather than part of it. That component's PanelState machine
+       (Idle/Previewing/Shown/Error) plus _confirmingApply/_applying models exactly ONE in-flight plan; a list
+       multiplies that state space and couples an idempotent read to a mutation flow.
+     * It never renders file content. IChangePlanStore.ListRecentAsync deliberately excludes the pre/post-image
+       blobs and the unified diff, because those hold whole configuration files unmasked — including real
+       passwords. Digests are shown; bytes are not.
+
+   The badge is derived from the ACTIONS by ChangePlanPresentation.Outcome, not from ChangePlanSummary.Status,
+   and the panel is not allowed to second-guess it here: a plan whose every write reached the server but whose
+   read-back digest disagrees with the approved one is the exact case read-back verification exists to catch,
+   and it must never render as a clean "Applied".
+
+   Resolves IChangePlanStore via IServiceProvider rather than @@inject, matching ChangePlanPanel's handling of
+   IPlanExecutor: a host — or a bUnit test rendering this panel directly — that never composed the store must
+   still render, degrading to "visible, locked, and explained" rather than throwing at render time. *@
+
+<div class="svx-card" data-testid="plan-history-panel">
+    <h3>Recent change plans</h3>
+
+    @if (_store is null)
+    {
+        <p class="svx-page-description" data-testid="plan-history-store-unavailable">
+            This process did not compose a change plan store, so there is nowhere to read this server's plan
+            history from. Nothing is hidden by this — no plan history exists to show in this composition.
+        </p>
+    }
+    else if (ServerId is null)
+    {
+        <p class="svx-page-description" data-testid="plan-history-untracked">
+            Servyx does not track this container as an adopted server, so no change plan was ever recorded
+            against it and there is no history to read.
+        </p>
+    }
+    else
+    {
+        <p class="svx-page-description">
+            Every plan previewed for this server, newest first, with what each of its actions actually did.
+            This is a record, not a control: nothing here applies or reverts anything. File contents and
+            diffs are deliberately not read back into this list — a plan's recorded images hold whole
+            configuration files, unmasked, so only their digests are shown.
+        </p>
+
+        <button type="button" class="svx-btn"
+                data-testid="plan-history-refresh"
+                disabled="@_loading"
+                @onclick="LoadAsync">
+            @(_loading ? "Reading…" : "Refresh")
+        </button>
+
+        @if (_error is not null)
+        {
+            <p class="svx-deploy-error" data-testid="plan-history-error">@_error</p>
+        }
+        else if (_plans.Count == 0)
+        {
+            <p class="svx-page-description" data-testid="plan-history-empty">
+                No change plan has ever been previewed for this server, so there is nothing to show yet. A
+                plan appears here as soon as <strong>Review changes</strong> above produces one — previewing
+                records the plan even when it is never applied.
+            </p>
+        }
+        else
+        {
+            <ol class="plan-history-list" data-testid="plan-history-list">
+                @foreach (var plan in _plans)
+                {
+                    var outcome = ChangePlanPresentation.Outcome(plan);
+
+                    <li class="plan-history-entry" data-testid="plan-history-plan" data-plan-id="@plan.Id">
+                        <div class="plan-history-heading">
+                            <span class="plan-history-badge plan-history-badge-@outcome.Kind.ToString().ToLowerInvariant()"
+                                  data-testid="plan-history-badge">
+                                @outcome.Label
+                            </span>
+                            <span class="plan-history-plan-id" data-testid="plan-history-plan-id" title="@plan.Id">
+                                @ShortId(plan.Id)
+                            </span>
+                        </div>
+
+                        <p data-testid="plan-history-outcome-detail">@outcome.Detail</p>
+
+                        <p class="plan-history-timeline" data-testid="plan-history-timeline">
+                            Previewed @plan.CreatedAt.ToString("u") by "@plan.CreatedBy".
+                            @if (plan.AppliedAt is { } appliedAt)
+                            {
+                                <text>Applied @appliedAt.ToString("u") by "@(plan.AppliedBy ?? UnrecordedActor)".</text>
+                            }
+                            @if (plan.RevertedAt is { } revertedAt)
+                            {
+                                <text>Reverted @revertedAt.ToString("u") by "@(plan.RevertedBy ?? UnrecordedActor)".</text>
+                            }
+                        </p>
+
+                        @if (plan.Actions.Count == 0)
+                        {
+                            <p data-testid="plan-history-no-actions">
+                                This plan recorded no actions at all, so there was never anything for it to
+                                write.
+                            </p>
+                        }
+                        else
+                        {
+                            <div class="plan-history-actions" data-testid="plan-history-actions">
+                                @foreach (var action in plan.Actions)
+                                {
+                                    var mismatch = ChangePlanPresentation.DigestMismatch(action);
+
+                                    <div class="plan-history-action @(mismatch ? "plan-history-action-mismatch" : "")"
+                                         data-testid="plan-history-action"
+                                         data-ordinal="@action.Ordinal">
+                                        <div class="plan-history-action-heading">
+                                            <strong>#@action.Ordinal @action.SurfaceId</strong>
+                                            <span class="plan-history-path" title="@action.ResolvedPath">@action.ResolvedPath</span>
+                                            <span class="plan-history-action-status" data-testid="plan-history-action-status">@action.Status</span>
+                                        </div>
+
+                                        <p class="plan-history-reached @(action.WriteReachedServer ? "reached" : "not-reached")"
+                                           data-testid="plan-history-reached">
+                                            @(action.WriteReachedServer
+                                                ? "A write for this action reached the server."
+                                                : "No write for this action reached the server.")
+                                        </p>
+
+                                        <p data-testid="plan-history-verification">
+                                            Read-back: @ChangePlanPresentation.Describe(action.PostWriteVerification)
+                                        </p>
+
+                                        <div class="plan-history-digests">
+                                            <span data-testid="plan-history-approved-digest" title="@action.PostImageHash">
+                                                Approved: @ChangePlanPresentation.ShortDigest(action.PostImageHash)
+                                            </span>
+                                            <span data-testid="plan-history-observed-digest" title="@action.ObservedPostImageHash">
+                                                Observed: @ChangePlanPresentation.ShortDigest(action.ObservedPostImageHash)
+                                            </span>
+                                        </div>
+
+                                        @if (mismatch)
+                                        {
+                                            <p class="plan-history-mismatch" data-testid="plan-history-digest-mismatch">
+                                                <strong>These digests do not match.</strong> The write reached
+                                                the server, but what was seen there is not what was approved —
+                                                the content was changed in transit or afterwards. Servyx did
+                                                not rewrite, retry or undo it. Compare the file on the server
+                                                yourself before doing anything else to it.
+                                            </p>
+                                        }
+
+                                        @if (!string.IsNullOrWhiteSpace(action.FailureReason))
+                                        {
+                                            <p class="svx-deploy-error" data-testid="plan-history-failure-reason">
+                                                @action.FailureReason
+                                            </p>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </li>
+                }
+            </ol>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>Named in place of an actor on a row whose <c>AppliedBy</c>/<c>RevertedBy</c> was never recorded.</summary>
+    private const string UnrecordedActor = "an unrecorded actor";
+
+    /// <summary>
+    /// The tracked server whose plans to list — the durable <see cref="Servyx.Domain.Common.ServerId"/>, not
+    /// the container id <c>ChangePlanPanel</c> takes.
+    /// </summary>
+    /// <remarks>
+    /// <see langword="null"/> when the containing tab could not resolve one, which means Servyx does not track
+    /// this container as an adopted server. A plan cannot exist without a tracked server, so that state is
+    /// "there is no history", not "history could not be read", and the panel says so rather than showing an
+    /// error.
+    /// </remarks>
+    [Parameter]
+    public Servyx.Domain.Common.ServerId? ServerId { get; set; }
+
+    /// <summary>
+    /// How many plans to list, newest first. Clamped to the 1..100
+    /// <see cref="IChangePlanStore.ListRecentAsync"/> accepts rather than passed through: an out-of-range
+    /// value there is an <see cref="ArgumentOutOfRangeException"/>, and a caller's typo must not turn a
+    /// read-only history panel into a render-time throw.
+    /// </summary>
+    [Parameter]
+    public int Limit { get; set; } = 10;
+
+    private IChangePlanStore? _store;
+    private IReadOnlyList<ChangePlanSummary> _plans = [];
+    private string? _error;
+    private bool _loading;
+
+    /// <summary>The server whose history <see cref="_plans"/> currently holds, so a re-render does not re-read.</summary>
+    private Servyx.Domain.Common.ServerId? _loadedFor;
+
+    protected override void OnInitialized() =>
+        _store = Services.GetService(typeof(IChangePlanStore)) as IChangePlanStore;
+
+    /// <summary>
+    /// Loads on the first parameter set that carries a resolved server, and again whenever that server
+    /// changes.
+    /// </summary>
+    /// <remarks>
+    /// Not <c>OnInitializedAsync</c>: the containing tab resolves its <see cref="ServerId"/> in its own async
+    /// initialisation, so this panel's first render can legitimately arrive with none and be handed one on the
+    /// next. Keying the read on the server rather than on "have I run once" is what makes that second pass
+    /// load instead of leaving an empty list on screen forever.
+    /// </remarks>
+    protected override async Task OnParametersSetAsync()
+    {
+        if (_store is null || ServerId is null || _loadedFor == ServerId)
+        {
+            return;
+        }
+
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (_store is null || ServerId is null || _loading)
+        {
+            return;
+        }
+
+        _loading = true;
+        _error = null;
+        _loadedFor = ServerId;
+
+        try
+        {
+            _plans = await _store.ListRecentAsync(ServerId.Value, Math.Clamp(Limit, 1, 100));
+        }
+        catch (Exception ex)
+        {
+            // Degrade visibly, matching every other backend read on this page — never an empty list when the
+            // truth is "the history could not be read", which reads as "this server has never been changed".
+            _plans = [];
+            _error = $"Could not read this server's change plan history: {ex.Message}";
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
+
+    /// <summary>
+    /// The leading fragment of a plan id, mirroring <c>ChangePlanPanel.ShortId</c>. The full value stays in a
+    /// <c>title</c> attribute — long enough to tell two plans apart at a glance, short enough to read in a row.
+    /// </summary>
+    private static string ShortId(Servyx.Domain.Common.ChangePlanId id)
+    {
+        var text = id.ToString();
+        return text.Length <= 8 ? text : text[..8];
+    }
+}

@@ -1,5 +1,7 @@
 using Servyx.Composition;
+using Servyx.Domain.Common;
 using Servyx.Domain.Configuration;
+using Servyx.Domain.Entities;
 using Servyx.Domain.Transport;
 using Servyx.Web.Services;
 
@@ -460,6 +462,27 @@ public class ChangePlanPresentationTests
     }
 
     /// <summary>
+    /// <c>IPlanExecutor.RevertAsync</c> is implemented, so copy claiming it does not exist is now simply
+    /// false. What replaces it must not overcorrect either: a revert has real preconditions, and an operator
+    /// told "you can just revert" would be misled exactly as badly as one told there is no way back.
+    /// </summary>
+    [Theory]
+    [InlineData("stale")]
+    [InlineData("fidelity")]
+    public void Explain_describes_revert_by_its_real_preconditions_rather_than_denying_it_exists(string label)
+    {
+        var message = ChangePlanPresentation.Explain(FailureFor(label)).Message;
+
+        message.Should().NotContain("there is no revert", because:
+            "RevertAsync is implemented — that sentence stopped being true");
+
+        message.Should().Contain("not reversible");
+        message.Should().Contain("retention window");
+        message.Should().Contain("already been reverted");
+        message.Should().Contain("no write ever reached the server");
+    }
+
+    /// <summary>
     /// The writes-disabled copy has to agree with <see cref="ChangePlanPresentation.Applicability"/>'s own
     /// gating copy — same place to go (the Overview tab), same reason it might not be reachable (the
     /// provisioning key) — because an operator can hit both for the same underlying posture.
@@ -563,5 +586,293 @@ public class ChangePlanPresentationTests
         var act = () => ChangePlanPresentation.Explain(null!);
 
         act.Should().Throw<ArgumentNullException>();
+    }
+
+    // ── Outcome: the history badge ────────────────────────────────────────────────────────────────────
+
+    private const string ApprovedDigest = "aaaa1111bbbb2222cccc3333dddd4444eeee5555ffff6666aaaa7777bbbb8888";
+    private const string ObservedDigest = "9999ffff8888eeee7777dddd6666cccc5555bbbb4444aaaa3333999922221111";
+
+    private static ChangePlanActionSummary ActionSummary(
+        int ordinal,
+        bool writeReachedServer,
+        PostWriteVerification verification = PostWriteVerification.Verified,
+        string? postImageHash = ApprovedDigest,
+        string? observedPostImageHash = ApprovedDigest,
+        ChangePlanActionStatus status = ChangePlanActionStatus.Applied) => new(
+        Guid.NewGuid(),
+        ordinal,
+        "env",
+        "/srv/.env",
+        PlannedActionKind.WriteSurface,
+        status,
+        writeReachedServer,
+        postImageHash,
+        observedPostImageHash,
+        verification,
+        null,
+        null,
+        null);
+
+    private static ChangePlanSummary Summary(
+        ChangePlanStatus status,
+        params ChangePlanActionSummary[] actions) => new(
+        ChangePlanId.New(),
+        ServerId.New(),
+        status,
+        DateTimeOffset.UnixEpoch,
+        "operator",
+        null,
+        null,
+        null,
+        null,
+        actions);
+
+    /// <summary>
+    /// The statuses whose meaning the actions cannot express. A reverted plan's actions still record the apply
+    /// writes that reached the server, so deriving those from actions alone would report a plan that has been
+    /// fully put back as one that changed the server.
+    /// </summary>
+    [Theory]
+    [InlineData(ChangePlanStatus.Previewed, ChangePlanOutcome.Previewed, "Previewed")]
+    [InlineData(ChangePlanStatus.Applying, ChangePlanOutcome.Applying, "Applying")]
+    [InlineData(ChangePlanStatus.Stale, ChangePlanOutcome.Stale, "Stale")]
+    [InlineData(ChangePlanStatus.Superseded, ChangePlanOutcome.Superseded, "Superseded")]
+    [InlineData(ChangePlanStatus.Reverting, ChangePlanOutcome.Reverting, "Reverting")]
+    [InlineData(ChangePlanStatus.Reverted, ChangePlanOutcome.Reverted, "Reverted")]
+    [InlineData(ChangePlanStatus.PartiallyReverted, ChangePlanOutcome.PartiallyReverted, "Partially reverted")]
+    [InlineData(ChangePlanStatus.RevertFailed, ChangePlanOutcome.RevertFailed, "Revert failed")]
+    public void Outcome_takes_the_non_apply_lifecycle_states_from_the_plan_status(
+        ChangePlanStatus status, ChangePlanOutcome expected, string expectedLabel)
+    {
+        // Actions that DID reach the server, so a derivation that ignored the status would call this applied.
+        var plan = Summary(status, ActionSummary(0, writeReachedServer: true));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(expected);
+        outcome.Label.Should().Be(expectedLabel);
+        outcome.Detail.Should().NotBeNullOrWhiteSpace();
+    }
+
+    [Theory]
+    [InlineData(ChangePlanStatus.Applied)]
+    [InlineData(ChangePlanStatus.PartiallyApplied)]
+    [InlineData(ChangePlanStatus.Failed)]
+    public void Outcome_reports_a_plan_no_write_reached_as_not_applied_whatever_its_status_says(
+        ChangePlanStatus status)
+    {
+        var plan = Summary(
+            status,
+            ActionSummary(0, writeReachedServer: false, PostWriteVerification.NotAttempted,
+                observedPostImageHash: null, status: ChangePlanActionStatus.Failed));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.NotApplied);
+        outcome.Label.Should().Be("Not applied");
+    }
+
+    [Fact]
+    public void Outcome_reports_a_plan_with_no_actions_at_all_as_not_applied()
+    {
+        ChangePlanPresentation.Outcome(Summary(ChangePlanStatus.Applied)).Kind
+            .Should().Be(ChangePlanOutcome.NotApplied);
+    }
+
+    [Fact]
+    public void Outcome_reports_a_mixed_reach_as_partially_applied()
+    {
+        var plan = Summary(
+            ChangePlanStatus.PartiallyApplied,
+            ActionSummary(0, writeReachedServer: true),
+            ActionSummary(1, writeReachedServer: false, PostWriteVerification.NotAttempted,
+                observedPostImageHash: null, status: ChangePlanActionStatus.Skipped));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.PartiallyApplied);
+        outcome.Detail.Should().Contain("1 of 2 actions recorded a write that reached the server");
+    }
+
+    /// <summary>
+    /// The single most important row in this file. Every write reached the server, and the plan row itself
+    /// says <see cref="ChangePlanStatus.Applied"/> — so anything trusting either signal alone calls this a
+    /// clean apply. One surface hashed to something nobody approved, which means a live server is holding
+    /// bytes the operator never saw. This is the case read-back verification exists to catch.
+    /// </summary>
+    [Theory]
+    [InlineData(ChangePlanStatus.Applied)]
+    [InlineData(ChangePlanStatus.PartiallyApplied)]
+    [InlineData(ChangePlanStatus.Failed)]
+    public void A_digest_mismatch_demotes_a_plan_whose_every_write_reached_the_server(ChangePlanStatus status)
+    {
+        var plan = Summary(
+            status,
+            ActionSummary(0, writeReachedServer: true),
+            ActionSummary(1, writeReachedServer: true, PostWriteVerification.Mismatched,
+                observedPostImageHash: ObservedDigest, status: ChangePlanActionStatus.Failed));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.PartiallyApplied, because:
+            "the transport mangled the bytes between what was approved and what landed — that can never "
+            + "render as a clean Applied");
+        outcome.Label.Should().Be("Partially applied");
+        outcome.Detail.Should().Contain("holding bytes nobody approved");
+    }
+
+    /// <summary>
+    /// The mismatch outranks the partial reach, and that ordering is deliberate: bytes nobody approved
+    /// sitting on a live server is worse news than a write that never went out, and only one sentence is
+    /// shown.
+    /// </summary>
+    [Fact]
+    public void A_digest_mismatch_outranks_a_partial_reach_in_the_detail_shown()
+    {
+        var plan = Summary(
+            ChangePlanStatus.PartiallyApplied,
+            ActionSummary(0, writeReachedServer: true, PostWriteVerification.Mismatched,
+                observedPostImageHash: ObservedDigest, status: ChangePlanActionStatus.Failed),
+            ActionSummary(1, writeReachedServer: false, PostWriteVerification.NotAttempted,
+                observedPostImageHash: null, status: ChangePlanActionStatus.Skipped));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.PartiallyApplied);
+        outcome.Detail.Should().Contain("holding bytes nobody approved");
+        outcome.Detail.Should().NotContain("recorded a write that reached the server; the rest did not");
+    }
+
+    [Fact]
+    public void Outcome_reports_a_fully_verified_apply_as_applied()
+    {
+        var plan = Summary(
+            ChangePlanStatus.Applied,
+            ActionSummary(0, writeReachedServer: true),
+            ActionSummary(1, writeReachedServer: true));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.Applied);
+        outcome.Label.Should().Be("Applied");
+        outcome.Detail.Should().Contain("not that the workload has re-read them");
+    }
+
+    /// <summary>
+    /// "Nobody looked" is neither a confirmation nor an incompleteness, so it gets its own badge rather than
+    /// being rounded to whichever neighbour is convenient.
+    /// </summary>
+    [Theory]
+    [InlineData(PostWriteVerification.Unverifiable)]
+    [InlineData(PostWriteVerification.NotAttempted)]
+    public void An_unconfirmed_write_is_reported_as_applied_but_not_verified(PostWriteVerification verification)
+    {
+        var plan = Summary(
+            ChangePlanStatus.Applied,
+            ActionSummary(0, writeReachedServer: true),
+            ActionSummary(1, writeReachedServer: true, verification, observedPostImageHash: null));
+
+        var outcome = ChangePlanPresentation.Outcome(plan);
+
+        outcome.Kind.Should().Be(ChangePlanOutcome.AppliedUnverified);
+        outcome.Label.Should().Be("Applied, not verified");
+        outcome.Detail.Should().Contain("nothing has looked");
+    }
+
+    [Fact]
+    public void Outcome_throws_on_a_null_plan()
+    {
+        var act = () => ChangePlanPresentation.Outcome(null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    // ── DigestMismatch ────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void A_digest_that_was_never_observed_is_not_a_mismatch()
+    {
+        var action = ActionSummary(0, writeReachedServer: true, PostWriteVerification.Unverifiable,
+            observedPostImageHash: null);
+
+        ChangePlanPresentation.DigestMismatch(action).Should().BeFalse(because:
+            "apply leaves that column null exactly when nothing produced a digest — \"nobody looked\" is not "
+            + "\"someone looked and found the wrong bytes\"");
+    }
+
+    [Fact]
+    public void An_approved_digest_that_was_never_recorded_is_not_a_mismatch()
+    {
+        var action = ActionSummary(0, writeReachedServer: true, postImageHash: null, observedPostImageHash: null);
+
+        ChangePlanPresentation.DigestMismatch(action).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Digests_are_compared_case_insensitively_like_the_engine_compares_them()
+    {
+        var action = ActionSummary(0, writeReachedServer: true,
+            postImageHash: ApprovedDigest, observedPostImageHash: ApprovedDigest.ToUpperInvariant());
+
+        ChangePlanPresentation.DigestMismatch(action).Should().BeFalse(because:
+            "both sides are a bare hex SHA-256 and PlanExecutor compares them ordinal-ignore-case — a badge "
+            + "that disagreed over letter case would flag a correct write as mangled");
+    }
+
+    [Fact]
+    public void Two_different_digests_are_a_mismatch()
+    {
+        var action = ActionSummary(0, writeReachedServer: true, PostWriteVerification.Mismatched,
+            observedPostImageHash: ObservedDigest);
+
+        ChangePlanPresentation.DigestMismatch(action).Should().BeTrue();
+    }
+
+    [Fact]
+    public void DigestMismatch_throws_on_a_null_action()
+    {
+        var act = () => ChangePlanPresentation.DigestMismatch(null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
+
+    // ── ShortDigest and the verification label ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void ShortDigest_truncates_a_long_digest_and_names_a_missing_one()
+    {
+        ChangePlanPresentation.ShortDigest(ApprovedDigest).Should().Be(ApprovedDigest[..12] + "…");
+        ChangePlanPresentation.ShortDigest("abc").Should().Be("abc");
+        ChangePlanPresentation.ShortDigest(null).Should().Be("(none recorded)");
+        ChangePlanPresentation.ShortDigest("   ").Should().Be("(none recorded)");
+    }
+
+    /// <summary>
+    /// Four distinct facts, four distinct sentences — and neither of the two "nobody has confirmed this"
+    /// values may be phrased as if someone had.
+    /// </summary>
+    [Fact]
+    public void Describe_gives_every_post_write_verification_its_own_words()
+    {
+        var labels = new[]
+        {
+            PostWriteVerification.NotAttempted,
+            PostWriteVerification.Verified,
+            PostWriteVerification.Unverifiable,
+            PostWriteVerification.Mismatched,
+        }.Select(ChangePlanPresentation.Describe).ToList();
+
+        labels.Should().OnlyHaveUniqueItems();
+        labels.Should().AllSatisfy(l => l.Should().NotBeNullOrWhiteSpace());
+
+        ChangePlanPresentation.Describe(PostWriteVerification.Verified)
+            .Should().Contain("held exactly the approved bytes");
+        ChangePlanPresentation.Describe(PostWriteVerification.Mismatched)
+            .Should().Contain("did NOT hold the approved bytes");
+        ChangePlanPresentation.Describe(PostWriteVerification.Unverifiable)
+            .Should().Contain("nobody has looked");
+        ChangePlanPresentation.Describe(PostWriteVerification.NotAttempted)
+            .Should().Contain("nothing looked at the surface");
     }
 }

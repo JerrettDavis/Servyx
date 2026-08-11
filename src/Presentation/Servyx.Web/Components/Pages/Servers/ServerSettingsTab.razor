@@ -130,6 +130,11 @@ else
                      DesiredValues="@RecordedDesiredValues"
                      HasUnsavedEdits="@(_edits.Count > 0)"
                      UnsavedKeys="@UnsavedEditKeys" />
+
+    @* Takes the resolved ServerId, not the container id the panel above takes: a change plan is recorded
+       against the tracked server, and _resolvedServerId is null exactly when Servyx tracks no such server —
+       which the history panel renders as "there is no history", not as an error. *@
+    <ChangePlanHistoryPanel ServerId="@_resolvedServerId" />
 }
 
 @code {
