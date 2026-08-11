@@ -134,4 +134,152 @@ public static class ChangePlanPresentation
         PlanFeasibility.Blocked => "nothing can be written; approving would do nothing",
         _ => feasibility.ToString(),
     };
+
+    /// <summary>
+    /// Turns a failure thrown out of <c>IPlanExecutor.ApplyAsync</c> into operator-facing copy, and names
+    /// which of the engine's distinct failure modes it is so the panel can offer the one follow-up action
+    /// that actually helps.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Every arm is written against what <c>PlanExecutor.ApplyAsync</c> actually does, not against
+    /// what the exception's name suggests.</strong> Two of those facts are easy to get wrong in the operator's
+    /// favour and are called out here because getting them wrong would print a comforting falsehood on the one
+    /// screen in the product that writes to a live game server:
+    /// </para>
+    /// <list type="bullet">
+    /// <item><description>
+    /// <see cref="PlanStaleException"/> is <em>usually</em> raised before any byte is written — expiry, a
+    /// changed governing definition, or the pre-flight drift sweep, all of which precede the first write. It is
+    /// also raised by the TOCTOU backstop <em>mid-plan</em>, when a transport's own pre-image check catches
+    /// drift after earlier actions have already landed; that message states how many did. So this copy says
+    /// where the refusal normally happens and points at the detail, rather than promising "nothing was
+    /// written" outright.
+    /// </description></item>
+    /// <item><description>
+    /// <see cref="PlanApplyFidelityException"/> is raised from three checks, and they do not agree about
+    /// whether anything reached the server. The two pre-flight checks (a stored row whose post-image content
+    /// and digest disagree, or content stored with no digest) refuse before writing anything; the receipt and
+    /// read-back checks fire after the write already landed. The exception carries both digests, the surface
+    /// and the ordinal, but <strong>no flag saying which check failed</strong> — so this copy states the
+    /// no-repair, human-decides part unconditionally (true on every arm) and is precise about the one fact it
+    /// cannot know, instead of asserting a partial application that may not have happened.
+    /// </description></item>
+    /// </list>
+    /// <para>
+    /// An unrecognised exception gets its own arm that names the type and repeats the message verbatim.
+    /// Deliberately not folded into one of the arms above and deliberately not smoothed into "something went
+    /// wrong": <c>ApplyAsync</c> also throws plain <see cref="InvalidOperationException"/> for real, reachable
+    /// situations (a plan the retention sweep already purged, a plan that is no longer <c>Previewed</c>, a
+    /// control-channel action, a server no longer tracked), each with its own carefully-worded message. Hiding
+    /// those behind a generic sentence would throw away the only accurate account of what happened.
+    /// </para>
+    /// </remarks>
+    /// <param name="failure">The exception <c>ApplyAsync</c> threw.</param>
+    /// <returns>The failure's kind and the copy to show for it.</returns>
+    public static ApplyFailure Explain(Exception failure)
+    {
+        ArgumentNullException.ThrowIfNull(failure);
+
+        return failure switch
+        {
+            PlanStaleException =>
+                new ApplyFailure(ApplyFailureKind.Stale,
+                    "The server changed since this plan was built, so Servyx refused it rather than writing "
+                    + "bytes against a picture of the server that no longer holds. That refusal normally "
+                    + "happens before a single byte is written — the exception to that is drift caught partway "
+                    + "through, and the detail below says which happened and how many actions had already "
+                    + "landed. Nothing was rolled back either way; there is no revert. Preview again to build "
+                    + $"a fresh plan against the server as it is now. Detail: {failure.Message}"),
+
+            WritesDisabledException =>
+                new ApplyFailure(ApplyFailureKind.WritesDisabled,
+                    "This server's write access is not Enabled, so the write was refused. Servyx checks the "
+                    + "posture for the whole plan before it starts and the transport guard re-checks it on "
+                    + "every call, so a grant lowered — here or in another Servyx process — between previewing "
+                    + "this plan and approving it lands exactly here. Raise write access to Enabled on the "
+                    + "Overview tab and preview again; if "
+                    + $"{ProvisioningGate.ConfigurationKey} is not enabled on the host, it cannot be raised in "
+                    + $"this process at all. Detail: {failure.Message}"),
+
+            ChangePlanConcurrencyException =>
+                new ApplyFailure(ApplyFailureKind.Concurrency,
+                    "Another session got to this plan first. A plan is applicable exactly once, and this "
+                    + "attempt lost that race, so the plan's record now reflects the other session's attempt "
+                    + "rather than this one. Find out what that session did before approving anything else "
+                    + $"for this server, then preview again to see the server as it is now. Detail: {failure.Message}"),
+
+            PlanApplyFidelityException fidelity => new ApplyFailure(ApplyFailureKind.Fidelity, Fidelity(fidelity)),
+
+            _ => new ApplyFailure(ApplyFailureKind.Unrecognized,
+                "Applying failed in a way Servyx has no specific handling for, so it is reported exactly as it "
+                + "came back rather than smoothed into a generic message: "
+                + $"{failure.GetType().Name}: {failure.Message} — whether anything reached the server is not "
+                + "something this panel can state for an unrecognised failure. Check the plan's own record and "
+                + "the server itself before trying again."),
+        };
+    }
+
+    /// <summary>
+    /// The partial-application account for a <see cref="PlanApplyFidelityException"/>, carrying both digests
+    /// and the surface/ordinal that identify exactly which write is in question.
+    /// </summary>
+    /// <remarks>
+    /// The "not undone, not rewritten, not retried" statement is unconditional because it is true on every arm
+    /// of this failure — <c>PlanExecutor</c> has no repair path at all, by design: a second write chasing a bad
+    /// first one risks turning one damaged file into two, and <c>RevertAsync</c> throws
+    /// <see cref="NotImplementedException"/>. The hedge is only about <em>whether the write already happened</em>,
+    /// which this exception genuinely does not carry — see <see cref="Explain"/>'s remarks.
+    /// </remarks>
+    private static string Fidelity(PlanApplyFidelityException failure)
+    {
+        var ordinal = failure.Ordinal is { } o ? $"#{o}" : "(ordinal not reported)";
+        var surface = failure.SurfaceId ?? "(surface not reported)";
+        var approved = failure.ApprovedHash ?? "(approved digest not reported)";
+        var observed = failure.ObservedHash ?? "(nothing was read back)";
+
+        return $"Action {ordinal} of this plan, on surface '{surface}', failed its content-fidelity check. "
+            + $"Approved digest: {approved}. Observed: {observed}. "
+            + "Servyx did not undo it, rewrite it, or retry it, and that is deliberate rather than an "
+            + "oversight: a second write chasing a bad first one risks turning one damaged file into two, and "
+            + "there is no revert. If the check that failed was one of the post-write checks — the transport's "
+            + "own receipt, or reading the surface back off the server — then the write already happened, "
+            + "those bytes are on the server now, the plan's remaining actions were skipped, and the plan is "
+            + "left partially applied. The detail below says which check failed and states plainly when "
+            + "nothing was written. Servyx will not resolve this on its own: a human has to look at the "
+            + $"surface on the server and decide what to do. Detail: {failure.Message}";
+    }
 }
+
+/// <summary>
+/// Which of <c>IPlanExecutor.ApplyAsync</c>'s distinct failure modes a caught exception is. Named after what
+/// the operator is being told, and kept separate from the message so the panel can offer the one follow-up
+/// action that helps for each — a re-preview for staleness, and deliberately nothing automatic for a fidelity
+/// failure, where the next step is a human decision.
+/// </summary>
+public enum ApplyFailureKind
+{
+    /// <summary>The plan no longer matches the server it was planned against. <see cref="PlanStaleException"/>.</summary>
+    Stale,
+
+    /// <summary>The server's write posture refused the write. <c>WritesDisabledException</c>.</summary>
+    WritesDisabled,
+
+    /// <summary>Another session claimed this plan first. <c>ChangePlanConcurrencyException</c>.</summary>
+    Concurrency,
+
+    /// <summary>A write's content could not be verified against what was approved. <see cref="PlanApplyFidelityException"/>.</summary>
+    Fidelity,
+
+    /// <summary>
+    /// Anything else, reported verbatim rather than folded into one of the arms above. Reachable in normal
+    /// operation — see <see cref="ChangePlanPresentation.Explain"/>'s remarks on <c>ApplyAsync</c>'s plain
+    /// <see cref="InvalidOperationException"/> refusals.
+    /// </summary>
+    Unrecognized,
+}
+
+/// <summary>An <c>ApplyAsync</c> failure, classified and phrased for an operator.</summary>
+/// <param name="Kind">Which failure mode this is.</param>
+/// <param name="Message">The copy to show, including the engine's own message as detail.</param>
+public sealed record ApplyFailure(ApplyFailureKind Kind, string Message);

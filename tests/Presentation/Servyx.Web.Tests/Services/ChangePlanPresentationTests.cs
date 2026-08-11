@@ -393,4 +393,175 @@ public class ChangePlanPresentationTests
     {
         ChangePlanPresentation.Summarize(feasibility).Should().Be(expected);
     }
+
+    // ── Explain ───────────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Every failure <c>IPlanExecutor.ApplyAsync</c> documents, plus one it does not.</summary>
+    private static Exception FailureFor(string label) => label switch
+    {
+        "stale" => new PlanStaleException("The plan expired.", "plan-1"),
+        "writes-disabled" => new WritesDisabledException("Writes are disabled."),
+        "concurrency" => new ChangePlanConcurrencyException("Someone else claimed it.", "plan-1"),
+        "fidelity" => new PlanApplyFidelityException("A read-back mismatched.", "plan-1", 2, "env", "aaa", "bbb"),
+        "unrecognized" => new TimeoutException("the transport gave up"),
+        _ => throw new ArgumentOutOfRangeException(nameof(label), label, "No such failure label."),
+    };
+
+    [Theory]
+    [InlineData("stale", ApplyFailureKind.Stale)]
+    [InlineData("writes-disabled", ApplyFailureKind.WritesDisabled)]
+    [InlineData("concurrency", ApplyFailureKind.Concurrency)]
+    [InlineData("fidelity", ApplyFailureKind.Fidelity)]
+    [InlineData("unrecognized", ApplyFailureKind.Unrecognized)]
+    public void Explain_classifies_each_apply_failure(string label, ApplyFailureKind expected)
+    {
+        ChangePlanPresentation.Explain(FailureFor(label)).Kind.Should().Be(expected);
+    }
+
+    /// <summary>
+    /// Four situations that call for four different operator decisions must not collapse into one sentence.
+    /// </summary>
+    [Fact]
+    public void Explain_gives_every_failure_its_own_words()
+    {
+        var messages = new[] { "stale", "writes-disabled", "concurrency", "fidelity", "unrecognized" }
+            .Select(label => ChangePlanPresentation.Explain(FailureFor(label)).Message)
+            .ToList();
+
+        messages.Should().OnlyHaveUniqueItems();
+        messages.Should().AllSatisfy(m => m.Should().NotBeNullOrWhiteSpace());
+    }
+
+    /// <summary>
+    /// The engine's own message is the only place that says which check failed and — for staleness and
+    /// fidelity — whether anything reached the server, so it is never dropped.
+    /// </summary>
+    [Theory]
+    [InlineData("stale")]
+    [InlineData("writes-disabled")]
+    [InlineData("concurrency")]
+    [InlineData("fidelity")]
+    [InlineData("unrecognized")]
+    public void Explain_always_carries_the_underlying_message_through(string label)
+    {
+        var failure = FailureFor(label);
+
+        ChangePlanPresentation.Explain(failure).Message.Should().Contain(failure.Message);
+    }
+
+    [Fact]
+    public void Explain_sends_a_stale_plan_back_to_preview()
+    {
+        var explained = ChangePlanPresentation.Explain(new PlanStaleException("A surface drifted.", "plan-1"));
+
+        explained.Message.Should().Contain("The server changed since this plan was built");
+        explained.Message.Should().Contain("Preview again");
+        explained.Message.Should().Contain("Nothing was rolled back");
+    }
+
+    /// <summary>
+    /// The writes-disabled copy has to agree with <see cref="ChangePlanPresentation.Applicability"/>'s own
+    /// gating copy — same place to go (the Overview tab), same reason it might not be reachable (the
+    /// provisioning key) — because an operator can hit both for the same underlying posture.
+    /// </summary>
+    [Fact]
+    public void Explain_matches_the_gating_copy_for_a_write_posture_refusal()
+    {
+        var explained = ChangePlanPresentation.Explain(new WritesDisabledException("Writes are disabled."));
+
+        explained.Message.Should().Contain("write access is not Enabled");
+        explained.Message.Should().Contain("Overview tab");
+        explained.Message.Should().Contain(ProvisioningGate.ConfigurationKey);
+    }
+
+    [Fact]
+    public void Explain_says_another_session_claimed_the_plan_first()
+    {
+        var explained = ChangePlanPresentation.Explain(
+            new ChangePlanConcurrencyException("Lost the race.", "plan-1"));
+
+        explained.Message.Should().Contain("Another session got to this plan first");
+        explained.Message.Should().Contain("applicable exactly once");
+    }
+
+    /// <summary>
+    /// The partial-application account. Both digests, the surface and the ordinal have to survive into the
+    /// copy — they are what an operator compares against the file — and the copy must never imply that Servyx
+    /// fixed, retried or reverted anything, because it deliberately does none of those.
+    /// </summary>
+    [Fact]
+    public void Explain_reports_a_fidelity_failure_as_an_unrepaired_write()
+    {
+        var explained = ChangePlanPresentation.Explain(new PlanApplyFidelityException(
+            "reading it back found content hashing to observed-222 where approved-111 was approved.",
+            "plan-1",
+            5,
+            "compose-env",
+            "approved-111",
+            "observed-222"));
+
+        explained.Kind.Should().Be(ApplyFailureKind.Fidelity);
+        explained.Message.Should().Contain("approved-111");
+        explained.Message.Should().Contain("observed-222");
+        explained.Message.Should().Contain("compose-env");
+        explained.Message.Should().Contain("#5");
+        explained.Message.Should().Contain("did not undo it, rewrite it, or retry it");
+        explained.Message.Should().Contain("partially applied");
+        explained.Message.Should().Contain("a human has to look at the");
+    }
+
+    /// <summary>
+    /// The pre-flight arms of this exception carry no observed digest at all. Rendering "Observed: " followed
+    /// by nothing would read as "the file is empty", which is a different and much more alarming claim.
+    /// </summary>
+    [Fact]
+    public void Explain_names_the_gaps_when_a_fidelity_failure_carries_no_detail()
+    {
+        var explained = ChangePlanPresentation.Explain(new PlanApplyFidelityException("no digest was recorded"));
+
+        explained.Kind.Should().Be(ApplyFailureKind.Fidelity);
+        explained.Message.Should().Contain("(ordinal not reported)");
+        explained.Message.Should().Contain("(surface not reported)");
+        explained.Message.Should().Contain("(approved digest not reported)");
+        explained.Message.Should().Contain("(nothing was read back)");
+    }
+
+    /// <summary>
+    /// <c>ApplyAsync</c> throws plain <see cref="InvalidOperationException"/> for several real refusals — a
+    /// purged plan, a plan that is no longer <c>Previewed</c>, a control-channel action. Folding those into a
+    /// generic sentence would throw away the only accurate account of what happened.
+    /// </summary>
+    [Fact]
+    public void Explain_surfaces_an_unrecognized_failure_as_itself()
+    {
+        var explained = ChangePlanPresentation.Explain(
+            new InvalidOperationException("Change plan 'plan-1' is Applied, not Previewed."));
+
+        explained.Kind.Should().Be(ApplyFailureKind.Unrecognized);
+        explained.Message.Should().Contain(nameof(InvalidOperationException));
+        explained.Message.Should().Contain("Change plan 'plan-1' is Applied, not Previewed.");
+        explained.Message.Should().NotContain("something went wrong");
+    }
+
+    /// <summary>
+    /// <see cref="PlanApplyFidelityException"/> does not derive from <see cref="InvalidOperationException"/>,
+    /// and must not be reachable through it: catching by that base type would report the one failure where
+    /// bytes may already be on the server as an ordinary refusal.
+    /// </summary>
+    [Fact]
+    public void A_fidelity_failure_is_never_classified_as_an_ordinary_refusal()
+    {
+        typeof(PlanApplyFidelityException).Should().NotBeAssignableTo<InvalidOperationException>();
+
+        ChangePlanPresentation.Explain(new PlanApplyFidelityException("mismatch")).Kind
+            .Should().Be(ApplyFailureKind.Fidelity);
+    }
+
+    [Fact]
+    public void Explain_throws_on_a_null_failure()
+    {
+        var act = () => ChangePlanPresentation.Explain(null!);
+
+        act.Should().Throw<ArgumentNullException>();
+    }
 }

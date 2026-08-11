@@ -4,8 +4,19 @@
 @using Servyx.Web.Services
 @inject IServiceProvider Services
 
-@* Turns Servyx's recorded desired values into a previewed IPlanExecutor.ConfigChangePlan and renders it.
-   Deliberately does NOT apply anything — there is no call to IPlanExecutor.ApplyAsync anywhere in this file.
+@* Turns Servyx's recorded desired values into a previewed IPlanExecutor.ConfigChangePlan, renders it, and —
+   behind a two-step confirmation — applies it. This is the ONLY operator-reachable caller of
+   IPlanExecutor.ApplyAsync in the product, which is to say the only path by which Servyx writes configuration
+   to a live game server at all. Three consequences of that shape the code below:
+
+     * The apply affordance exists only when ChangePlanPresentation.Applicability says the engine would accept
+       the plan. A plan ApplyAsync would refuse gets no button — absent, not disabled — because a disabled
+       "Apply" still tells an operator that approving is a thing that could work here.
+     * ApplyAsync writes bytes and NOTHING else: it never restarts, never recreates. A ChangeReceipt means
+       "the bytes are on disk", not "the workload picked them up", and the success copy says exactly that.
+     * Failure is reported per failure mode through ChangePlanPresentation.Explain, and the plan stays on
+       screen afterwards. A partially-applied plan is real and is never repaired, retried or rolled back.
+
    Resolves IPlanExecutor and ProvisioningGate via IServiceProvider rather than @@inject, matching
    WriteModeControl's own idiom: a host — or a bUnit test rendering this panel directly — that never composed
    IPlanExecutor must still render, degrading to "visible, locked, and explained" rather than throwing at
@@ -82,7 +93,8 @@
             {
                 <p data-testid="plan-apply-affordance" class="plan-apply-affordance @(canApply ? "can-apply" : "cannot-apply")">
                     @(canApply
-                        ? "This plan can be applied. Approving is not available from this page yet — preview only."
+                        ? "This plan can be applied. Approving writes exactly the bytes diffed below to the "
+                          + "server and does nothing else — it does not restart or recreate the workload."
                         : applyReason)
                 </p>
             }
@@ -152,6 +164,114 @@
                     ? "Every action in this plan is individually reversible. Revert is not implemented; the only way back is a new plan."
                     : "Revert is not implemented; the only way back is a new plan.")
             </p>
+
+            @* ── Approve and apply ────────────────────────────────────────────────────────────────────
+               Offered only while canApply holds AND no attempt has been made yet. A plan is applicable
+               exactly once — ApplyAsync refuses any plan that is no longer Previewed — so re-offering the
+               control after a receipt OR after a failure would be offering an operator a second click the
+               engine is guaranteed to refuse. *@
+            @if (canApply && _receipt is null && _applyFailure is null)
+            {
+                if (!_confirmingApply)
+                {
+                    <button type="button" class="svx-btn svx-btn-primary"
+                            data-testid="plan-apply-review"
+                            aria-label="Review applying this plan"
+                            @onclick="() => _confirmingApply = true">
+                        Review
+                    </button>
+                }
+                else
+                {
+                    <div class="svx-deploy-confirm" data-testid="plan-apply-confirm-step">
+                        <p data-testid="plan-apply-confirm-body">
+                            Nothing has been written yet. Confirming writes the
+                            @plan.Actions.Count change@(plan.Actions.Count == 1 ? "" : "s") diffed above to
+                            this server — exactly those bytes and nothing else. Servyx will not restart or
+                            recreate the workload afterwards, and there is no revert: the only way back is a
+                            new plan.
+                            @if (plan.Feasibility == PlanFeasibility.PartiallyAchievable)
+                            {
+                                <text>
+                                    The @plan.Blocked.Count blocked change@(plan.Blocked.Count == 1 ? "" : "s")
+                                    listed above will not be performed.
+                                </text>
+                            }
+                        </p>
+                        <p data-testid="plan-apply-confirm-risk">
+                            If a write lands but does not read back as the bytes you approved, Servyx stops
+                            there: the write stays where it is, the remaining actions are skipped, and nothing
+                            is rewritten, retried or rolled back. That state is reported here, and resolving it
+                            is a human decision.
+                        </p>
+                        <button type="button" class="svx-btn svx-btn-danger"
+                                data-testid="plan-apply-confirm" disabled="@_applying" @onclick="ApplyPlanAsync">
+                            @(_applying ? "Applying…" : $"Yes, apply plan {ShortId(plan.Id)}")
+                        </button>
+                        <button type="button" class="svx-btn"
+                                data-testid="plan-apply-cancel" disabled="@_applying" @onclick="() => _confirmingApply = false">
+                            Cancel
+                        </button>
+                    </div>
+                }
+            }
+
+            @if (_receipt is { } receipt)
+            {
+                <div class="svx-deploy-applied plan-apply-receipt" data-testid="plan-apply-receipt">
+                    <p data-testid="plan-apply-success">
+                        Applied at @receipt.AppliedAt.ToString("u"). The approved bytes are on the server. This
+                        did <strong>not</strong> restart the workload.
+                    </p>
+
+                    @if (plan.RequiresRestart)
+                    {
+                        <p data-testid="plan-apply-restart-followup">
+                            <strong>Restart required.</strong> This change does not take effect until the
+                            workload starts again, and Servyx did not do that here. Use the lifecycle controls
+                            on this server's <strong>Overview</strong> tab to restart it — this panel
+                            deliberately does not carry a second copy of them.
+                        </p>
+                    }
+
+                    @if (plan.RequiresRecreate)
+                    {
+                        <p data-testid="plan-apply-recreate-followup">
+                            <strong>Container recreate required.</strong> Servyx cannot recreate a container —
+                            <code>ServerLifecycleService.RecreateAsync</code> throws
+                            <code>NotSupportedException</code> — so this value will sit on disk, unhonored by
+                            the running container, until someone recreates it outside Servyx.
+                        </p>
+                    }
+
+                    @if (!plan.RequiresRestart && !plan.RequiresRecreate)
+                    {
+                        <p data-testid="plan-apply-no-followup">
+                            This plan named no restart or recreate consequence, so nothing further is required
+                            for the approved bytes to be the ones on disk. Whether the workload re-reads them
+                            on its own is the workload's business, not something Servyx can promise.
+                        </p>
+                    }
+                </div>
+            }
+
+            @if (_applyFailure is { } failure)
+            {
+                <div class="svx-deploy-error plan-apply-failure plan-apply-failure-@failure.Kind.ToString().ToLowerInvariant()"
+                     data-testid="plan-apply-failure">
+                    <p data-testid="plan-apply-failure-message">@failure.Message</p>
+
+                    @if (failure.Kind == ApplyFailureKind.Stale)
+                    {
+                        <button type="button" class="svx-btn"
+                                data-testid="plan-apply-preview-again"
+                                disabled="@(!PreviewEnabled)"
+                                @onclick="PreviewAsync">
+                            Preview again
+                        </button>
+                    }
+                </div>
+            }
         }
     }
 </div>
@@ -195,6 +315,11 @@
     private ConfigChangePlan? _plan;
     private string? _error;
 
+    private bool _confirmingApply;
+    private bool _applying;
+    private ChangeReceipt? _receipt;
+    private ApplyFailure? _applyFailure;
+
     protected override void OnInitialized()
     {
         _executor = Services.GetService(typeof(IPlanExecutor)) as IPlanExecutor;
@@ -225,6 +350,13 @@
         _error = null;
         _plan = null;
 
+        // A new plan is a new approval. Everything the previous one produced — its receipt, its failure, and
+        // any half-finished confirmation — belongs to a plan id this one is about to replace, and leaving any
+        // of it on screen next to a fresh diff would attribute one plan's outcome to another.
+        _receipt = null;
+        _applyFailure = null;
+        _confirmingApply = false;
+
         try
         {
             // Exactly DesiredValues, unmodified — never merged with unsaved editor state. See this
@@ -238,4 +370,69 @@
             _state = PanelState.Error;
         }
     }
+
+    /// <summary>
+    /// Applies the previewed plan — the product's only operator-reachable call to
+    /// <see cref="IPlanExecutor.ApplyAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Named <c>ApplyPlanAsync</c>, not <c>ApplyAsync</c>, on purpose.</strong>
+    /// <c>WriteModeControl</c> has an unrelated local <c>ApplyAsync</c> that applies a write-mode grant, and a
+    /// sibling component method with the same name reading as "the same operation" has already caused
+    /// confusion once on this feature.
+    /// </para>
+    /// <para>
+    /// <strong>Two guards, not one, and both are load-bearing.</strong> <c>_applying</c> stops a second click
+    /// landing while the first call is still in flight — a real double-click beats the re-render that disables
+    /// the button, so the disabled attribute alone would not be enough. The receipt/failure check stops a
+    /// click after the call has returned: a plan is applicable exactly once, and <c>ApplyAsync</c> would refuse
+    /// a second attempt on plan status anyway, so issuing it would only turn a completed apply's screen into
+    /// an unrelated error.
+    /// </para>
+    /// <para>
+    /// Failures are classified rather than caught by a base type: <c>PlanApplyFidelityException</c> does not
+    /// derive from <see cref="InvalidOperationException"/>, and an unrecognised exception is reported as
+    /// itself rather than as "something went wrong" — see <see cref="ChangePlanPresentation.Explain"/>.
+    /// The plan deliberately stays on screen either way, so the diff that was approved is still readable next
+    /// to the account of what happened to it.
+    /// </para>
+    /// </remarks>
+    private async Task ApplyPlanAsync()
+    {
+        if (_applying || _receipt is not null || _applyFailure is not null || _executor is null || _plan is null)
+        {
+            return;
+        }
+
+        // Re-checked here rather than trusted from the render that drew the button: the write posture or the
+        // plan could have moved between the two, and this is the last point Servyx controls before bytes go
+        // to a live server.
+        if (!ChangePlanPresentation.Applicability(_plan, WriteMode, _gate).CanApply)
+        {
+            return;
+        }
+
+        _applying = true;
+
+        try
+        {
+            _receipt = await _executor.ApplyAsync(_plan.Id);
+        }
+        catch (Exception ex)
+        {
+            _applyFailure = ChangePlanPresentation.Explain(ex);
+        }
+        finally
+        {
+            _applying = false;
+            _confirmingApply = false;
+        }
+    }
+
+    /// <summary>
+    /// The leading fragment of a plan id, for the confirmation button. Long enough to tell two plans apart in
+    /// a log or a support conversation, short enough to read inside a sentence.
+    /// </summary>
+    private static string ShortId(string planId) => planId.Length <= 8 ? planId : planId[..8];
 }
