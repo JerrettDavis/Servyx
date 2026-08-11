@@ -430,17 +430,14 @@ and possibly `servers-list.png`. See Risks.
 
 ---
 
-### Phase 4a — Desired-value persistence *(shippable)*
+### Phase 4a — Desired-value persistence *(shippable)* — SHIPPED
 
 **Goal:** the settings tab becomes editable and records what the operator *intends*, clearly labelled
 as not yet applied.
 
-Verified constraint: `IPlanExecutor` (`src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`) now
-**has an implementation** — `PlanExecutor` (`src\Infrastructure\Servyx.Config\PlanExecutor.cs`) — and
-**is DI-registered** at `src\Hosting\Servyx.Composition\ServyxCoreCompositionExtensions.cs:453-465`.
-What it still lacks is **a caller from any operator surface**: no UI, no REST API, no MCP tool, and no
-job runner invokes `PreviewAsync`/`ApplyAsync` today. `RevertAsync` still throws
-`NotImplementedException`. Phase 4a therefore does not touch it.
+This phase has shipped: the settings tab is editable and records desired values to Servyx's own
+database via `IServerSettingsService`, labelled as not yet applied. It did not, at the time, touch
+`IPlanExecutor` — see Phase 4b below, which has since shipped too.
 
 `ServerSettingsTab.razor` currently takes only `IReadOnlyList<SettingRow> Settings` and never
 passes `Enabled` to its `GatedControl`/`GatedButton`, so it is locked *by construction*; making it
@@ -465,27 +462,31 @@ at Phase 4b.
 
 **Files touched: ~12, plus one migration.**
 
-### Phase 4b — Apply (the real M5)
+### Phase 4b — Apply (the real M5) — SHIPPED
 
 **Goal:** desired values actually reach the server.
 
-This remains a large piece of remaining work, but the apply engine itself is no longer the
-build-from-nothing it was: `IPlanExecutor` is implemented and DI-registered (see below), so what's
-left is primarily an operator-facing surface to call it from, plus `YamlConfigAdapter`. The
-config-surface read/write layer largely exists: four `IConfigAdapter` implementations —
-`DotEnvConfigAdapter`, `IniConfigAdapter`, `PropertiesConfigAdapter`, `JsonConfigAdapter` — live in
-`src\Infrastructure\Servyx.Config\` and are registered `AddSingleton<IConfigAdapter, X>()` at
-`src\Infrastructure\Servyx.Config\ServiceCollectionExtensions.cs:21-24`.
+This phase has shipped. The apply engine and its operator-facing surface both exist: `IPlanExecutor`
+is implemented and DI-registered, `YamlConfigAdapter` was written (see below — it is no longer
+missing), and `ChangePlanPanel.razor` on the settings tab is the operator-facing caller this phase set
+out to build. The config-surface read/write layer: five `IConfigAdapter` implementations —
+`DotEnvConfigAdapter`, `IniConfigAdapter`, `PropertiesConfigAdapter`, `JsonConfigAdapter`,
+`YamlConfigAdapter` — live in `src\Infrastructure\Servyx.Config\` and are registered
+`AddSingleton<IConfigAdapter, X>()` at `src\Infrastructure\Servyx.Config\ServiceCollectionExtensions.cs`.
 
-What is missing is **an operator-facing surface above the orchestration**, plus one adapter:
-- `IPlanExecutor` — declared at `src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`, and now
+What this phase built:
+- `IPlanExecutor` — declared at `src\Core\Servyx.Domain\Configuration\IPlanExecutor.cs`, and
   **implemented** by `PlanExecutor` (`src\Infrastructure\Servyx.Config\PlanExecutor.cs`) and
   DI-registered at `ServyxCoreCompositionExtensions.cs:453-465`. `PreviewAsync` computes a
   `ConfigChangePlan` — including drift comparison, reversibility, and `PlanStaleException` handling —
-  entirely in memory and against Servyx's own database; `ApplyAsync` writes the previewed bytes to the
-  live server, verified two ways (see below) and gated by write mode. What remains missing is a
-  **caller**: no UI, REST API, MCP tool, or job runner invokes either method, so none of this is
-  reachable by an operator yet. `RevertAsync` still throws `NotImplementedException`.
+  entirely in memory and against Servyx's own database, and persists a plan row on every call
+  regardless of write mode; `ApplyAsync` writes the previewed bytes to the live server, verified two
+  ways (see below) and gated by write mode. The caller is `ChangePlanPanel.razor`: it previews a plan
+  from recorded desired values (refusing to preview while unsaved edits exist), then applies it behind
+  a two-step confirmation — this is now reachable by an operator through the settings tab. No REST API,
+  MCP tool, or job runner calls either method; MCP support was deliberately not built, since a tool
+  call cannot show a human a diff to approve. `RevertAsync` still throws `NotImplementedException` —
+  the only way back is a new plan.
 - `ApplyAsync`'s fidelity model, briefly, since it is easy to overstate: it hashes bare lowercase hex
   SHA-256 over raw bytes throughout. Two checks guard a write — the transport's own receipt digest
   (which only proves the transport agrees about the bytes it was *handed*; every shipped transport
@@ -495,18 +496,16 @@ What is missing is **an operator-facing surface above the orchestration**, plus 
   recorded, later actions are `Skipped`, and the plan becomes `PartiallyApplied` — including when the
   very first action fails, because the server was touched. There is **no auto-repair**: no rewrite, no
   retry, no rollback.
-- **`YamlConfigAdapter` — does not exist, and must be written from scratch.** `DeclaredConfigSurface.Format`
-  includes `Yaml`, and shipped game definitions declare YAML surfaces, so this is a hard blocker for
-  those games rather than a nice-to-have. It is also the hardest of the five adapters to get right:
-  a write path needs byte-exact round-tripping with comment and key-order preservation, which naive
-  serialize-then-write destroys. `SafeYamlLoader` and the hand-rolled `GameDefinitionYamlParser`
-  exist and deliberately preserve line and column information — **worth investigating for reuse, but
-  treat that as an open question, not a solved problem**; a read path that tracks positions is not
-  automatically a faithful write path.
-- `ServerLifecycleService.RecreateAsync` throws `NotSupportedException` today, documenting that
-  recreate only means anything as the applied consequence of an approved plan. `ConfigChangePlan` and
-  `IPlanExecutor.ApplyAsync` exist now, but no operator surface produces an approved plan yet, so this
-  is unblocked only once Phase 4b's UI/API surface lands.
+- **`YamlConfigAdapter` — now exists** (`src\Infrastructure\Servyx.Config\YamlConfigAdapter.cs`),
+  registered alongside the other four adapters. It carries the byte-exact addressability guarantee the
+  same way the others do: a pointer is writable exactly when the parsing adapter registered a
+  `ConfigSpan` for it, which is format-agnostic by construction — see `PlanExecutor`'s own remarks.
+- `ServerLifecycleService.RecreateAsync` still throws `NotSupportedException` today. An operator can
+  now produce an approved, applied plan through the settings tab, but `ApplyAsync` deliberately never
+  acts on a `RecreateRequired` consequence — it writes bytes and nothing else — so recreation remains
+  unbuilt independently of the caller question this phase closed, not blocked by it any more. (Its own
+  xmldoc is reported to still say recreation is blocked on config editing not existing until M5; that
+  is now false and is a follow-up, not something this plan document's authors have verified fixed.)
 
 Do not size this from within this plan. **Phase 4a delivers visible user value without any of it**,
 which is the whole reason for the split.
@@ -592,10 +591,10 @@ so the confirmation copy should say so.
 | Grants are startup singletons | 2 | Replaced by cache + resolver. |
 | `WritableServers` frozen (3 capture sites) | 2 | Must change together or the UI lies. |
 | Two identical enums, no mapping | 2 | Total mapping + parity test. |
-| No per-server setting persistence | 4a | The only EF migration in this plan. |
-| `IPlanExecutor` has no caller | **4b** | **Now implemented and DI-registered** (`PlanExecutor`, `src\Infrastructure\Servyx.Config\PlanExecutor.cs`). What remains is a caller — no UI, REST API, MCP tool, or job runner invokes it. The four non-YAML config adapters DO exist and are registered — 4b is now a UI/API surface on top of a working engine, not orchestration from scratch. |
-| `YamlConfigAdapter` missing | **4b** | No YAML `IConfigAdapter` exists despite `DeclaredConfigSurface.Format` including `Yaml` and shipped definitions declaring YAML surfaces. Hardest adapter of the five: needs byte-exact round-trip with comment and key-order preservation. |
-| `RecreateAsync` throws | **4b** | `ServerLifecycleService.RecreateAsync` throws `NotSupportedException`, documenting that recreate only means anything as the applied consequence of an approved plan. `ConfigChangePlan`/`IPlanExecutor.ApplyAsync` exist now, but nothing produces an *approved* plan through an operator surface yet, so this remains unblocked in practice. |
+| No per-server setting persistence | 4a | **Shipped.** The only EF migration in this plan. |
+| `IPlanExecutor` has no caller | **4b — Shipped** | `PlanExecutor` (`src\Infrastructure\Servyx.Config\PlanExecutor.cs`) is implemented, DI-registered, and now called by `ChangePlanPanel.razor` on the settings tab, which previews from recorded desired values and applies behind a two-step confirmation. No REST API, MCP tool, or job runner invokes it — MCP was deliberately left out, since a tool call can't show a human a diff to approve. |
+| `YamlConfigAdapter` missing | **4b — Shipped** | `YamlConfigAdapter` exists and is registered alongside the other four `IConfigAdapter` implementations. |
+| `RecreateAsync` throws | **4b — Still open** | `ServerLifecycleService.RecreateAsync` still throws `NotSupportedException`. An operator can now produce an approved, applied plan through the settings tab, but `ApplyAsync` deliberately never acts on a `RecreateRequired` consequence, so recreation stays a manual, outside-Servyx step. Its own xmldoc is reported to still cite the now-false "blocked until M5" reasoning — a follow-up, not verified fixed here. |
 | No persisted audit store | **Deferred** | Structured logging in Phase 2; queryable store is future work. |
 | `IServerDefinitionBindingStore` / `EfServerDefinitionBindingStore` | 1 | Real and implemented, registered via `AddServyxServerDefinitionBindingStore()`. This is the singleton-over-`IDbContextFactory` precedent Phase 1 should copy. Phase 1 gains no work here. |
 

@@ -696,15 +696,20 @@ public sealed record PlanDiagnostic(PlanDiagnosticKind Kind, string SurfaceId, s
 /// it. ApplyAsync writes the previewed bytes verbatim, gated by write mode and a pre-flight drift
 /// sweep, and verified after each write both by the transport's own receipt (proves only that the
 /// transport agrees about the bytes it was handed — no shipped transport reads back, so this is a
-/// tautology today) and by a genuine read-back-and-rehash (PostWriteVerification). What remains
-/// missing is a CALLER: no UI, REST API, MCP tool, or job runner invokes PreviewAsync or
-/// ApplyAsync anywhere in src/, so no configuration change reaches a running server through any
-/// path an operator can use. RevertAsync still throws NotImplementedException.
+/// tautology today) and by a genuine read-back-and-rehash (PostWriteVerification). It now has a
+/// CALLER: <c>ChangePlanPanel.razor</c> on the settings tab is the product's only operator-reachable
+/// caller of either method — it previews a plan from recorded desired values (refusing to preview
+/// while unsaved edits exist) and applies it behind a two-step confirmation, so a configuration
+/// change can now reach a running server through the UI. No REST API, MCP tool, or job runner calls
+/// either method — MCP support was deliberately not built, since a tool call cannot show a human a
+/// diff to approve. RevertAsync still throws NotImplementedException.
 ///
-/// Two adjacent pieces are staged behind the same "no caller" gap: <c>IServerLifecycle.RecreateAsync</c>
-/// has one implementation and it throws <c>NotSupportedException</c> unconditionally — recreation
-/// only means anything as the applied consequence of an approved plan, and nothing produces one
-/// through an operator surface yet — and the <c>strategy</c> field on a pointer binding
+/// One adjacent piece remains unbuilt independently of the caller question:
+/// <c>IServerLifecycle.RecreateAsync</c> has one implementation and it throws
+/// <c>NotSupportedException</c> unconditionally. An approved plan with a RecreateRequired
+/// consequence can now be produced through the settings tab, but ApplyAsync deliberately never acts
+/// on that consequence, so recreation remains a manual, outside-Servyx step with no caller of its
+/// own. Separately, the <c>strategy</c> field on a pointer binding
 /// (<c>publish-udp</c>/<c>publish-tcp</c>) is parsed and stored but read by no code.
 /// </summary>
 public interface IPlanExecutor

@@ -2,15 +2,21 @@
 
 ## What works today
 
-Servyx **reads** configuration and **records** what you want it to be. There is no button, page, or command anywhere in the product that applies it yet.
+Servyx **reads** configuration, **records** what you want it to be, and can now **write** it to the server when you approve a plan.
 
 | You can | You cannot yet |
 |---|---|
-| See all four columns for a setting, computed by reading the real files on the real server. | Have Servyx write a new value to `.env`, a compose file, or anything else — there is no control in the product that triggers a write. |
-| See genuine drift — Servyx compares what it actually read, not what it assumes. | Preview-and-apply, or revert a change, from anywhere in the UI. |
-| Record a desired value, so your intent is stored and shows up in the Desired column. | Recreate a container to pick up a changed value. |
+| See all four columns for a setting, computed by reading the real files on the real server. | Revert an applied change from the UI — there is no revert yet; the only way back is to record new desired values and apply a fresh plan. |
+| See genuine drift — Servyx compares what it actually read, not what it assumes. | Have Servyx restart or recreate the server for you. Applying a change writes bytes to disk and nothing else; if the change needs a restart or a container recreate to take effect, you still do that yourself. |
+| Record a desired value, so your intent is stored and shows up in the Desired column. | Reach this from anywhere except the settings tab — there is no REST endpoint, MCP tool, or scheduled job that previews or applies a change; the settings tab's confirmation flow is the only path. |
+| Preview a plan built from your recorded desired values — a diff, its consequences, and anything that would be blocked — before anything is written. | Have a change applied automatically. Applying always requires you to review the diff and confirm a second time. |
+| Approve and apply that plan, writing exactly the diffed bytes to the server. | Trust an interrupted apply to finish or clean itself up. A failed write mid-plan is left exactly as it landed, for you to inspect. |
 
-The component that would perform a write — the plan executor — is now built internally (it computes and safely applies a change, byte-exact, with drift checks and post-write verification), but nothing in Servyx calls it: no settings-page button, no API endpoint, no MCP tool. Recording a desired value is therefore still exactly that: a note to yourself and to a future Servyx, stored in Servyx's database. Nothing reaches the server through any path you can use today. Change the server the way you normally would; Servyx will show you the result honestly in the columns below.
+Recording a desired value only ever writes to Servyx's own database — it is a note to yourself and to a future Servyx, and by itself changes nothing on the server. Below the settings grid, a **Review changes** control turns your recorded desired values into a plan: a unified diff per file, any consequences (for example, a restart or container recreate the change will require), and anything that can't be written explained as a blocked change. Previewing reads only what you've *saved* as a desired value, never unsaved text still sitting in an editor field — if you have unsaved edits, Servyx tells you which ones and asks you to save them first, rather than silently leaving them out of the plan.
+
+If the plan can be applied, a two-step **Review → confirm** control appears under it. Confirming writes exactly the bytes shown in the diff to the server — nothing is re-derived, and nothing else happens: Servyx does not restart or recreate the workload as part of applying. If the plan named a restart or recreate consequence, that follow-up is still yours to do by hand (recreate in particular: Servyx cannot recreate a container yet). There is no revert — the only way back is to preview and apply a new plan. And if a write fails partway through a multi-file plan, Servyx does not retry or roll back what already landed; it reports exactly which changes made it and leaves the rest for you to resolve, since a second write chasing a bad first one risks damaging the file further.
+
+Applying is only possible when the server's write access is `Enabled`; a read-only or preview-only server shows why the change can't be applied instead of an apply control. See [Enabling writes](enabling-writes.md).
 
 ## The four columns
 
@@ -62,7 +68,7 @@ There is deliberately no default and no guessing for this one. A compose directo
 
 ## What to do about drift
 
-Drift isn't automatically a problem — a value you just changed will legitimately drift for a moment until a restart catches it up. What matters is whether the drift is expected (you changed something and haven't restarted yet) or not (something changed outside Servyx — someone edited a file by hand, or the container was recreated from an older image). Servyx's job is to tell you which columns disagree and why; deciding what to do about it — restart, re-apply, or investigate an external change — is yours in the current milestone, since Servyx cannot yet write configuration on your behalf.
+Drift isn't automatically a problem — a value you just changed will legitimately drift for a moment until a restart catches it up. What matters is whether the drift is expected (you changed something and haven't restarted yet) or not (something changed outside Servyx — someone edited a file by hand, or the container was recreated from an older image). Servyx's job is to tell you which columns disagree and why; deciding what to do about it is yours. Servyx can now write the Authoritative side of that drift on your behalf — preview and apply a plan, as above — but it still never restarts or recreates the workload, so closing the Authoritative-vs-Rendered or Rendered-vs-Runtime gap, or investigating a change that happened outside Servyx, remains a step you take yourself.
 
 ## Byte-exact round-trip
 

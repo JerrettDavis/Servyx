@@ -16,9 +16,10 @@ behind its own explicit, off-by-default switch. See the **Status today**
 note under each of those four milestones for exactly what shipped and what
 didn't. M6 has also shipped, and substantially more than its original scope:
 see the **Status today** note under M6. Config editing (M3/M4's
-`.env`/`compose.yaml` write-and-revert path), identity/RBAC/audit UI (M7),
-and mod installation and the plugin SDK (M9) remain as originally planned:
-not yet built.
+`.env`/`compose.yaml` write path) has now shipped in part — see the **Status
+today** note under M4 for exactly what an operator can and cannot do with it.
+Byte-exact revert, identity/RBAC/audit UI (M7), and mod installation and the
+plugin SDK (M9) remain as originally planned: not yet built.
 
 ## M1 — Read-Only Observation
 
@@ -110,21 +111,30 @@ confirmation (see [Lifecycle control](user-guide/lifecycle-control.md)), and
 mutating RCON commands reach the target the same way, with their own
 confirm step (see [The RCON console](user-guide/rcon-console.md)).
 
-Configuration writes are a split picture. The **engine** has shipped:
-`IPlanExecutor` is implemented (`PlanExecutor`, `Servyx.Config`) and
-DI-registered, `.env`/other authoritative-surface writes are atomic
-(temp-file-and-rename), pre-image snapshots are recorded, `PlanStaleException`
-is real (a pre-flight sweep re-reads every bound surface and a per-write
-TOCTOU check backs it up), and every write is verified two ways after landing
-(a transport receipt check, and a genuine read-back-and-rehash). What
-**hasn't** shipped: byte-exact revert (`RevertAsync` throws
-`NotImplementedException`), container recreation
-(`ServerLifecycleService.RecreateAsync` throws `NotSupportedException`), and
-— the practical blocker — **any operator-facing caller of the engine at
-all**: no UI, no REST API, no MCP tool, and no job runner invokes
-`PreviewAsync`/`ApplyAsync`. An operator today cannot make Servyx write
-configuration to a server through any surface the product exposes, even
-though the code path that would do it, and do it safely, now exists.
+Configuration writes now have both an engine and an operator-facing caller.
+The **engine** has shipped: `IPlanExecutor` is implemented (`PlanExecutor`,
+`Servyx.Config`) and DI-registered, `.env`/other authoritative-surface writes
+are atomic (temp-file-and-rename), pre-image snapshots are recorded,
+`PlanStaleException` is real (a pre-flight sweep re-reads every bound surface
+and a per-write TOCTOU check backs it up), and every write is verified two
+ways after landing (a transport receipt check, and a genuine
+read-back-and-rehash). The **settings tab** is now that caller: recording a
+desired value only ever touches Servyx's own database, but a `ChangePlanPanel`
+below the grid previews a plan built from recorded values (refusing to preview
+while unsaved edits exist) and, behind a two-step confirmation, calls
+`ApplyAsync` — an operator can, today, make Servyx write configuration to a
+live game server through the UI. What **hasn't** shipped: byte-exact revert
+(`RevertAsync` throws `NotImplementedException` — the only way back is a new
+plan), and container recreation (`ServerLifecycleService.RecreateAsync` throws
+`NotSupportedException`, so a `RecreateRequired` consequence still means "sits
+on disk until a human recreates the container by hand", even after apply).
+No REST API, MCP tool, or job runner calls `PreviewAsync`/`ApplyAsync` — MCP
+support in particular was deliberately not built, since a tool call cannot
+show a human a diff to approve; wiring one up would mean either a model
+self-approving a live config write or a plan id that still routes back through
+this same web UI. Partial application is real and reachable (a write can land
+and a later one in the same plan fail), and there is deliberately no
+auto-repair.
 
 **Goal:** Allow real, guarded, reversible writes.
 

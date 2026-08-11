@@ -441,15 +441,22 @@ files, managed regions are delimited with marker blocks:
 
 ### `IPlanExecutor`
 
-**Implemented, and DI-registered — but uncalled.** `PlanExecutor`
-(`src/Infrastructure/Servyx.Config/PlanExecutor.cs`) implements `PreviewAsync`
-and `ApplyAsync`; `RevertAsync` still throws `NotImplementedException`. It is
-registered at `ServyxCoreCompositionExtensions.cs:453-465`. What is still
-missing is a **caller from any operator surface** — no UI, no REST API, no MCP
-tool, and no job runner invokes `PreviewAsync` or `ApplyAsync` today, so no
-configuration change reaches a running server through any path an operator can
-actually use. That remaining gap is why the four-column view above is still a
-*diagnosis* rather than a control in the shipped product.
+**Implemented, DI-registered, and now called from the settings tab.**
+`PlanExecutor` (`src/Infrastructure/Servyx.Config/PlanExecutor.cs`) implements
+`PreviewAsync` and `ApplyAsync`; `RevertAsync` still throws
+`NotImplementedException`. It is registered at
+`ServyxCoreCompositionExtensions.cs:453-465`. The settings tab's
+`ChangePlanPanel.razor` is the product's only operator-reachable caller: it
+previews a plan from the desired values already recorded for a server (never
+from unsaved editor text — it refuses to preview while unsaved edits exist,
+naming the affected rows), renders the diff, and — behind a two-step
+confirmation — applies it. That path is real: an operator can, today, cause
+Servyx to write configuration to a live game server through the UI. No REST
+API, MCP tool, or job runner calls either method; the MCP surface's omission
+is deliberate rather than an oversight — see the note under "Two other pieces"
+below. `ApplyAsync` never restarts or recreates anything, so the four-column
+view above stays the only place drift after an apply is visible; applying
+closes the "nothing writes" gap but not the "nothing restarts" one.
 
 It is the single funnel through which **every mutation in the product** passes
 — one choke point, so that write-mode enforcement, staleness checking, secret
@@ -504,13 +511,23 @@ such path.
 - `RevertAsync` — **not implemented.** Throws `NotImplementedException`
   today.
 
-Two other pieces are staged behind the remaining "no caller" gap.
+Two other pieces remain unbuilt independently of the caller question.
 `IServerLifecycle.RecreateAsync` has one implementation (`ServerLifecycleService`)
-and it throws `NotSupportedException` unconditionally — recreation only means
-anything as the applied consequence of an approved plan, and nothing today
-produces one through an operator surface. And the `strategy` field on a
-pointer binding (`publish-udp`, `publish-tcp`) is parsed by the definition
-parser and stored on `SettingBinding.ByPointer`, but **no code reads it**.
+and it throws `NotSupportedException` unconditionally. An approved plan with a
+`RecreateRequired` consequence is now something an operator can produce, but
+`ApplyAsync` deliberately never acts on that consequence — it writes bytes and
+nothing else — so recreation still has no caller either, and remains a manual,
+outside-Servyx step. (`ServerLifecycleService.RecreateAsync`'s own xmldoc is
+reported to still say recreation is blocked on config editing not existing
+until M5; that is no longer true and is tracked as a follow-up, not corrected
+here.) Separately, Servyx's MCP tools deliberately do not call
+`PreviewAsync`/`ApplyAsync` at all: an MCP tool cannot show a diff to a human
+for approval, so wiring one up would mean either a model self-approving a
+config write to a live server, or the tool handing back a plan id that still
+needs this same web UI to act on — neither is an improvement, so MCP support
+was not built. And the `strategy` field on a pointer binding (`publish-udp`,
+`publish-tcp`) is parsed by the definition parser and stored on
+`SettingBinding.ByPointer`, but **no code reads it**.
 Nothing interprets a strategy, so the four shipped compose port bindings —
 palworld `PORT`, ark `ASA_PORT`, minecraft `SERVER_PORT`, factorio `PORT` —
 are unappliable twice over: they name a sequence container pointer
@@ -570,9 +587,9 @@ modified `ChangePlanRecord` immediately before the save. It is scoped to that on
 entity — the only entity in the model carrying a concurrency token today.
 `ChangePlanActionRecord` has none.
 
-`PlanExecutor` reads and writes both tables today. What no production code
-does yet is *reach* `PlanExecutor` in the first place — see the "no caller"
-note above.
+`PlanExecutor` reads and writes both tables today, reached from production
+code through exactly one path: `ChangePlanPanel.razor` on the settings tab —
+see the `IPlanExecutor` section above.
 
 ### `IGameControlChannel` / `IControlChannelReachability` / `IGameControlSession`
 
@@ -627,8 +644,8 @@ Servers pin a definition by **content hash**, never by a mutable version tag.
 | `BackupPolicy` | — |
 | `Backup` | `ownership` (`Servyx` \| `Foreign`) |
 | `Operation` / `Job` | — |
-| `ChangePlanRecord` (table `ChangePlans`) | `surfaceHashesJson`, `status` (`Previewed` \| `Applying` \| `Applied` \| `PartiallyApplied` \| `Failed` \| `Stale` \| `Reverted` \| `Superseded`), `expiresAt`, `revertedAt` / `revertedBy`, `rowVersion` (concurrency token). Migrated, and written by `PlanExecutor` on every preview and apply — but `PlanExecutor` itself has no caller yet (see `IPlanExecutor` above). |
-| `ChangePlanActionRecord` (table `ChangePlanActions`) | `ordinal` (unique per plan), `preImageContent` / `preImageHash`, `postImageContent` / `postImageHash`, `observedPostImageHash`, `postWriteVerification`, `writeReachedServer`, `containsSecrets`, per-action `status`. Migrated and written by `PlanExecutor`, same caveat as above. |
+| `ChangePlanRecord` (table `ChangePlans`) | `surfaceHashesJson`, `status` (`Previewed` \| `Applying` \| `Applied` \| `PartiallyApplied` \| `Failed` \| `Stale` \| `Reverted` \| `Superseded`), `expiresAt`, `revertedAt` / `revertedBy`, `rowVersion` (concurrency token). Migrated, and written by `PlanExecutor` on every preview and apply — reached from the settings tab's `ChangePlanPanel` (see `IPlanExecutor` above). |
+| `ChangePlanActionRecord` (table `ChangePlanActions`) | `ordinal` (unique per plan), `preImageContent` / `preImageHash`, `postImageContent` / `postImageHash`, `observedPostImageHash`, `postWriteVerification`, `writeReachedServer`, `containsSecrets`, per-action `status`. Migrated and written by `PlanExecutor`, same path as above. |
 | `ChangeReceipt` | Declared record; no table (ephemeral, returned by `ApplyAsync`, not persisted). Now has a producer: `PlanExecutor.ApplyAsync`. |
 | `ConfigSnapshot` | content-addressed |
 | `ModInstall` | — |
