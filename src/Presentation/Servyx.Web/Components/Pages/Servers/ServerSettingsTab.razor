@@ -124,6 +124,12 @@ else
             }
         </div>
     }
+
+    <ChangePlanPanel ServerId="@ServerId"
+                     WriteMode="@WriteMode"
+                     DesiredValues="@RecordedDesiredValues"
+                     HasUnsavedEdits="@(_edits.Count > 0)"
+                     UnsavedKeys="@UnsavedEditKeys" />
 }
 
 @code {
@@ -247,6 +253,20 @@ else
         descriptor.RequiresRecreate ? RequiresRecreateReason : GatedButton.DefaultReason;
 
     private bool IsBusy(string key) => _busy.TryGetValue(key, out var busy) && busy;
+
+    // ── Change plan preview ─────────────────────────────────────────────────────────────────────────
+    //
+    // ChangePlanPanel gets exactly the RECORDED desired values (_desired), never _edits: feeding unsaved
+    // editor text into IPlanExecutor.PreviewAsync would let approved bytes reach a server that Servyx's own
+    // database never recorded the intent for. _edits is surfaced separately, as the keys the panel refuses
+    // to preview around, so an operator sees why rather than a preview that quietly omitted a row.
+
+    /// <summary>Every currently recorded desired value, as the plain key/value map <see cref="IPlanExecutor.PreviewAsync"/> takes.</summary>
+    private Dictionary<string, string> RecordedDesiredValues =>
+        _desired.ToDictionary(kv => kv.Key, kv => kv.Value.Value, StringComparer.Ordinal);
+
+    /// <summary>The setting keys with edited-but-unsaved text, in a stable order for display.</summary>
+    private List<string> UnsavedEditKeys => _edits.Keys.OrderBy(k => k, StringComparer.Ordinal).ToList();
 
     /// <summary>
     /// The value to show in a row's editor. Secrets are the one case that never reads from

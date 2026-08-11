@@ -1,0 +1,241 @@
+@using Servyx.Domain.Configuration
+@using Servyx.Domain.Transport
+@using Servyx.Composition
+@using Servyx.Web.Services
+@inject IServiceProvider Services
+
+@* Turns Servyx's recorded desired values into a previewed IPlanExecutor.ConfigChangePlan and renders it.
+   Deliberately does NOT apply anything — there is no call to IPlanExecutor.ApplyAsync anywhere in this file.
+   Resolves IPlanExecutor and ProvisioningGate via IServiceProvider rather than @@inject, matching
+   WriteModeControl's own idiom: a host — or a bUnit test rendering this panel directly — that never composed
+   IPlanExecutor must still render, degrading to "visible, locked, and explained" rather than throwing at
+   render time or vanishing outright. *@
+
+<div class="svx-card" data-testid="change-plan-panel">
+    <h3>Review changes</h3>
+
+    @if (_executor is null)
+    {
+        <p class="svx-page-description" data-testid="plan-executor-unavailable">
+            This process did not compose a plan executor, so recorded desired values cannot be previewed or
+            applied here. Recording desired values above still works; turning them into a plan does not.
+        </p>
+    }
+    else
+    {
+        <p class="svx-page-description">
+            Recording a desired value above only writes it to Servyx's own database. Preview turns every
+            <strong>recorded</strong> desired value into a plan — with a diff, its consequences, and anything
+            that would be blocked — before anything is ever written to the server.
+        </p>
+
+        @if (HasUnsavedEdits)
+        {
+            <p class="svx-deploy-error" data-testid="plan-unsaved-edits-block">
+                Save your changes to <strong>@string.Join(", ", UnsavedKeys)</strong> before previewing —
+                preview reads only recorded desired values, never unsaved editor text, so an unsaved edit
+                would silently be left out of the plan.
+            </p>
+        }
+
+        <GatedControl Enabled="@PreviewEnabled" Reason="@PreviewLockReason" Label="Review changes">
+            <GatedButton TestId="plan-preview-button"
+                         Label="Review changes"
+                         Enabled="@PreviewEnabled"
+                         Reason="@PreviewLockReason"
+                         OnClick="PreviewAsync">
+                @(_state == PanelState.Previewing ? "Previewing…" : "Review changes")
+            </GatedButton>
+        </GatedControl>
+
+        @if (_error is not null)
+        {
+            <p class="svx-deploy-error" data-testid="plan-error">@_error</p>
+        }
+
+        @if (_plan is { } plan)
+        {
+            var (canApply, applyReason) = ChangePlanPresentation.Applicability(plan, WriteMode, _gate);
+
+            @switch (plan.Feasibility)
+            {
+                case PlanFeasibility.FullyAchievable:
+                    <p data-testid="plan-feasibility-banner" class="plan-feasibility plan-feasibility-full">
+                        All @plan.Actions.Count change@(plan.Actions.Count == 1 ? "" : "s")
+                        @ChangePlanPresentation.Summarize(plan.Feasibility).
+                    </p>
+                    break;
+                case PlanFeasibility.PartiallyAchievable:
+                    <p data-testid="plan-feasibility-banner" class="plan-feasibility plan-feasibility-partial">
+                        @plan.Actions.Count of @(plan.Actions.Count + plan.Blocked.Count) changes can be
+                        written; @ChangePlanPresentation.Summarize(plan.Feasibility).
+                    </p>
+                    break;
+                default:
+                    <p data-testid="plan-feasibility-banner" class="plan-feasibility plan-feasibility-blocked">
+                        Nothing can be written; approving would do nothing.
+                    </p>
+                    break;
+            }
+
+            @if (plan.Feasibility != PlanFeasibility.Blocked)
+            {
+                <p data-testid="plan-apply-affordance" class="plan-apply-affordance @(canApply ? "can-apply" : "cannot-apply")">
+                    @(canApply
+                        ? "This plan can be applied. Approving is not available from this page yet — preview only."
+                        : applyReason)
+                </p>
+            }
+
+            @if (plan.Consequences.Count > 0)
+            {
+                <div class="plan-consequences" data-testid="plan-consequences">
+                    <h4>Consequences</h4>
+                    <ul>
+                        @foreach (var consequence in plan.Consequences)
+                        {
+                            <li data-testid="plan-consequence" class="plan-consequence-@consequence.Kind.ToString().ToLowerInvariant()">
+                                <strong>@ChangePlanPresentation.Describe(consequence.Kind)</strong>
+                                <span>@consequence.Description</span>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            }
+
+            @if (plan.Actions.Count > 0)
+            {
+                <div class="plan-actions" data-testid="plan-actions">
+                    <h4>Changes</h4>
+                    @foreach (var action in plan.Actions)
+                    {
+                        <UnifiedDiffView Diff="@action.UnifiedDiff" Title="@action.SurfaceId" />
+                    }
+                </div>
+            }
+
+            @if (plan.Blocked.Count > 0)
+            {
+                <div class="plan-blocked" data-testid="plan-blocked">
+                    <h4>Blocked</h4>
+                    <ul>
+                        @foreach (var blocked in plan.Blocked)
+                        {
+                            <li data-testid="plan-blocked-item">
+                                <strong>@blocked.SettingKey</strong>
+                                <p data-testid="plan-blocked-reason">@blocked.Reason</p>
+                                <p data-testid="plan-blocked-remediation">@blocked.RemediationHint</p>
+                            </li>
+                        }
+                    </ul>
+                </div>
+            }
+
+            @if (plan.Diagnostics.Count > 0)
+            {
+                <div class="plan-diagnostics" data-testid="plan-diagnostics">
+                    <h4>Diagnostics</h4>
+                    <ul>
+                        @foreach (var diagnostic in plan.Diagnostics)
+                        {
+                            <li data-testid="plan-diagnostic"
+                                class="@(diagnostic.Kind == PlanDiagnosticKind.ManualRegenerationRequired ? "plan-diagnostic-warning" : "plan-diagnostic-info")">
+                                @diagnostic.Message
+                            </li>
+                        }
+                    </ul>
+                </div>
+            }
+
+            <p data-testid="plan-reversibility-note" class="plan-reversibility-note">
+                @(plan.IsFullyReversible
+                    ? "Every action in this plan is individually reversible. Revert is not implemented; the only way back is a new plan."
+                    : "Revert is not implemented; the only way back is a new plan.")
+            </p>
+        }
+    }
+</div>
+
+@code {
+    private enum PanelState
+    {
+        Idle,
+        Previewing,
+        Shown,
+        Error,
+    }
+
+    /// <summary>The server's discovery id (container id) — what <see cref="IPlanExecutor.PreviewAsync"/> takes.</summary>
+    [Parameter, EditorRequired]
+    public string ServerId { get; set; } = string.Empty;
+
+    /// <summary>This server's write posture. Drives whether the preview control is usable at all.</summary>
+    [Parameter]
+    public WriteMode WriteMode { get; set; } = WriteMode.ReadOnly;
+
+    /// <summary>
+    /// Every currently-<strong>recorded</strong> desired value for this server, keyed by setting key. Never
+    /// unsaved editor state — see this component's own remarks and <see cref="HasUnsavedEdits"/>.
+    /// </summary>
+    [Parameter, EditorRequired]
+    public IReadOnlyDictionary<string, string> DesiredValues { get; set; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>Whether the settings grid currently has editor text that has not been saved as a desired value.</summary>
+    [Parameter]
+    public bool HasUnsavedEdits { get; set; }
+
+    /// <summary>The setting keys with unsaved edits, named in the block-preview message.</summary>
+    [Parameter]
+    public IReadOnlyList<string> UnsavedKeys { get; set; } = [];
+
+    private IPlanExecutor? _executor;
+    private ProvisioningGate _gate = ProvisioningGate.Closed;
+    private PanelState _state = PanelState.Idle;
+    private ConfigChangePlan? _plan;
+    private string? _error;
+
+    protected override void OnInitialized()
+    {
+        _executor = Services.GetService(typeof(IPlanExecutor)) as IPlanExecutor;
+        _gate = Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate ?? ProvisioningGate.Closed;
+    }
+
+    private bool PreviewEnabled =>
+        _executor is not null
+        && WriteMode != WriteMode.ReadOnly
+        && !HasUnsavedEdits
+        && !string.IsNullOrWhiteSpace(ServerId)
+        && _state != PanelState.Previewing;
+
+    private string PreviewLockReason => WriteMode == WriteMode.ReadOnly
+        ? "This server is read-only. Servyx will not record or preview operator intent for it at all."
+        : HasUnsavedEdits
+            ? "Save the unsaved edits above first — preview reads only recorded desired values."
+            : GatedButton.DefaultReason;
+
+    private async Task PreviewAsync()
+    {
+        if (!PreviewEnabled || _executor is null)
+        {
+            return;
+        }
+
+        _state = PanelState.Previewing;
+        _error = null;
+        _plan = null;
+
+        try
+        {
+            // Exactly DesiredValues, unmodified — never merged with unsaved editor state. See this
+            // component's own remarks and the "preview passes exactly the recorded values" test.
+            _plan = await _executor.PreviewAsync(ServerId, DesiredValues);
+            _state = PanelState.Shown;
+        }
+        catch (Exception ex)
+        {
+            _error = $"Could not preview this change: {ex.Message}";
+            _state = PanelState.Error;
+        }
+    }
+}

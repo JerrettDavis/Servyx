@@ -1,0 +1,79 @@
+@* Renders one PlannedAction.UnifiedDiff as +/-/context lines. The diff string already carries the
+   --- a/ / +++ b/ / @@ … @@ unified-diff shape UnifiedDiffWriter produces, with secrets masked — this
+   component only colours it for a human reader; it never re-derives or re-parses the change itself. *@
+
+@if (string.IsNullOrEmpty(Diff))
+{
+    <p class="diff-empty" data-testid="plan-diff-empty">No textual change.</p>
+}
+else
+{
+    <div class="unified-diff" data-testid="plan-diff">
+        @if (!string.IsNullOrWhiteSpace(Title))
+        {
+            <div class="diff-title">@Title</div>
+        }
+
+        <div class="diff-body">
+            @foreach (var line in VisibleLines)
+            {
+                <div class="diff-line @LineClass(line)">@line</div>
+            }
+        </div>
+
+        @if (HiddenLineCount > 0)
+        {
+            <button type="button" class="diff-expand" data-testid="plan-diff-expand" @onclick="() => _expanded = true">
+                Show @HiddenLineCount more line@(HiddenLineCount == 1 ? "" : "s")
+            </button>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>Lines shown before the diff collapses behind a "show more" toggle.</summary>
+    public const int CollapseThreshold = 40;
+
+    [Parameter, EditorRequired]
+    public string Diff { get; set; } = string.Empty;
+
+    /// <summary>Optional label shown above the diff — typically the surface id it targets.</summary>
+    [Parameter]
+    public string? Title { get; set; }
+
+    private bool _expanded;
+
+    private IReadOnlyList<string> Lines => Diff.Length == 0
+        ? []
+        : Diff.ReplaceLineEndings("\n").TrimEnd('\n').Split('\n');
+
+    private IReadOnlyList<string> VisibleLines =>
+        _expanded || Lines.Count <= CollapseThreshold ? Lines : Lines.Take(CollapseThreshold).ToList();
+
+    private int HiddenLineCount => _expanded ? 0 : Math.Max(0, Lines.Count - CollapseThreshold);
+
+    private static string LineClass(string line)
+    {
+        if (line.StartsWith("--- ", StringComparison.Ordinal) || line.StartsWith("+++ ", StringComparison.Ordinal))
+        {
+            return "diff-header";
+        }
+
+        if (line.StartsWith("@@", StringComparison.Ordinal))
+        {
+            return "diff-hunk";
+        }
+
+        if (line.StartsWith("+", StringComparison.Ordinal))
+        {
+            return "diff-add";
+        }
+
+        if (line.StartsWith("-", StringComparison.Ordinal))
+        {
+            return "diff-remove";
+        }
+
+        return "diff-context";
+    }
+}
