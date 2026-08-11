@@ -24,9 +24,10 @@ else
 
     <p class="svx-page-description settings-honesty-notice" data-testid="settings-desired-not-applied-notice" style="margin-bottom:1rem;">
         Editing and saving <strong>Desired</strong> records what you want, in Servyx's own database — it does
-        <strong>not</strong> change the running server. Nothing in this codebase can apply a desired value
-        yet (see Phase 4b in <code>docs/plans/ui-management-surface.md</code>); the Authoritative/Rendered/
-        Runtime columns only ever change by reading the real server, never by a save here.
+        <strong>not</strong> change the running server. Saving records intent only. Use
+        <strong>Review changes</strong> below to turn recorded values into a previewed plan you can approve;
+        the Authoritative/Rendered/Runtime columns only ever change by reading the real server, never by a
+        save here.
     </p>
 
     @if (_untracked)
@@ -71,9 +72,12 @@ else
                         @if (descriptor.RequiresRecreate)
                         {
                             <p class="setting-locked-note" data-testid="setting-locked-recreate">
-                                Locked: changing this setting requires the container to be recreated, which
-                                Servyx cannot apply yet (Phase 4b). Recording an intent nothing can honor yet
-                                would be misleading.
+                                Locked: changing this setting requires the container to be recreated. Applying
+                                writes the bytes to disk, but nothing in Servyx recreates a container —
+                                <code>ServerLifecycleService.RecreateAsync</code> throws
+                                <code>NotSupportedException</code> — so the new value would sit on disk
+                                unhonored by the running container. Recording an intent Servyx cannot make
+                                take effect would be misleading.
                             </p>
                         }
 
@@ -223,17 +227,21 @@ else
     // locked here too. PreviewOnly IS allowed to save: that tier exists precisely for computing/recording
     // what a change would be without applying it, which is exactly what "desired, not applied" already means
     // — gating it out would make PreviewOnly strictly less useful than the honesty story this phase tells.
-    // RequiresRecreate settings lock regardless of WriteMode: recording an intent this codebase cannot even
-    // theoretically honor yet (no IPlanExecutor, no container-recreate plan — see Phase 4b) would itself be
-    // the dishonesty this phase exists to avoid, so Enabled does not unlock them either.
+    // RequiresRecreate settings lock regardless of WriteMode, for a narrower reason than before: IPlanExecutor
+    // can now preview AND apply a plain file write for these settings just like any other. What it can never
+    // do is recreate the container (ServerLifecycleService.RecreateAsync throws NotSupportedException), so an
+    // applied value for one of these settings would land on disk with nothing having picked it up. Recording
+    // an intent Servyx can write but never make the running workload honor would still be the dishonesty this
+    // phase exists to avoid, so Enabled does not unlock them either.
     private bool RowEnabled(SettingDescriptor descriptor) =>
         WriteMode != WriteMode.ReadOnly && !descriptor.RequiresRecreate && _resolvedServerId is not null;
 
     private const string RequiresRecreateReason =
-        "Changing this setting requires the server's container to be recreated. Applying any desired value " +
-        "— this one or any other — is not implemented yet (see Phase 4b, docs/plans/ui-management-surface.md). " +
-        "Recording an intent Servyx cannot even theoretically honor yet would be misleading, so this field is " +
-        "locked regardless of write access.";
+        "Changing this setting requires the server's container to be recreated. Applying would write the " +
+        "bytes to disk, but nothing in Servyx recreates a container (ServerLifecycleService.RecreateAsync " +
+        "throws NotSupportedException), so the new value would sit on disk unhonored until an operator " +
+        "recreates the container by hand. Recording an intent Servyx cannot make take effect would be " +
+        "misleading, so this field is locked regardless of write access.";
 
     private static string RowReason(SettingDescriptor descriptor) =>
         descriptor.RequiresRecreate ? RequiresRecreateReason : GatedButton.DefaultReason;

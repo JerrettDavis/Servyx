@@ -60,12 +60,13 @@ public sealed record SaveDesiredValueResult(SaveDesiredValueOutcome Outcome, Des
 /// <remarks>
 /// <para>
 /// <strong>Deliberately narrow.</strong> This type touches ONLY Servyx's own database — implementations must
-/// never hold or call an <c>IExecutionTarget</c>, an <c>IRconSession</c>, or any other transport. It records
-/// what an operator WANTS; it does not issue a command, open a session, or otherwise touch the running
-/// server. See <c>docs/plans/ui-management-surface.md</c>, "Phase 4a — Desired-value persistence" for why
-/// "load and save intent" is the entire contract, and "Phase 4b — Apply" for what is deliberately NOT here:
-/// <c>IPlanExecutor</c> is a declared interface with zero implementations and zero callers anywhere in
-/// <c>src/</c>, and building it is out of scope for this type.
+/// never hold or call an <c>IExecutionTarget</c>, an <c>IRconSession</c>, or any other transport, and must
+/// never call <c>IPlanExecutor</c> either. It records what an operator WANTS; it does not issue a command,
+/// open a session, or otherwise touch the running server. See <c>docs/plans/ui-management-surface.md</c>,
+/// "Phase 4a — Desired-value persistence" for why "load and save intent" is the entire contract. Turning
+/// recorded intent into a plan is <c>IPlanExecutor.PreviewAsync</c>'s job, not this type's: that funnel reads
+/// recorded values back out through <see cref="LoadAsync"/>, the same read any other caller gets — this
+/// interface has no special relationship with it.
 /// </para>
 /// <para>
 /// <strong>Storage keys on <see cref="ServerId"/>, never on the container id.</strong> A container id is the

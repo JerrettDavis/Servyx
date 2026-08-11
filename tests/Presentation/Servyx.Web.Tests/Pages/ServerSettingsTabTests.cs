@@ -224,11 +224,20 @@ public class ServerSettingsTabTests : BunitContext
             .Add(x => x.WriteMode, WriteMode.Enabled));
 
         var row = cut.Find("div.settings-row[data-setting-key='SERVER_NAME']");
-        row.QuerySelector("[data-testid='setting-locked-recreate']").Should().NotBeNull();
+        var lockedNote = row.QuerySelector("[data-testid='setting-locked-recreate']");
+        lockedNote.Should().NotBeNull();
+        lockedNote!.TextContent.Should().Contain("nothing in Servyx recreates a container",
+            because: "IPlanExecutor now exists and can write the bytes — the honest reason this row stays " +
+                "locked is that nothing recreates the container to pick them up, not a missing executor");
+        lockedNote.TextContent.Should().NotContain("Phase 4b");
+
         row.QuerySelector("[data-testid^='setting-save-']")!.HasAttribute("disabled").Should().BeTrue(
-            because: "recording an intent Servyx cannot even theoretically honor yet (no IPlanExecutor, no " +
-                "container-recreate plan) would itself be the dishonesty this phase exists to avoid");
-        row.QuerySelector("fieldset.gated-control")!.GetAttribute("title").Should().Contain("recreated");
+            because: "recording an intent Servyx can write but never make the running workload honor would " +
+                "itself be the dishonesty this phase exists to avoid");
+
+        var title = row.QuerySelector("fieldset.gated-control")!.GetAttribute("title");
+        title.Should().Contain("recreated");
+        title.Should().Contain("nothing in Servyx recreates a container");
     }
 
     [Fact]
@@ -249,6 +258,19 @@ public class ServerSettingsTabTests : BunitContext
     }
 
     // ── The core honesty guarantee ───────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void The_desired_not_applied_notice_points_at_review_changes_instead_of_claiming_nothing_can_apply()
+    {
+        var cut = Render<ServerSettingsTab>(p => p.Add(x => x.Settings, SampleSettings()));
+
+        var notice = cut.Find("[data-testid='settings-desired-not-applied-notice']").TextContent;
+        notice.Should().Contain("Review changes",
+            because: "IPlanExecutor now has an implementation — the honest next step is pointing at the " +
+                "control that previews a plan, not asserting nothing can apply a desired value");
+        notice.Should().NotContain("Nothing in this codebase can apply a desired value");
+        notice.Should().NotContain("Phase 4b");
+    }
 
     [Fact]
     public void A_saved_value_is_shown_as_desired_and_never_implies_it_reached_the_running_server()
