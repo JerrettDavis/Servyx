@@ -261,14 +261,17 @@ public sealed class ServerLifecycleService : IServerLifecycle
 
     /// <inheritdoc />
     /// <exception cref="NotSupportedException">
-    /// Always thrown. Container recreation only means anything once M5 introduces config editing and a
-    /// previewable <c>ConfigChangePlan</c> whose approved consequences include <c>RecreateRequired</c> —
-    /// neither exists yet, so there is no approved plan this call could ever legitimately be honoring.
+    /// Always thrown. Config editing exists now via <see cref="IPlanExecutor.PreviewAsync"/>,
+    /// <see cref="IPlanExecutor.ApplyAsync"/>, <see cref="IPlanExecutor.RevertAsync"/>, and
+    /// <see cref="ChangePlanPanel"/> for preview, apply, and revert flows. However, <see cref="RecreateAsync"/>
+    /// is not yet wired into the apply flow — no wiring exists to let an approved <c>ConfigChangePlan</c>
+    /// carrying a <c>RecreateRequired</c> consequence invoke this method.
     /// </exception>
     public Task RecreateAsync(string approvedChangePlanId, CancellationToken ct = default) =>
         throw new NotSupportedException(
-            "RecreateAsync is not supported yet: it only means anything as the applied consequence of a "
-            + "previewed, approved ConfigChangePlan, and config editing does not exist until M5.");
+            "RecreateAsync is not supported yet: it is not wired into the config change plan apply flow. "
+            + "Although config editing exists via IPlanExecutor and ChangePlanPanel, no mechanism currently "
+            + "invokes RecreateAsync when an approved plan carries a RecreateRequired consequence.");
 
     private async Task<StartOutcome> WaitForReadinessAsync(CancellationToken ct)
     {
