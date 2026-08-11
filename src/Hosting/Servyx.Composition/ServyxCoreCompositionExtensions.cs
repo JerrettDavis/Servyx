@@ -426,9 +426,19 @@ public static class ServyxCoreCompositionExtensions
         //
         // PreviewAsync is READ-ONLY against a game server. It opens the same read sessions the settings tab
         // already uses, computes and renders the change in memory, and writes only to Servyx's own
-        // ChangePlans/ChangePlanActions tables. Nothing here can apply a plan: ApplyAsync/RevertAsync throw
-        // NotImplementedException, so this registration cannot mutate a workload however the write grant is
-        // set.
+        // ChangePlans/ChangePlanActions tables.
+        //
+        // ApplyAsync DOES write to a game server — this is the one registration in this method that can — and
+        // it is gated the same way everything else here is: every session it would write through is the
+        // WriteGuardedExecutionTarget-wrapped session the settings tab already holds, so a server without an
+        // Enabled write grant refuses the whole plan before the first byte. RevertAsync still throws
+        // NotImplementedException. IServerRepository is supplied because a stored plan records the tracked
+        // ServerId while every session/catalogue lookup here is keyed by container id; it is the leaf
+        // repository, NOT IServerQueryService, for the deadlock reason documented above.
+        //
+        // ChangePlanRetentionService is registered alongside, and is not optional: apply is only shippable
+        // because something eventually discards the plaintext configuration images preview records. See its
+        // own remarks.
         //
         // ServyxServerPlanCatalogSource is a leaf over the already-loaded singleDefinition, NOT a lookup
         // through IServerQueryService — the same rule (and the same deadlock) documented on
@@ -450,7 +460,18 @@ public static class ServyxCoreCompositionExtensions
             sp.GetServices<IConfigAdapter>(),
             sp.GetServices<IConfigValueCodec>(),
             sp.GetService<TimeProvider>(),
-            sp.GetService<ILogger<PlanExecutor>>()));
+            sp.GetService<ILogger<PlanExecutor>>(),
+            actor: null,
+            sp.GetRequiredService<IServerRepository>()));
+
+        var changePlanRetention = ChangePlanRetentionOptions.FromConfiguration(builder.Configuration);
+        builder.Services.AddSingleton(changePlanRetention);
+        builder.Services.AddSingleton<ChangePlanRetentionService>(sp => new ChangePlanRetentionService(
+            changePlanRetention,
+            sp.GetRequiredService<IChangePlanStore>(),
+            sp.GetRequiredService<ILogger<ChangePlanRetentionService>>(),
+            sp.GetService<TimeProvider>()));
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<ChangePlanRetentionService>());
 
         // The old Servyx:Servers:<key>:WriteMode key is now IGNORED for adopted (local docker) servers —
         // neither honoured as an override nor imported as a seed. It is keyed by container NAME while the

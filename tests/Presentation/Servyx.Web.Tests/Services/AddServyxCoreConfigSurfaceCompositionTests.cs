@@ -117,6 +117,32 @@ public class AddServyxCoreConfigSurfaceCompositionTests
     }
 
     /// <summary>
+    /// The retention sweep is registered by the same composition root, and is on by default.
+    /// </summary>
+    /// <remarks>
+    /// Not optional wiring. <c>ChangePlanActionRecord.PreImageContent</c>/<c>PostImageContent</c> hold whole
+    /// configuration files unmasked — an operator's real passwords among them — and before this phase
+    /// nothing read <c>ChangePlanRecord.ExpiresAt</c> and nothing ever deleted an image. A host that
+    /// registered <c>IPlanExecutor</c> without this would keep growing a plaintext credential store, so the
+    /// pair is asserted together.
+    /// </remarks>
+    [Fact]
+    public void The_change_plan_retention_sweep_is_registered_and_runs_by_default()
+    {
+        var builder = BuildFreshInstallBuilder();
+        builder.AddServyxCore(NullLoggerFactory.Instance);
+
+        using var host = builder.Build();
+
+        var sweep = host.Services.GetRequiredService<ChangePlanRetentionService>();
+        sweep.WillRun.Should().BeTrue();
+
+        host.Services.GetServices<IHostedService>().Should().Contain(sweep);
+        host.Services.GetRequiredService<ChangePlanRetentionOptions>().ImageRetention
+            .Should().Be(ChangePlanRetentionOptions.DefaultImageRetention);
+    }
+
+    /// <summary>
     /// The plan executor sits on exactly the dependencies <c>SettingStateResolverFactory</c> already sits on,
     /// and deliberately not on <c>IServerQueryService</c> — which optionally consumes
     /// <see cref="ISettingStateResolverFactory"/>, itself a consumer of
