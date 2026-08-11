@@ -1,5 +1,6 @@
 using Servyx.Domain.Common;
 using Servyx.Domain.Entities;
+using Servyx.Domain.Transport;
 
 namespace Servyx.Domain.Configuration;
 
@@ -17,6 +18,78 @@ namespace Servyx.Domain.Configuration;
 public sealed record StoredChangePlan(ChangePlanRecord Plan, IReadOnlyList<ChangePlanActionRecord> Actions);
 
 /// <summary>
+/// A lightweight summary of one persisted <see cref="ChangePlanRecord"/> and its actions, for a "recent
+/// plans" listing rather than for acting on the plan.
+/// </summary>
+/// <remarks>
+/// <strong>Deliberately excludes the blob columns.</strong> Neither this record nor
+/// <see cref="ChangePlanActionSummary"/> carries <see cref="ChangePlanActionRecord.PreImageContent"/>,
+/// <see cref="ChangePlanActionRecord.PostImageContent"/>, or <see cref="ChangePlanActionRecord.UnifiedDiff"/>.
+/// Those hold whole configuration files, unmasked, and — when <see cref="ChangePlanActionRecord.ContainsSecrets"/>
+/// is set — an operator's real passwords in plaintext. A history listing exists to answer "what happened", not
+/// to render a diff, so pulling that content into memory for every row of a list view would be a needless
+/// secret-exposure surface for no benefit. A caller that needs the actual content of one specific plan already
+/// has <see cref="IChangePlanStore.TryGetAsync"/> for exactly that.
+/// </remarks>
+/// <param name="Id">The plan's identifier.</param>
+/// <param name="ServerId">The server this plan targets.</param>
+/// <param name="Status">The plan's current lifecycle state.</param>
+/// <param name="CreatedAt">When this plan was previewed.</param>
+/// <param name="CreatedBy">Who requested the preview.</param>
+/// <param name="AppliedAt">When this plan was applied, if it ever was.</param>
+/// <param name="AppliedBy">Who applied this plan, if it ever was.</param>
+/// <param name="RevertedAt">When this plan was reverted, if it ever was.</param>
+/// <param name="RevertedBy">Who reverted this plan, if it ever was.</param>
+/// <param name="Actions">Its actions, summarized and already ordered by <see cref="ChangePlanActionRecord.Ordinal"/>.</param>
+public sealed record ChangePlanSummary(
+    ChangePlanId Id,
+    ServerId ServerId,
+    ChangePlanStatus Status,
+    DateTimeOffset CreatedAt,
+    string CreatedBy,
+    DateTimeOffset? AppliedAt,
+    string? AppliedBy,
+    DateTimeOffset? RevertedAt,
+    string? RevertedBy,
+    IReadOnlyList<ChangePlanActionSummary> Actions);
+
+/// <summary>
+/// A lightweight summary of one persisted <see cref="ChangePlanActionRecord"/>, for a "recent plans" listing.
+/// </summary>
+/// <remarks>
+/// See <see cref="ChangePlanSummary"/>'s own remarks for why <see cref="ChangePlanActionRecord.PreImageContent"/>,
+/// <see cref="ChangePlanActionRecord.PostImageContent"/>, and <see cref="ChangePlanActionRecord.UnifiedDiff"/>
+/// are deliberately absent here.
+/// </remarks>
+/// <param name="Id">This action row's own identifier.</param>
+/// <param name="Ordinal">Execution order within the plan, zero-based.</param>
+/// <param name="SurfaceId">The surface this action targets.</param>
+/// <param name="ResolvedPath">The concrete path/location the bound surface resolved to at preview time.</param>
+/// <param name="Kind">What kind of action this is.</param>
+/// <param name="Status">This action's current lifecycle state.</param>
+/// <param name="WriteReachedServer">Whether a write for this action reached the server.</param>
+/// <param name="PostImageHash">Content hash of the post-image the operator approved, if any.</param>
+/// <param name="ObservedPostImageHash">The post-image digest apply actually saw for this action, if any.</param>
+/// <param name="PostWriteVerification">What reading this action's surface back after the write found.</param>
+/// <param name="FailureReason">Why this action failed, if it did.</param>
+/// <param name="AppliedAt">When this action was applied, if it ever was.</param>
+/// <param name="RevertedAt">When this action finished reverting, if it ever was.</param>
+public sealed record ChangePlanActionSummary(
+    Guid Id,
+    int Ordinal,
+    string SurfaceId,
+    string ResolvedPath,
+    PlannedActionKind Kind,
+    ChangePlanActionStatus Status,
+    bool WriteReachedServer,
+    string? PostImageHash,
+    string? ObservedPostImageHash,
+    PostWriteVerification PostWriteVerification,
+    string? FailureReason,
+    DateTimeOffset? AppliedAt,
+    DateTimeOffset? RevertedAt);
+
+/// <summary>
 /// Durable storage for the <see cref="ChangePlanRecord"/>/<see cref="ChangePlanActionRecord"/> pair a
 /// <see cref="IPlanExecutor.PreviewAsync"/> call produces.
 /// </summary>
@@ -31,10 +104,12 @@ public sealed record StoredChangePlan(ChangePlanRecord Plan, IReadOnlyList<Chang
 /// implementation is tested against the real migrated schema.
 /// </para>
 /// <para>
-/// <strong>Still deliberately narrow, and still not a repository.</strong> There is no delete and no
-/// query-by-server here. <see cref="UpdateAsync"/> and <see cref="PurgeImagesAsync"/> were added by the apply
-/// phase, which is when the concurrency contract this interface previously declined to guess at was actually
-/// decided; a "recent plans" listing for a server page remains absent because nothing needs it yet.
+/// <strong>Still deliberately narrow, and still not a repository.</strong> There is still no delete.
+/// <see cref="UpdateAsync"/> and <see cref="PurgeImagesAsync"/> were added by the apply phase, which is when
+/// the concurrency contract this interface previously declined to guess at was actually decided;
+/// <see cref="ListRecentAsync"/> was added once a "recent plans" listing for a server page had a caller, and
+/// deliberately returns <see cref="ChangePlanSummary"/> rather than <see cref="StoredChangePlan"/> — a list
+/// view has no business pulling every plan's config-file blobs into memory just to render a status column.
 /// </para>
 /// </remarks>
 public interface IChangePlanStore
@@ -65,6 +140,31 @@ public interface IChangePlanStore
     /// <param name="id">The plan id, as returned in <see cref="ConfigChangePlan.Id"/>.</param>
     /// <param name="ct">Cancellation token.</param>
     Task<StoredChangePlan?> TryGetAsync(ChangePlanId id, CancellationToken ct = default);
+
+    /// <summary>
+    /// The most recent plans for <paramref name="serverId"/>, newest first, each with its actions summarized.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Returns <see cref="ChangePlanSummary"/>, not <see cref="StoredChangePlan"/> — see this interface's own
+    /// remarks for why a listing must not carry <see cref="ChangePlanActionRecord.PreImageContent"/>,
+    /// <see cref="ChangePlanActionRecord.PostImageContent"/>, or <see cref="ChangePlanActionRecord.UnifiedDiff"/>.
+    /// A caller that needs the full content of one specific plan already has <see cref="TryGetAsync"/>.
+    /// </para>
+    /// <para>
+    /// Ordered newest first by <see cref="ChangePlanRecord.CreatedAt"/>, with <see cref="ChangePlanRecord.Id"/>
+    /// descending as a tiebreak for plans previewed in the same instant — a history view must be
+    /// deterministically ordered, not merely "usually" ordered.
+    /// </para>
+    /// </remarks>
+    /// <param name="serverId">The server whose plans to list.</param>
+    /// <param name="limit">The maximum number of plans to return. Must be between 1 and 100 inclusive.</param>
+    /// <param name="ct">Cancellation token.</param>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="limit"/> is less than 1 or greater than 100.</exception>
+    Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+        ServerId serverId,
+        int limit,
+        CancellationToken ct = default);
 
     /// <summary>
     /// Persists mutations to an already-stored <paramref name="plan"/> and, optionally, to some of its

@@ -89,6 +89,125 @@ public sealed class EfChangePlanStore : IChangePlanStore
     /// <inheritdoc />
     /// <remarks>
     /// <para>
+    /// <strong>Two queries, projected, never entities.</strong> Following <see cref="TryGetAsync"/>'s own
+    /// two-query shape (plans, then their actions) rather than a per-plan query — the whole point of a
+    /// listing is that it can be for many plans, so an N+1 here would scale with <paramref name="limit"/>.
+    /// Both queries use <see cref="EntityFrameworkQueryableExtensions.AsNoTracking{TEntity}"/> and end in a
+    /// <c>Select</c> that names only the columns <see cref="ChangePlanSummary"/>/<see cref="ChangePlanActionSummary"/>
+    /// need, so <see cref="ChangePlanActionRecord.PreImageContent"/>, <see cref="ChangePlanActionRecord.PostImageContent"/>,
+    /// and <see cref="ChangePlanActionRecord.UnifiedDiff"/> are never read off disk for a list view, let alone
+    /// materialized into a tracked entity first and discarded.
+    /// </para>
+    /// <para>
+    /// <strong>The ordering and the <paramref name="limit"/> are applied in memory, not in the plan query's
+    /// SQL.</strong> Not a style choice: the SQLite provider refuses to translate an <c>ORDER BY</c> over a
+    /// <see cref="DateTimeOffset"/> column at all (<c>NotSupportedException</c>), the same provider-dependent
+    /// ordering hazard <see cref="PurgeImagesAsync"/> already works around for its own
+    /// <see cref="ChangePlanRecord.ExpiresAt"/> comparison — see that method's own remarks. The plan query
+    /// still filters by <paramref name="serverId"/> in SQL against the indexed <c>ServerId</c> column, so what
+    /// is pulled client-side is one server's plans, not the whole table; change plans are short-lived and few
+    /// per server, matching the same assumption <see cref="PurgeImagesAsync"/> already relies on.
+    /// </para>
+    /// </remarks>
+    public async Task<IReadOnlyList<ChangePlanSummary>> ListRecentAsync(
+        ServerId serverId,
+        int limit,
+        CancellationToken ct = default)
+    {
+        ArgumentOutOfRangeException.ThrowIfLessThan(limit, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(limit, 100);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var plans = (await context.ChangePlans.AsNoTracking()
+                .Where(row => row.ServerId == serverId)
+                .Select(row => new
+                {
+                    row.Id,
+                    row.ServerId,
+                    row.Status,
+                    row.CreatedAt,
+                    row.CreatedBy,
+                    row.AppliedAt,
+                    row.AppliedBy,
+                    row.RevertedAt,
+                    row.RevertedBy,
+                })
+                .ToListAsync(ct).ConfigureAwait(false))
+            .OrderByDescending(row => row.CreatedAt)
+            // .Id is a ChangePlanId record struct with no IComparable of its own — order by its underlying
+            // Guid, which does, rather than let the default comparer fail at runtime.
+            .ThenByDescending(row => row.Id.Value)
+            .Take(limit)
+            .ToList();
+
+        if (plans.Count == 0)
+        {
+            return [];
+        }
+
+        var planIds = plans.ConvertAll(row => row.Id);
+
+        var actions = await context.ChangePlanActions.AsNoTracking()
+            .Where(row => planIds.Contains(row.ChangePlanId))
+            .OrderBy(row => row.Ordinal)
+            .Select(row => new
+            {
+                row.ChangePlanId,
+                row.Id,
+                row.Ordinal,
+                row.SurfaceId,
+                row.ResolvedPath,
+                row.Kind,
+                row.Status,
+                row.WriteReachedServer,
+                row.PostImageHash,
+                row.ObservedPostImageHash,
+                row.PostWriteVerification,
+                row.FailureReason,
+                row.AppliedAt,
+                row.RevertedAt,
+            })
+            .ToListAsync(ct).ConfigureAwait(false);
+
+        var actionsByPlan = actions
+            .GroupBy(row => row.ChangePlanId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<ChangePlanActionSummary>)group
+                    .Select(row => new ChangePlanActionSummary(
+                        row.Id,
+                        row.Ordinal,
+                        row.SurfaceId,
+                        row.ResolvedPath,
+                        row.Kind,
+                        row.Status,
+                        row.WriteReachedServer,
+                        row.PostImageHash,
+                        row.ObservedPostImageHash,
+                        row.PostWriteVerification,
+                        row.FailureReason,
+                        row.AppliedAt,
+                        row.RevertedAt))
+                    .ToList());
+
+        return plans
+            .ConvertAll(row => new ChangePlanSummary(
+                row.Id,
+                row.ServerId,
+                row.Status,
+                row.CreatedAt,
+                row.CreatedBy,
+                row.AppliedAt,
+                row.AppliedBy,
+                row.RevertedAt,
+                row.RevertedBy,
+                actionsByPlan.TryGetValue(row.Id, out var list) ? list : []));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
     /// The rows arrive detached (<see cref="TryGetAsync"/> reads them no-tracking) and are attached here,
     /// which snapshots their current values as EF's original values. <c>ServyxDbContext.SaveChangesAsync</c>
     /// then rotates <see cref="ChangePlanRecord.RowVersion"/> to a fresh <see cref="Guid"/> — changing the
