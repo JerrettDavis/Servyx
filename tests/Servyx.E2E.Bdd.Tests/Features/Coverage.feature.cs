@@ -146,15 +146,15 @@ namespace Servyx.E2E.Bdd.Tests.Features
             await this.TestTearDownAsync();
         }
         
-        [global::Xunit.SkippableFactAttribute(DisplayName="The Mods placeholder explains mods are not supported for the bundled game")]
+        [global::Xunit.SkippableFactAttribute(DisplayName="The Mods placeholder explains mod management is not available yet")]
         [global::Xunit.TraitAttribute("FeatureTitle", "Coverage")]
-        [global::Xunit.TraitAttribute("Description", "The Mods placeholder explains mods are not supported for the bundled game")]
-        public async global::System.Threading.Tasks.Task TheModsPlaceholderExplainsModsAreNotSupportedForTheBundledGame()
+        [global::Xunit.TraitAttribute("Description", "The Mods placeholder explains mod management is not available yet")]
+        public async global::System.Threading.Tasks.Task TheModsPlaceholderExplainsModManagementIsNotAvailableYet()
         {
             string[] tagsOfScenario = ((string[])(null));
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "0";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Mods placeholder explains mods are not supported for the bundled game", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Mods placeholder explains mod management is not available yet", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
 #line 16
@@ -174,7 +174,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
     await testRunner.WhenAsync("I open the mods page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 18
-    await testRunner.ThenAsync("the page heading reads \"Mods are not supported for Palworld\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("the page heading reads \"Mod management is not available yet\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 19
     await testRunner.AndAsync("the page is in \"light\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
