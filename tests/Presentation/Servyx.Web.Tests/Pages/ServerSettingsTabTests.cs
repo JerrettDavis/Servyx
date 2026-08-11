@@ -300,4 +300,73 @@ public class ServerSettingsTabTests : BunitContext
         cut.Markup.Should().NotContain("has been applied");
         cut.Markup.Should().NotContain("was applied");
     }
+
+    // ── The recorded/unsaved seam handed down to ChangePlanPanel ─────────────────────────────────────
+    //
+    // ChangePlanPanelTests proves the panel forwards whatever DesiredValues it is given, verbatim, to
+    // IPlanExecutor.PreviewAsync. Nothing there can prove WHAT this tab hands down, so the two suites would
+    // otherwise meet at a seam neither covers: a tab that merged _edits into RecordedDesiredValues would put
+    // unsaved editor text on the wire to PreviewAsync, and every test in both suites would still pass. The
+    // tests below assert the dictionary this tab actually passes to the child component.
+
+    [Fact]
+    public void The_plan_panel_is_handed_only_recorded_desired_values_never_unsaved_editor_text()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        // Record one value for real, so _desired is genuinely populated by the same path production uses.
+        var nameRow = cut.Find("div.settings-row[data-setting-key='SERVER_NAME']");
+        nameRow.QuerySelector("input[data-testid='setting-editor-control']")!.Change("recorded-name");
+        nameRow.QuerySelector("[data-testid^='setting-save-']")!.Click();
+
+        // Then diverge the editor from what was recorded, and add an edit for a key that was NEVER recorded.
+        cut.Find("div.settings-row[data-setting-key='SERVER_NAME'] input[data-testid='setting-editor-control']")
+            .Change("typed-but-never-saved");
+        cut.Find("div.settings-row[data-setting-key='PLAYERS'] input[data-testid='setting-editor-control']")
+            .Change("9999");
+
+        var handedDown = cut.FindComponent<ChangePlanPanel>().Instance.DesiredValues;
+
+        handedDown.Should().BeEquivalentTo(
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["SERVER_NAME"] = "recorded-name" },
+            because: "preview must read ONLY what Servyx's own database recorded — an approved plan whose " +
+                "bytes came from unsaved editor text is exactly the divergence the desired-values table exists " +
+                "to prevent");
+
+        handedDown.Values.Should().NotContain("typed-but-never-saved");
+        handedDown.Should().NotContainKey("PLAYERS",
+            because: "an unsaved edit for a key with no recorded value must not appear in the plan input at all");
+    }
+
+    [Fact]
+    public void Unsaved_edits_are_surfaced_to_the_plan_panel_as_keys_rather_than_as_values()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        cut.Find("div.settings-row[data-setting-key='PLAYERS'] input[data-testid='setting-editor-control']")
+            .Change("9999");
+        cut.Find("div.settings-row[data-setting-key='PORT'] input[data-testid='setting-editor-control']")
+            .Change("7777");
+
+        var panel = cut.FindComponent<ChangePlanPanel>().Instance;
+
+        // The edits are not silently dropped either — they are named, so the panel can refuse to preview
+        // around them instead of quietly omitting a row.
+        panel.HasUnsavedEdits.Should().BeTrue();
+        panel.UnsavedKeys.Should().BeEquivalentTo(["PLAYERS", "PORT"]);
+        panel.DesiredValues.Should().BeEmpty(
+            because: "nothing has been recorded yet — an unsaved edit is intent Servyx has not written down");
+    }
 }

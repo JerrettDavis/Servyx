@@ -14,8 +14,19 @@ namespace Servyx.Web.Tests.Services;
 /// refuse — see <c>PlanExecutor.ApplyAsync</c>'s own handling of a <see cref="PlanFeasibility.Blocked"/> plan
 /// and of any <see cref="PlannedActionKind.WriteControlChannel"/> action. <see cref="Applicability_is_exhaustively_correct"/>
 /// is table-driven across the full <c>{ReadOnly, PreviewOnly, Enabled} × {gate open, closed} × {control-channel
-/// present, absent} × {feasibility}</c> matrix — 36 cases — because getting even one combination wrong would
-/// mean showing an operator an apply story the engine cannot deliver.
+/// present, absent} × {feasibility}</c> matrix, because getting even one combination wrong would mean showing
+/// an operator an apply story the engine cannot deliver.
+/// <para>
+/// The table asserts the <em>category</em> of refusal, not only the <c>CanApply</c> boolean. More than one
+/// refusal can be true at once and only the first-checked one is shown; a boolean-only matrix cannot tell a
+/// correct precedence from a reordered one, because reordering changes only which sentence an operator reads.
+/// </para>
+/// <para>
+/// <see cref="Cases"/> is written out literally, one row per input, and is deliberately NOT computed from any
+/// expression resembling <see cref="ChangePlanPresentation.Applicability"/>'s own control flow — an expected
+/// value derived the same way the production code derives its answer would agree with any implementation,
+/// including a wrong one.
+/// </para>
 /// </remarks>
 public class ChangePlanPresentationTests
 {
@@ -64,50 +75,205 @@ public class ChangePlanPresentationTests
         };
     }
 
-    public static TheoryData<WriteMode, bool, bool, PlanFeasibility> Matrix()
+    /// <summary>
+    /// The distinct operator-facing outcomes <see cref="ChangePlanPresentation.Applicability"/> can produce.
+    /// Named after what an operator is told, not after the branch that produced it.
+    /// </summary>
+    public enum ReasonCategory
     {
-        var data = new TheoryData<WriteMode, bool, bool, PlanFeasibility>();
+        /// <summary>Nothing refuses this plan; it could be applied.</summary>
+        Applicable,
 
-        foreach (var writeMode in new[] { WriteMode.ReadOnly, WriteMode.PreviewOnly, WriteMode.Enabled })
-        foreach (var gateOpen in new[] { true, false })
-        foreach (var controlChannel in new[] { true, false })
-        foreach (var feasibility in new[]
-                 {
-                     PlanFeasibility.FullyAchievable, PlanFeasibility.PartiallyAchievable, PlanFeasibility.Blocked,
-                 })
+        /// <summary>Every requested change was blocked, so approving would write nothing.</summary>
+        NothingToWrite,
+
+        /// <summary><c>PlanExecutor.ApplyAsync</c> refuses the whole plan over a control-channel action.</summary>
+        ControlChannelRefusal,
+
+        /// <summary>Preview-only, and the write tier can still be raised from the Overview tab.</summary>
+        PreviewOnlyRaiseOnOverview,
+
+        /// <summary>Preview-only, and the provisioning gate makes raising the tier impossible in this process.</summary>
+        PreviewOnlyGateClosed,
+
+        /// <summary>Read-only, and the write tier can still be raised from the Overview tab.</summary>
+        ReadOnlyRaiseOnOverview,
+
+        /// <summary>Read-only, and the provisioning gate makes raising the tier impossible in this process.</summary>
+        ReadOnlyGateClosed,
+    }
+
+    /// <summary>
+    /// Marker phrases that identify which category a returned <c>Reason</c> belongs to. These read the OUTPUT
+    /// copy; they say nothing about which input produces which category — that is <see cref="Cases"/>' job.
+    /// </summary>
+    private static readonly (ReasonCategory Category, string[] Markers)[] ReasonMarkers =
+    [
+        (ReasonCategory.Applicable, ["This plan can be applied."]),
+        (ReasonCategory.NothingToWrite, ["Nothing in this plan can be written"]),
+        (ReasonCategory.ControlChannelRefusal, ["control-channel action"]),
+        (ReasonCategory.PreviewOnlyRaiseOnOverview, ["Preview only", "Raise write access on the Overview tab"]),
+        (ReasonCategory.PreviewOnlyGateClosed, ["Preview only", ProvisioningGate.ConfigurationKey]),
+        (ReasonCategory.ReadOnlyRaiseOnOverview, ["read-only", "Overview tab"]),
+        (ReasonCategory.ReadOnlyGateClosed, ["read-only", ProvisioningGate.ConfigurationKey]),
+    ];
+
+    private static ReasonCategory Categorize(string reason)
+    {
+        var matched = ReasonMarkers
+            .Where(m => m.Markers.All(marker => reason.Contains(marker, StringComparison.Ordinal)))
+            .Select(m => m.Category)
+            .ToList();
+
+        matched.Should().ContainSingle(because:
+            $"every reason must be unambiguously one operator-facing outcome, but \"{reason}\" matched "
+            + $"{matched.Count}");
+
+        return matched[0];
+    }
+
+    /// <summary>
+    /// One row per distinct input, each with the outcome an operator should be shown — read off
+    /// <c>PlanExecutor.ApplyAsync</c>'s own refusal conditions and the stated precedence (Blocked, then
+    /// control-channel, then write posture), written down by hand rather than recomputed here.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="PlanFeasibility.Blocked"/> forces <c>Actions.Count == 0</c>, so a control-channel action
+    /// cannot coexist with it — <c>controlChannel: true</c> rows are omitted for that feasibility rather than
+    /// listed as extra cases that feed <see cref="Applicability"/> a byte-identical plan twice.
+    /// </remarks>
+    private static readonly (WriteMode WriteMode, bool GateOpen, bool ControlChannel, PlanFeasibility Feasibility,
+        ReasonCategory Expected)[] Cases =
+    [
+        // ── Read-only ────────────────────────────────────────────────────────────────────────────────
+        (WriteMode.ReadOnly, true, false, PlanFeasibility.FullyAchievable, ReasonCategory.ReadOnlyRaiseOnOverview),
+        (WriteMode.ReadOnly, true, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.ReadOnlyRaiseOnOverview),
+        (WriteMode.ReadOnly, false, false, PlanFeasibility.FullyAchievable, ReasonCategory.ReadOnlyGateClosed),
+        (WriteMode.ReadOnly, false, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.ReadOnlyGateClosed),
+
+        // A control-channel action outranks the read-only refusal: ApplyAsync would refuse the whole plan for
+        // it no matter what the write posture were raised to, so pointing at the Overview tab would be a lie.
+        (WriteMode.ReadOnly, true, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.ReadOnly, true, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.ReadOnly, false, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.ReadOnly, false, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+
+        // ── Preview-only ─────────────────────────────────────────────────────────────────────────────
+        (WriteMode.PreviewOnly, true, false, PlanFeasibility.FullyAchievable, ReasonCategory.PreviewOnlyRaiseOnOverview),
+        (WriteMode.PreviewOnly, true, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.PreviewOnlyRaiseOnOverview),
+        (WriteMode.PreviewOnly, false, false, PlanFeasibility.FullyAchievable, ReasonCategory.PreviewOnlyGateClosed),
+        (WriteMode.PreviewOnly, false, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.PreviewOnlyGateClosed),
+
+        // Same precedence, one tier up: still the control-channel refusal, gate open or closed.
+        (WriteMode.PreviewOnly, true, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.PreviewOnly, true, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.PreviewOnly, false, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.PreviewOnly, false, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+
+        // ── Enabled ──────────────────────────────────────────────────────────────────────────────────
+        // The gate does not revoke an existing grant, so a closed gate changes nothing here.
+        (WriteMode.Enabled, true, false, PlanFeasibility.FullyAchievable, ReasonCategory.Applicable),
+        (WriteMode.Enabled, true, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.Applicable),
+        (WriteMode.Enabled, false, false, PlanFeasibility.FullyAchievable, ReasonCategory.Applicable),
+        (WriteMode.Enabled, false, false, PlanFeasibility.PartiallyAchievable, ReasonCategory.Applicable),
+
+        (WriteMode.Enabled, true, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.Enabled, true, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.Enabled, false, true, PlanFeasibility.FullyAchievable, ReasonCategory.ControlChannelRefusal),
+        (WriteMode.Enabled, false, true, PlanFeasibility.PartiallyAchievable, ReasonCategory.ControlChannelRefusal),
+
+        // ── Blocked ──────────────────────────────────────────────────────────────────────────────────
+        // Outranks every write posture and every gate state: there is nothing left to write.
+        (WriteMode.ReadOnly, true, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+        (WriteMode.ReadOnly, false, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+        (WriteMode.PreviewOnly, true, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+        (WriteMode.PreviewOnly, false, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+        (WriteMode.Enabled, true, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+        (WriteMode.Enabled, false, false, PlanFeasibility.Blocked, ReasonCategory.NothingToWrite),
+    ];
+
+    public static TheoryData<WriteMode, bool, bool, PlanFeasibility, ReasonCategory> Matrix()
+    {
+        var data = new TheoryData<WriteMode, bool, bool, PlanFeasibility, ReasonCategory>();
+
+        foreach (var (writeMode, gateOpen, controlChannel, feasibility, expected) in Cases)
         {
-            data.Add(writeMode, gateOpen, controlChannel, feasibility);
+            data.Add(writeMode, gateOpen, controlChannel, feasibility, expected);
         }
 
         return data;
     }
 
+    /// <summary>
+    /// The matrix is every distinct input exactly once — no combination missing, and no row that hands
+    /// <see cref="Applicability"/> a plan it has already been handed.
+    /// </summary>
     [Fact]
-    public void The_gating_matrix_is_genuinely_36_cases()
+    public void The_gating_matrix_is_every_distinct_input_exactly_once()
     {
-        Matrix().Count.Should().Be(3 * 2 * 2 * 3);
-        Matrix().Count.Should().Be(36);
+        var everyDistinctInput =
+            from writeMode in new[] { WriteMode.ReadOnly, WriteMode.PreviewOnly, WriteMode.Enabled }
+            from gateOpen in new[] { true, false }
+            from feasibility in new[]
+            {
+                PlanFeasibility.FullyAchievable, PlanFeasibility.PartiallyAchievable, PlanFeasibility.Blocked,
+            }
+            // A Blocked plan has no actions at all, so the control-channel flag produces the very same plan.
+            from controlChannel in feasibility == PlanFeasibility.Blocked
+                ? new[] { false }
+                : new[] { true, false }
+            select (writeMode, gateOpen, controlChannel, feasibility);
+
+        Cases.Select(c => (c.WriteMode, c.GateOpen, c.ControlChannel, c.Feasibility))
+            .Should().BeEquivalentTo(everyDistinctInput);
+
+        Cases.Should().HaveCount(30, because: "24 non-Blocked combinations plus 6 Blocked ones");
+        Matrix().Count.Should().Be(Cases.Length);
     }
 
     [Theory]
     [MemberData(nameof(Matrix))]
     public void Applicability_is_exhaustively_correct(
-        WriteMode writeMode, bool gateOpen, bool controlChannel, PlanFeasibility feasibility)
+        WriteMode writeMode, bool gateOpen, bool controlChannel, PlanFeasibility feasibility,
+        ReasonCategory expected)
     {
         var plan = BuildPlan(feasibility, controlChannel);
         var gate = new ProvisioningGate(gateOpen);
 
         var (canApply, reason) = ChangePlanPresentation.Applicability(plan, writeMode, gate);
 
-        // The only way to CanApply==true: write access is fully Enabled, the plan is not Blocked, and it
-        // carries no control-channel action — matching PlanExecutor.ApplyAsync's own refusal conditions.
-        var expected = writeMode == WriteMode.Enabled
-            && feasibility != PlanFeasibility.Blocked
-            && !controlChannel;
+        var because =
+            $"writeMode={writeMode}, gateOpen={gateOpen}, controlChannel={controlChannel}, feasibility={feasibility}";
 
-        canApply.Should().Be(expected, because:
-            $"writeMode={writeMode}, gateOpen={gateOpen}, controlChannel={controlChannel}, feasibility={feasibility}");
         reason.Should().NotBeNullOrWhiteSpace();
+        Categorize(reason).Should().Be(expected, because);
+        canApply.Should().Be(expected == ReasonCategory.Applicable, because);
+    }
+
+    /// <summary>
+    /// The overlap the single-scenario tests below never reach: a control-channel action AND a write posture
+    /// that would refuse on its own. <c>PlanExecutor.ApplyAsync</c> refuses the whole plan for a
+    /// control-channel action unconditionally, so telling an operator to raise write access — a thing they
+    /// can actually go and do — would send them off to change something that would not help.
+    /// </summary>
+    [Theory]
+    [InlineData(WriteMode.PreviewOnly, true)]
+    [InlineData(WriteMode.PreviewOnly, false)]
+    [InlineData(WriteMode.ReadOnly, true)]
+    [InlineData(WriteMode.ReadOnly, false)]
+    public void The_control_channel_refusal_outranks_the_write_mode_refusal(WriteMode writeMode, bool gateOpen)
+    {
+        var plan = BuildPlan(PlanFeasibility.FullyAchievable, controlChannelAction: true);
+
+        var (canApply, reason) = ChangePlanPresentation.Applicability(plan, writeMode, new ProvisioningGate(gateOpen));
+
+        canApply.Should().BeFalse();
+        reason.Should().Contain("control-channel action");
+        reason.Should().NotContain("Overview tab", because:
+            "raising write access would not make this plan applicable, so naming the control that raises it "
+            + "would send an operator to do something that cannot help");
+        reason.Should().NotContain(ProvisioningGate.ConfigurationKey);
+        reason.Should().NotContain("Preview only");
     }
 
     [Fact]
