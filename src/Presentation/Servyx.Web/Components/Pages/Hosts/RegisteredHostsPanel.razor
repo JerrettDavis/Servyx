@@ -1,0 +1,218 @@
+@using System.Security.Claims
+@using Servyx.Application.Hosts
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
+@* Deregistration touches only Servyx's own Hosts row — see IHostRegistrationService.DeregisterAsync's
+   remarks — so this is a plain .svx-btn-danger rather than <GatedButton>, matching AdoptionPanel's Forget
+   control for the same reason. *@
+
+<div class="svx-card" data-testid="registered-hosts-section">
+    <h3>Registered hosts</h3>
+    <p class="svx-page-description">
+        Hosts Servyx has registered from this page. This is a separate list from whatever host is declared
+        in configuration under <code>Servyx:Hosts</code> — a registered host's containers are discoverable
+        for adoption, but deregistering it only removes Servyx's own record; it never touches the host
+        machine, its containers, its stored SSH credential, or its pinned host key.
+    </p>
+
+    @if (_registration is null)
+    {
+        <p class="svx-page-description" data-testid="registered-hosts-unavailable">
+            This process did not compose a host registration service, so registered hosts cannot be read
+            here.
+        </p>
+    }
+    else if (_loading)
+    {
+        <Skeleton Rows="2" Label="Loading registered hosts" />
+    }
+    else if (_listingFailed)
+    {
+        @* Distinct from "nothing registered" below, for the same reason AdoptionPanel's tracked-unavailable
+           state is distinct from its empty state: an operator seeing "no hosts registered" when the truth
+           is "Servyx's own database could not be read" is actively misleading. *@
+        <div class="svx-empty-state svx-empty-state-degraded" data-testid="registered-hosts-degraded">
+            <h4>Registered hosts could not be read</h4>
+            <p data-testid="registered-hosts-degraded-detail">
+                <strong>This may not be accurate.</strong> Servyx could not read its own host records@(string.IsNullOrWhiteSpace(_failureDetail) ? "." : $": {_failureDetail}")
+                There may be registered hosts Servyx cannot currently show — this is not the same as "no
+                hosts registered".
+            </p>
+        </div>
+    }
+    else if (_hosts.Count == 0)
+    {
+        <div class="svx-empty-state" data-testid="registered-hosts-empty-state">
+            <h4>No hosts registered yet</h4>
+            <p>Register a host above to see it here.</p>
+        </div>
+    }
+    else
+    {
+        <div class="svx-row-grid" role="list" aria-label="Registered hosts">
+            <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.2fr 1.4fr;" aria-hidden="true">
+                <span>Name</span>
+                <span>Endpoint</span>
+                <span>Enabled</span>
+                <span>Registered by</span>
+                <span></span>
+            </div>
+
+            @foreach (var host in _hosts)
+            {
+                <div class="svx-row-link" role="listitem" data-testid="registered-host-row"
+                     data-host-name="@host.Name"
+                     style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.2fr 1.4fr;">
+                    <span data-col-label="Name"><strong>@host.Name</strong></span>
+                    <span data-col-label="Endpoint"><code>@host.Endpoint</code></span>
+                    <span data-col-label="Enabled">
+                        <span class="svx-badge">@(host.Enabled ? "Enabled" : "Disabled")</span>
+                    </span>
+                    <span data-col-label="Registered by">@(host.RegisteredBy ?? "—")</span>
+                    <span>
+                        @if (_deregisterConfirmingName != host.Name)
+                        {
+                            <button type="button" class="svx-btn svx-btn-danger svx-btn-sm" data-testid="deregister-button"
+                                    data-host-name="@host.Name"
+                                    @onclick="() => _deregisterConfirmingName = host.Name">
+                                Deregister
+                            </button>
+                        }
+                        else
+                        {
+                            <div class="svx-deploy-confirm" data-testid="deregister-confirm-step">
+                                <p>
+                                    Nothing has happened to <strong>@host.Name</strong> yet. Deregistering
+                                    only removes it from Servyx's own host table — it does
+                                    <strong>not</strong> touch the host machine, any container on it, its
+                                    stored SSH credential, or its pinned host key. Re-registering under this
+                                    name later reuses whatever is still there.
+                                </p>
+                                <button type="button" class="svx-btn svx-btn-danger" data-testid="deregister-confirm"
+                                        disabled="@_deregisterBusy"
+                                        @onclick="() => DeregisterAsync(host.Name)">
+                                    @(_deregisterBusy ? "Working…" : "Yes, deregister this host")
+                                </button>
+                                <button type="button" class="svx-btn" data-testid="deregister-cancel"
+                                        disabled="@_deregisterBusy"
+                                        @onclick="() => _deregisterConfirmingName = null">
+                                    Cancel
+                                </button>
+                            </div>
+                        }
+                    </span>
+                </div>
+            }
+        </div>
+    }
+
+    @if (_deregisterError is not null)
+    {
+        <p class="svx-deploy-error" data-testid="deregister-error">@_deregisterError</p>
+    }
+</div>
+
+@code {
+    /// <summary>The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Mirrors <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.</summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private IHostRegistrationService? _registration;
+
+    private bool _loading = true;
+    private IReadOnlyList<RegisteredHost> _hosts = [];
+    private bool _listingFailed;
+    private string? _failureDetail;
+
+    private string? _deregisterConfirmingName;
+    private bool _deregisterBusy;
+    private string? _deregisterError;
+
+    /// <summary>
+    /// Resolved via <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching
+    /// <see cref="Servyx.Web.Components.Pages.Hosts.HostRegistrationPanel"/> and every other "optional
+    /// collaborator" component in this app.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _registration = Services.GetService(typeof(IHostRegistrationService)) as IHostRegistrationService;
+        await ReloadAsync();
+    }
+
+    /// <summary>
+    /// Public so <c>HostsPage</c> can refresh this list after <c>HostRegistrationPanel</c> registers a host,
+    /// without either component reaching into the other's internal state.
+    /// </summary>
+    /// <remarks>
+    /// Calls <see cref="ComponentBase.StateHasChanged"/> explicitly, unlike every reload method elsewhere in
+    /// this app (e.g. <c>AdoptionPanel.ReloadTrackedAsync</c>): those are only ever invoked from an
+    /// <c>@onclick</c> handler on the same component, which Blazor re-renders automatically once the handler's
+    /// task completes. This method is also invoked from a sibling component's event handler via an
+    /// <c>@ref</c>-held reference, a call path Blazor does not automatically know to re-render for.
+    /// </remarks>
+    public async Task ReloadAsync()
+    {
+        if (_registration is null)
+        {
+            _loading = false;
+            StateHasChanged();
+            return;
+        }
+
+        _loading = true;
+        var result = await _registration.ListAsync();
+        _hosts = result.Hosts;
+        _listingFailed = result.ListingFailed;
+        _failureDetail = result.FailureDetail;
+        _loading = false;
+        StateHasChanged();
+    }
+
+    private async Task DeregisterAsync(string name)
+    {
+        if (_registration is null)
+        {
+            return;
+        }
+
+        _deregisterBusy = true;
+        _deregisterError = null;
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var result = await _registration.DeregisterAsync(name, actor);
+            if (result.Outcome != DeregistrationOutcome.Deregistered)
+            {
+                _deregisterError = result.Detail;
+            }
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            // No secret material passes through this method, so surfacing the exception message is safe —
+            // matches AdoptionPanel.ForgetAsync's identical handling.
+            _deregisterError = $"Could not deregister this host: {ex.Message}";
+        }
+        finally
+        {
+            _deregisterBusy = false;
+            _deregisterConfirmingName = null;
+        }
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks on why this is one constant value in practice.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
+    }
+}

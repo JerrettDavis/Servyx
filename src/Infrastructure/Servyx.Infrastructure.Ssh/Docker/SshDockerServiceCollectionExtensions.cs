@@ -1,8 +1,8 @@
-using System.Runtime.CompilerServices;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
 using Servyx.Domain.Discovery;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Observability;
 using Servyx.Domain.Transport;
 
@@ -12,18 +12,35 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// <remarks>
 /// <para>
 /// Mirrors <c>Servyx.Infrastructure.Ssh.ServiceCollectionExtensions.AddServyxSsh</c>'s guard shape exactly:
-/// the only <see cref="ITransport"/> registered here is a <see cref="WriteGuardedTransport"/> wrapping
-/// <see cref="SshDockerTransport"/> wrapping <see cref="SshTransport"/>, never a bare instance of either
-/// inner type under any service type. <c>TransportWriteGuardArchitectureTests</c> asserts this the same way
-/// it does for every other Servyx transport.
+/// the only <see cref="ITransport"/> registered under the <see cref="ITransport"/> service type is a
+/// <see cref="WriteGuardedTransport"/> wrapping <see cref="SshDockerTransport"/> wrapping
+/// <see cref="SshTransport"/>, never a bare instance of either inner type under any service type.
+/// <c>TransportWriteGuardArchitectureTests</c> asserts this the same way it does for every other Servyx
+/// transport.
 /// </para>
 /// <para>
-/// <strong>No-op with nothing configured.</strong> When <paramref name="options"/> (see
-/// <see cref="AddServyxSshDocker(IServiceCollection, SshDockerWiringOptions, ILogger)"/>) has
-/// <see cref="SshDockerWiringOptions.Any"/> <see langword="false"/>, this call does nothing at all — in
-/// particular it does not touch whatever <c>AddServyxDocker</c> already registered for
-/// <see cref="ITransport"/>, <see cref="IServerDiscovery"/>, <see cref="ILogStream"/>, or
-/// <see cref="IMetricsSource"/>. Only a declared host causes anything here to run.
+/// <strong>Discovery machinery is unconditional; the single-host surfaces are not.</strong> Unlike every
+/// other registration in this method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>,
+/// and <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type) are wired regardless
+/// of whether <paramref name="options"/> declares a host, because <see cref="HostConnectionRegistry"/> also
+/// fans out over database-registered hosts (see <see cref="Servyx.Domain.Hosts.IHostRepository"/>), and those
+/// can be registered by an operator through the UI at any point <em>after</em> this DI composition already
+/// ran. Without this unconditional registration, a fresh, zero-config install would have nothing in the
+/// container for that later registration flow to attach to — see <see cref="HostConnectionRegistry"/>'s own
+/// remarks. <see cref="CompositeServerDiscovery"/> is deliberately NOT registered under the
+/// <see cref="IServerDiscovery"/> service type here; that swap — which fully replaces whatever
+/// <c>AddServyxDocker</c> registered for local Docker discovery — still only happens when
+/// <see cref="SshDockerWiringOptions.Any"/> is <see langword="true"/> (below), so a plain local-docker-only
+/// install (the common case) keeps discovering local containers exactly as before. Wiring registered hosts
+/// into that same discovery/adoption path for a zero-config install is later-increment scope.
+/// </para>
+/// <para>
+/// <strong>Everything else stays no-op with nothing configured.</strong> When <paramref name="options"/> has
+/// <see cref="SshDockerWiringOptions.Any"/> <see langword="false"/>, the <see cref="ITransport"/> service-type
+/// registration, <see cref="TargetDescriptor"/>, <see cref="IExecutionTarget"/>, <see cref="IServerDiscovery"/>,
+/// <see cref="ILogStream"/>, and <see cref="IMetricsSource"/> registrations below are all skipped — in
+/// particular this does not touch whatever <c>AddServyxDocker</c> already registered for those service types.
+/// Only a declared host causes any of that to run.
 /// </para>
 /// </remarks>
 public static class SshDockerServiceCollectionExtensions
@@ -65,9 +82,16 @@ public static class SshDockerServiceCollectionExtensions
     /// <c>ServyxSshBackupContextSource</c> use.
     /// </para>
     /// <para>
-    /// <strong>Single host.</strong> Only <c>options.Hosts[0]</c> is wired — see
-    /// <see cref="SshDockerWiringOptions"/>'s remarks for why a second declared host is accepted but unused
-    /// (and warned about, by <see cref="SshDockerWiringOptions.FromConfiguration"/>).
+    /// <strong>Single host, except discovery.</strong> <see cref="ITransport"/>/<see cref="TargetDescriptor"/>/
+    /// <see cref="IExecutionTarget"/>/<see cref="ILogStream"/>/<see cref="IMetricsSource"/> below are all wired
+    /// from <c>options.Hosts[0]</c> only, and only when <see cref="SshDockerWiringOptions.Any"/> is
+    /// <see langword="true"/>. <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
+    /// <see cref="CompositeServerDiscovery"/> are the exception: they are always registered (see this type's
+    /// own remarks), and fan out across every entry in <c>options.Hosts</c> plus every enabled
+    /// database-registered <see cref="Servyx.Domain.Entities.Host"/> row — see <see cref="SshDockerWiringOptions"/>'s
+    /// remarks for the full scope line. Whether that fan-out also becomes the process-wide
+    /// <see cref="IServerDiscovery"/> — displacing local Docker discovery — still depends on
+    /// <see cref="SshDockerWiringOptions.Any"/>, exactly as it always has.
     /// </para>
     /// <para>
     /// <strong>Not silent about what it did.</strong> When a host is wired, this logs at
@@ -83,6 +107,41 @@ public static class SshDockerServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(logger);
 
+        services.TryAddSingleton<IWriteModeResolver>(sp =>
+            new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>()));
+
+        // Unconditional: HostConnectionRegistry/IHostConnectionSource/CompositeServerDiscovery exist in the
+        // container regardless of options.Any, because the registry also fans out across database-registered
+        // hosts (IHostRepository), which can gain a row long after this DI composition ran — a later
+        // host-registration flow needs something here to attach to even on a zero-config install. This does
+        // NOT register CompositeServerDiscovery under the IServerDiscovery service type — that swap (which
+        // fully displaces local Docker discovery) stays gated behind options.Any below, exactly as before, so
+        // a plain local-docker-only install keeps its existing discovery untouched. BuildSshDockerTransport
+        // constructs a private ssh+docker transport instance for the registry's own use — deliberately NOT the
+        // same instance as the (conditionally registered) global ITransport below, so this registration never
+        // depends on whether that later block ran.
+        services.AddSingleton<HostConnectionRegistry>(sp => new HostConnectionRegistry(
+            options,
+            sp.GetRequiredService<IHostRepository>(),
+            BuildSshDockerTransport(sp),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<HostConnectionRegistry>()));
+        services.AddSingleton<IHostConnectionSource>(sp => sp.GetRequiredService<HostConnectionRegistry>());
+
+        // The same singleton again, under the one-method view a host-registration use case is allowed to hold
+        // (see IHostConnectionRefresher). Registered here, beside the registry itself and equally
+        // unconditionally, because "a host row was just written" can happen on any install — including the
+        // zero-config one this whole block exists to keep wired.
+        services.AddSingleton<IHostConnectionRefresher>(sp => sp.GetRequiredService<HostConnectionRegistry>());
+
+        // The read-only host-key probe the registration flow shows an operator a fingerprint from, before
+        // anything pins it. Stateless and trust-free by construction (see SshHostKeyProbe), so one instance for
+        // the process lifetime is right, and registering it unconditionally costs nothing on an install that
+        // never registers a host.
+        services.TryAddSingleton<IHostKeyProbe>(_ => new SshHostKeyProbeAdapter());
+
+        services.AddSingleton<CompositeServerDiscovery>(sp =>
+            new CompositeServerDiscovery(sp.GetRequiredService<IHostConnectionSource>(), sp.GetService<ILoggerFactory>()));
+
         if (!options.Any)
         {
             return services;
@@ -96,15 +155,8 @@ public static class SshDockerServiceCollectionExtensions
             host.Name, host.Target.Endpoint, host.ContainerName,
             host.Target.CredentialUrn ?? "(none configured)");
 
-        services.TryAddSingleton<IWriteModeResolver>(sp =>
-            new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>()));
-
         services.RemoveAll<ITransport>();
-        services.AddSingleton<ITransport>(sp => new WriteGuardedTransport(
-            new SshDockerTransport(
-                ActivatorUtilities.CreateInstance<SshTransport>(sp),
-                sp.GetService<ILoggerFactory>()),
-            sp.GetRequiredService<IWriteModeResolver>()));
+        services.AddSingleton<ITransport>(BuildSshDockerTransport);
 
         services.RemoveAll<TargetDescriptor>();
         services.AddSingleton(host.Target);
@@ -114,8 +166,7 @@ public static class SshDockerServiceCollectionExtensions
             ct => sp.GetRequiredService<ITransport>().ConnectAsync(sp.GetRequiredService<TargetDescriptor>(), ct)));
 
         services.RemoveAll<IServerDiscovery>();
-        services.AddSingleton<IServerDiscovery>(sp =>
-            new SshDockerServerDiscovery(sp.GetRequiredService<IExecutionTarget>()));
+        services.AddSingleton<IServerDiscovery>(sp => sp.GetRequiredService<CompositeServerDiscovery>());
 
         services.RemoveAll<ILogStream>();
         services.AddSingleton<ILogStream>(sp =>
@@ -129,82 +180,18 @@ public static class SshDockerServiceCollectionExtensions
     }
 
     /// <summary>
-    /// An <see cref="IExecutionTarget"/> that connects on first real use instead of at construction, so a
-    /// dependency-injection singleton factory can hand out a working target without blocking the resolving
-    /// thread on <see cref="ITransport.ConnectAsync"/>. See <see cref="AddServyxSshDocker(IServiceCollection, SshDockerWiringOptions, ILogger)"/>'s
-    /// remarks for why this exists instead of a blocking factory or an adapter wrapping the three ssh+docker
-    /// observation services.
+    /// Builds one write-guarded ssh+docker <see cref="ITransport"/> instance: <see cref="WriteGuardedTransport"/>
+    /// wrapping <see cref="SshDockerTransport"/> wrapping <see cref="SshTransport"/>. Both
+    /// <see cref="SshTransport"/> and <see cref="SshDockerTransport"/> are stateless with respect to any one
+    /// host — <see cref="ITransport.ConnectAsync"/> takes the <see cref="TargetDescriptor"/> per call — so a
+    /// fresh instance from this method is functionally interchangeable with any other; it is called once for
+    /// the global <see cref="ITransport"/> registration (only when a host is configured) and once for
+    /// <see cref="HostConnectionRegistry"/>'s own private transport (always), rather than making the registry
+    /// depend on whichever instance the global registration happens to hold, if any.
     /// </summary>
-    private sealed class LazyConnectingExecutionTarget : IExecutionTarget
-    {
-        private readonly Func<CancellationToken, Task<IExecutionTarget>> _connect;
-        private readonly SemaphoreSlim _gate = new(1, 1);
-        private IExecutionTarget? _inner;
-
-        public LazyConnectingExecutionTarget(Func<CancellationToken, Task<IExecutionTarget>> connect)
-        {
-            ArgumentNullException.ThrowIfNull(connect);
-            _connect = connect;
-        }
-
-        public async Task<CommandResult> ExecuteAsync(CommandSpec spec, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).ExecuteAsync(spec, ct).ConfigureAwait(false);
-
-        public async IAsyncEnumerable<OutputChunk> ExecuteStreamingAsync(
-            CommandSpec spec, [EnumeratorCancellation] CancellationToken ct = default)
-        {
-            var target = await ResolveAsync(ct).ConfigureAwait(false);
-            await foreach (var chunk in target.ExecuteStreamingAsync(spec, ct).ConfigureAwait(false))
-            {
-                yield return chunk;
-            }
-        }
-
-        public async Task<bool> ExistsAsync(TargetPath path, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).ExistsAsync(path, ct).ConfigureAwait(false);
-
-        public async Task<FileStat> StatAsync(TargetPath path, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).StatAsync(path, ct).ConfigureAwait(false);
-
-        public async Task<IReadOnlyList<FileEntry>> ListDirectoryAsync(TargetPath path, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).ListDirectoryAsync(path, ct).ConfigureAwait(false);
-
-        public async Task<Stream> OpenReadAsync(TargetPath path, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).OpenReadAsync(path, ct).ConfigureAwait(false);
-
-        public async Task<FileWriteReceipt> WriteFileAsync(
-            TargetPath path, Stream content, FileWriteOptions options, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).WriteFileAsync(path, content, options, ct).ConfigureAwait(false);
-
-        public async Task DeleteAsync(TargetPath path, CancellationToken ct = default) =>
-            await (await ResolveAsync(ct).ConfigureAwait(false)).DeleteAsync(path, ct).ConfigureAwait(false);
-
-        public async ValueTask DisposeAsync()
-        {
-            _gate.Dispose();
-            if (_inner is not null)
-            {
-                await _inner.DisposeAsync().ConfigureAwait(false);
-            }
-        }
-
-        private async Task<IExecutionTarget> ResolveAsync(CancellationToken ct)
-        {
-            if (_inner is not null)
-            {
-                return _inner;
-            }
-
-            await _gate.WaitAsync(ct).ConfigureAwait(false);
-            try
-            {
-                _inner ??= await _connect(ct).ConfigureAwait(false);
-                return _inner;
-            }
-            finally
-            {
-                _gate.Release();
-            }
-        }
-    }
+    private static ITransport BuildSshDockerTransport(IServiceProvider sp) => new WriteGuardedTransport(
+        new SshDockerTransport(
+            ActivatorUtilities.CreateInstance<SshTransport>(sp),
+            sp.GetService<ILoggerFactory>()),
+        sp.GetRequiredService<IWriteModeResolver>());
 }

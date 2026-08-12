@@ -27,6 +27,13 @@ public sealed record DiscoveredMount(string Source, string Destination, bool Rea
 /// passing it through a secret redactor.</strong> Consumers should read only the specific keys they need
 /// and mask any key known to carry a secret before it leaves their mapping step.
 /// </param>
+/// <param name="HostKey">
+/// The name of the host this workload was discovered on, when discovery fans out across more than one host
+/// (see <c>CompositeServerDiscovery</c> in <c>Servyx.Infrastructure.Ssh.Docker</c>). <see langword="null"/>
+/// for a single-host <see cref="IServerDiscovery"/> implementation (e.g. <c>DockerServerDiscovery</c>,
+/// <c>SshDockerServerDiscovery</c> used directly) that has no notion of "which host" — trailing and optional
+/// so every existing construction site stays source-compatible.
+/// </param>
 public sealed record DiscoveredServer(
     string ServerId,
     string Name,
@@ -44,7 +51,8 @@ public sealed record DiscoveredServer(
     double? CpuLimit,
     string? RestartPolicy,
     IReadOnlyDictionary<string, string> ComposeLabels,
-    IReadOnlyDictionary<string, string> EnvironmentVariables);
+    IReadOnlyDictionary<string, string> EnvironmentVariables,
+    string? HostKey = null);
 
 /// <summary>
 /// Discovers existing workloads that match a game definition's deployment profile, so they can be

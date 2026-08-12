@@ -42,10 +42,12 @@ public sealed class ServerConfiguration : IEntityTypeConfiguration<Server>
             .IsRequired()
             .HasMaxLength(128);
 
-        // Nullable: no Host row exists to reference yet for any server adopted today — see Server.HostId's
-        // own remarks. Not .IsRequired(); the EF convention already leaves a nullable value-type property
-        // optional, this line just makes the "no .IsRequired() here" absence a deliberate, documented one
-        // rather than a silent omission.
+        // Nullable: Server.HostId is set on adoption only when the discovered container's host resolves to a
+        // database-registered Host row, and stays null for one adopted from local/non-SSH discovery or from a
+        // configuration-declared host that has no row of its own — see Server.HostId's own remarks. Not
+        // .IsRequired(); the EF convention already leaves a nullable value-type property optional, this line
+        // just makes the "no .IsRequired() here" absence a deliberate, documented one rather than a silent
+        // omission.
         builder.Property(server => server.HostId);
 
         // The durable identity adoption correlates "already tracked" on. One container can be adopted at

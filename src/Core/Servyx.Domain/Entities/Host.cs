@@ -29,6 +29,27 @@ public sealed class Host
     /// <summary>The provider account this host's resource belongs to, if it was provisioned.</summary>
     public string? ProviderAccountId { get; set; }
 
+    /// <summary>The network address (host, or host:port) Servyx reaches this host at.</summary>
+    public required string Endpoint { get; set; }
+
+    /// <summary>The URN of the credential (e.g. an SSH key) used to authenticate to this host, if any.</summary>
+    public string? CredentialUrn { get; set; }
+
+    /// <summary>
+    /// How Servyx verifies this host's identity on connect — e.g. <c>"requirePinned"</c> or
+    /// <c>"trustOnFirstUse"</c>.
+    /// </summary>
+    public required string TrustPolicy { get; set; }
+
+    /// <summary>The host key fingerprint(s) pinned for this host, if any have been recorded.</summary>
+    public string? PinnedFingerprints { get; set; }
+
+    /// <summary>Whether this host is currently eligible for use.</summary>
+    public required bool Enabled { get; set; }
+
+    /// <summary>Who registered this host, as the host understands identity, if known.</summary>
+    public string? RegisteredBy { get; set; }
+
     /// <summary>When this host record was created.</summary>
     public required DateTimeOffset CreatedAt { get; set; }
 }

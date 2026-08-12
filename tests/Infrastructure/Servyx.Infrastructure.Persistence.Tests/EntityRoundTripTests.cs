@@ -172,6 +172,12 @@ public class EntityRoundTripTests
                 ProvisionedByJobId = "job-2f8c",
                 ProviderResourceId = "vm-991823",
                 ProviderAccountId = "hetzner-primary",
+                Endpoint = "fsn1-node-7.example.com:22",
+                CredentialUrn = "urn:servyx:secret:hosts/fsn1-node-7/ssh-key",
+                TrustPolicy = "requirePinned",
+                PinnedFingerprints = "SHA256:abcdef1234567890",
+                Enabled = true,
+                RegisteredBy = "operator@servyx",
                 CreatedAt = createdAt,
             });
 
@@ -187,6 +193,12 @@ public class EntityRoundTripTests
         loaded.ProvisionedByJobId.Should().Be("job-2f8c");
         loaded.ProviderResourceId.Should().Be("vm-991823");
         loaded.ProviderAccountId.Should().Be("hetzner-primary");
+        loaded.Endpoint.Should().Be("fsn1-node-7.example.com:22");
+        loaded.CredentialUrn.Should().Be("urn:servyx:secret:hosts/fsn1-node-7/ssh-key");
+        loaded.TrustPolicy.Should().Be("requirePinned");
+        loaded.PinnedFingerprints.Should().Be("SHA256:abcdef1234567890");
+        loaded.Enabled.Should().BeTrue();
+        loaded.RegisteredBy.Should().Be("operator@servyx");
         loaded.CreatedAt.Should().Be(createdAt);
     }
 
@@ -204,6 +216,9 @@ public class EntityRoundTripTests
                 Id = id,
                 Name = "adopted-box",
                 ConnectorId = "ssh:adopted-box",
+                Endpoint = "adopted-box.example.com:22",
+                TrustPolicy = "trustOnFirstUse",
+                Enabled = true,
                 CreatedAt = DateTimeOffset.UnixEpoch,
             });
 
@@ -216,6 +231,46 @@ public class EntityRoundTripTests
         loaded.ProvisionedByJobId.Should().BeNull();
         loaded.ProviderResourceId.Should().BeNull();
         loaded.ProviderAccountId.Should().BeNull();
+        loaded.CredentialUrn.Should().BeNull();
+        loaded.PinnedFingerprints.Should().BeNull();
+        loaded.RegisteredBy.Should().BeNull();
+    }
+
+    [Fact]
+    public void Host_Name_IsUnique()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Hosts.Add(new Host
+            {
+                Id = HostId.New(),
+                Name = "shared-name",
+                ConnectorId = "ssh:first",
+                Endpoint = "first.example.com:22",
+                TrustPolicy = "trustOnFirstUse",
+                Enabled = true,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+            });
+            write.SaveChanges();
+        }
+
+        using var write2 = fixture.CreateContext();
+        write2.Hosts.Add(new Host
+        {
+            Id = HostId.New(),
+            Name = "shared-name",
+            ConnectorId = "ssh:second",
+            Endpoint = "second.example.com:22",
+            TrustPolicy = "trustOnFirstUse",
+            Enabled = true,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        // Enforced at the database — see HostConfiguration's unique index on Name.
+        var act = () => write2.SaveChanges();
+        act.Should().Throw<DbUpdateException>();
     }
 
     [Fact]
@@ -264,6 +319,9 @@ public class EntityRoundTripTests
             Id = HostId.New(),
             Name = null!,
             ConnectorId = "ssh:broken",
+            Endpoint = "broken.example.com:22",
+            TrustPolicy = "trustOnFirstUse",
+            Enabled = true,
             CreatedAt = DateTimeOffset.UnixEpoch,
         });
 

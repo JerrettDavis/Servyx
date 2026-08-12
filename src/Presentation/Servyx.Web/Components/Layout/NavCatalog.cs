@@ -19,6 +19,7 @@ public static class NavCatalog
     [
         new("Dashboard", "", "dashboard"),
         new("Servers", "servers", "servers"),
+        new("Hosts", "hosts", "hosts"),
         new("Games", "games", "games"),
         new("Backups", "backups", "backups"),
         new("Mods", "mods", "mods"),

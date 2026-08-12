@@ -5,6 +5,7 @@ using Servyx.Domain.Common;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Entities;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Servers;
 
 namespace Servyx.Application.Tests.Servers;
@@ -77,7 +78,7 @@ public class ServerAdoptionServiceTests
         }
     }
 
-    private static DiscoveredServer BuildDiscovered(string id = "container-1", string name = "palworld-server") => new(
+    private static DiscoveredServer BuildDiscovered(string id = "container-1", string name = "palworld-server", string? hostKey = null) => new(
         ServerId: id,
         Name: name,
         Image: "thijsvanloef/palworld-server-docker:latest",
@@ -94,13 +95,26 @@ public class ServerAdoptionServiceTests
         CpuLimit: null,
         RestartPolicy: null,
         ComposeLabels: new Dictionary<string, string>(),
-        EnvironmentVariables: new Dictionary<string, string>());
+        EnvironmentVariables: new Dictionary<string, string>(),
+        HostKey: hostKey);
+
+    private static Host BuildHost(string name, HostId? id = null) => new()
+    {
+        Id = id ?? HostId.New(),
+        Name = name,
+        ConnectorId = "ssh-docker",
+        Endpoint = $"ssh:user@{name}:22",
+        TrustPolicy = "trustOnFirstUse",
+        Enabled = true,
+        CreatedAt = DateTimeOffset.UnixEpoch,
+    };
 
     private sealed record Fixture(
         ServerAdoptionService Service,
         IServerDiscovery Discovery,
         InMemoryServerRepository Repository,
         IServerDefinitionBindingStore Bindings,
+        IHostRepository Hosts,
         IAdoptionDefinitionCatalog Catalog);
 
     private static Fixture CreateFixture(IReadOnlyList<DefinitionAdoptionCriteria>? criteriaSet = null, TimeProvider? timeProvider = null)
@@ -108,6 +122,9 @@ public class ServerAdoptionServiceTests
         var discovery = Substitute.For<IServerDiscovery>();
         var repository = new InMemoryServerRepository();
         var bindings = Substitute.For<IServerDefinitionBindingStore>();
+        var hosts = Substitute.For<IHostRepository>();
+        hosts.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([]));
+        hosts.TryGetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<Host?>(null));
         var catalog = Substitute.For<IAdoptionDefinitionCatalog>();
 
         var criteria = criteriaSet ?? [PalworldAdoptionCriteria];
@@ -115,9 +132,9 @@ public class ServerAdoptionServiceTests
         catalog.TryGetRefById(PalworldRef.Id).Returns(PalworldRef);
 
         var service = new ServerAdoptionService(
-            discovery, repository, bindings, catalog, NullLogger<ServerAdoptionService>.Instance, timeProvider);
+            discovery, repository, bindings, hosts, catalog, NullLogger<ServerAdoptionService>.Instance, timeProvider);
 
-        return new Fixture(service, discovery, repository, bindings, catalog);
+        return new Fixture(service, discovery, repository, bindings, hosts, catalog);
     }
 
     private static void StubDiscovery(IServerDiscovery discovery, params DiscoveredServer[] servers) =>
@@ -327,10 +344,12 @@ public class ServerAdoptionServiceTests
         repository.ListAsync(Arg.Any<CancellationToken>()).Returns<Task<IReadOnlyList<Server>>>(
             _ => throw new InvalidOperationException("database is unwritable"));
         var bindings = Substitute.For<IServerDefinitionBindingStore>();
+        var hosts = Substitute.For<IHostRepository>();
+        hosts.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([]));
         var catalog = Substitute.For<IAdoptionDefinitionCatalog>();
 
         var service = new ServerAdoptionService(
-            discovery, repository, bindings, catalog, NullLogger<ServerAdoptionService>.Instance);
+            discovery, repository, bindings, hosts, catalog, NullLogger<ServerAdoptionService>.Instance);
 
         var result = await service.ListTrackedAsync();
 
@@ -385,6 +404,108 @@ public class ServerAdoptionServiceTests
 
         var row = (await fixture.Repository.ListAsync()).Single();
         row.ContainerId.Should().Be("container-1");
+    }
+
+    // ── Increment 7: HostId/HostName resolution from a discovered container's HostKey ─────────────────
+
+    [Fact]
+    public async Task AdoptAsync_sets_HostId_when_the_HostKey_resolves_to_a_registered_host_row()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: "db-host"));
+        var registeredHost = BuildHost("db-host");
+        fixture.Hosts.TryGetByNameAsync("db-host", Arg.Any<CancellationToken>()).Returns(Task.FromResult<Host?>(registeredHost));
+
+        var result = await fixture.Service.AdoptAsync("container-1", "palworld");
+
+        var row = (await fixture.Repository.ListAsync()).Single();
+        row.Id.Should().Be(result.ServerId!.Value);
+        row.HostId.Should().Be(registeredHost.Id);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_leaves_HostId_null_when_the_HostKey_names_a_configuration_declared_host_with_no_row()
+    {
+        // A HostKey is not proof a Host row exists: CompositeServerDiscovery tags results with the same name
+        // for a configuration-declared host (Servyx:Hosts) as it does for a database-registered one, but only
+        // the latter has a row IHostRepository can resolve. TryGetByNameAsync (stubbed to null by default in
+        // CreateFixture) simulates exactly that gap.
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: "configured-host"));
+
+        var result = await fixture.Service.AdoptAsync("container-1", "palworld");
+
+        result.Outcome.Should().Be(AdoptionOutcome.Adopted);
+        var row = (await fixture.Repository.ListAsync()).Single();
+        row.HostId.Should().BeNull(
+            because: "a configuration-declared host is never itself persisted as a Host row, so there is nothing to point HostId at");
+    }
+
+    [Fact]
+    public async Task AdoptAsync_leaves_HostId_null_and_does_not_throw_when_the_HostKey_is_null()
+    {
+        // A null HostKey means discovery has no host notion at all (the local/non-SSH source) — this must
+        // not throw or attempt a lookup that could fail.
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: null));
+
+        var result = await fixture.Service.AdoptAsync("container-1", "palworld");
+
+        result.Outcome.Should().Be(AdoptionOutcome.Adopted);
+        var row = (await fixture.Repository.ListAsync()).Single();
+        row.HostId.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListCandidatesAsync_populates_HostName_from_the_registered_host_row()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: "db-host"));
+        var registeredHost = BuildHost("db-host");
+        fixture.Hosts.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([registeredHost]));
+
+        var result = await fixture.Service.ListCandidatesAsync();
+
+        result.Candidates.Should().ContainSingle().Which.HostName.Should().Be("db-host");
+    }
+
+    [Fact]
+    public async Task ListCandidatesAsync_falls_back_to_the_raw_HostKey_when_no_host_row_matches_it()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: "configured-host"));
+        // Hosts.ListAsync defaults to an empty list in CreateFixture — no row named "configured-host".
+
+        var result = await fixture.Service.ListCandidatesAsync();
+
+        result.Candidates.Should().ContainSingle().Which.HostName.Should().Be("configured-host");
+    }
+
+    [Fact]
+    public async Task ListCandidatesAsync_leaves_HostName_null_when_the_HostKey_is_null()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: null));
+
+        var result = await fixture.Service.ListCandidatesAsync();
+
+        result.Candidates.Should().ContainSingle().Which.HostName.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListCandidatesAsync_degrades_HostName_to_the_raw_HostKey_when_reading_hosts_fails()
+    {
+        // Same "cosmetic, best-effort" standard as the already-adopted exclusion check: a broken host-table
+        // read must not fail the whole candidate listing, just fall back to showing the raw HostKey.
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered(hostKey: "db-host"));
+        fixture.Hosts.ListAsync(Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<Host>>>(_ => throw new InvalidOperationException("database is unwritable"));
+
+        var result = await fixture.Service.ListCandidatesAsync();
+
+        result.DiscoveryFailed.Should().BeFalse();
+        result.Candidates.Should().ContainSingle().Which.HostName.Should().Be("db-host");
     }
 
     [Fact]

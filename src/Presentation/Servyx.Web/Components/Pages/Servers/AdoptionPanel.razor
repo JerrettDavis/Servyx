@@ -58,10 +58,11 @@
         else
         {
             <div class="svx-row-grid" role="list" aria-label="Adoption candidates">
-                <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.4fr 1fr;" aria-hidden="true">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1fr 1.4fr 1fr;" aria-hidden="true">
                     <span>Name</span>
                     <span>Image</span>
                     <span>State</span>
+                    <span>Host</span>
                     <span>Game definition</span>
                     <span></span>
                 </div>
@@ -70,10 +71,11 @@
                 {
                     <div class="svx-row-link" role="listitem" data-testid="adopt-candidate-row"
                          data-container-id="@candidate.ContainerId"
-                         style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1.4fr 1fr;">
+                         style="grid-template-columns: 1.2fr 1.6fr 0.8fr 1fr 1.4fr 1fr;">
                         <span data-col-label="Name"><strong>@candidate.Name</strong></span>
                         <span data-col-label="Image">@candidate.Image</span>
                         <span data-col-label="State">@candidate.State</span>
+                        <span data-col-label="Host" data-testid="adopt-candidate-host">@(candidate.HostName ?? "Local")</span>
                         <span data-col-label="Game definition">
                             <select class="svx-select" data-testid="adopt-definition-select"
                                     data-container-id="@candidate.ContainerId"

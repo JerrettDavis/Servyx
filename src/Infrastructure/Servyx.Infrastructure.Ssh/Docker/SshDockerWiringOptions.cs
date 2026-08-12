@@ -36,13 +36,18 @@ public sealed record SshDockerHost(string Name, TargetDescriptor Target, string 
 /// registration it can replace. A host is reachable the moment it is declared; nothing here can write to it.
 /// </para>
 /// <para>
-/// <strong>Single-host this milestone.</strong> <see cref="Hosts"/> can carry more than one configured entry,
-/// but <c>AddServyxSshDocker</c> wires only the first — the composition root has exactly one
-/// <see cref="Servyx.Domain.Discovery.IServerDiscovery"/>/<see cref="Servyx.Domain.Observability.ILogStream"/>/
-/// <see cref="Servyx.Domain.Observability.IMetricsSource"/> slot to put a session behind, the same
-/// single-target shape <c>LiveDashboardDataService</c> already assumes for its probe target. A second
-/// configured host is accepted by <see cref="FromConfiguration"/> (so it is visible to a caller that wants to
-/// enumerate what was declared) but is not wired to anything by itself.
+/// <strong>Discovery fans out across every configured host — and every enabled database-registered host —
+/// but every other surface stays scoped to <see cref="Hosts"/>[0].</strong> <c>AddServyxSshDocker</c> wires
+/// <see cref="Servyx.Domain.Discovery.IServerDiscovery"/> to <c>CompositeServerDiscovery</c>, backed by
+/// <c>HostConnectionRegistry</c>, which queries every entry in <see cref="Hosts"/> plus every enabled
+/// database-registered <see cref="Servyx.Domain.Entities.Host"/> row concurrently and tags each discovered
+/// workload with the host it came from. <see cref="Servyx.Domain.Observability.ILogStream"/>,
+/// <see cref="Servyx.Domain.Observability.IMetricsSource"/>, and the single
+/// <see cref="Servyx.Domain.Transport.IExecutionTarget"/>/<see cref="Servyx.Domain.Transport.TargetDescriptor"/>
+/// the dashboard's probe target consumes remain wired to <see cref="Hosts"/>[0] only — the composition root
+/// still has exactly one slot for those, the same single-target shape <c>LiveDashboardDataService</c> assumes
+/// for its probe target. A server discovered on a second or third host is therefore adoptable, but its live
+/// logs/metrics/settings surfaces resolving against the correct host is later-increment scope, not this one's.
 /// </para>
 /// </remarks>
 public sealed class SshDockerWiringOptions
@@ -117,11 +122,6 @@ public sealed class SshDockerWiringOptions
     /// is almost certainly a typo, not an intentional local-only deployment, and staying silent there is
     /// exactly the operator-deception this method exists to close. An absent (or entirely empty)
     /// <c>Servyx:Hosts</c> section remains a silent, valid no-op — see <see cref="None"/>.
-    /// </para>
-    /// <para>
-    /// Also logs a <see cref="LogLevel.Warning"/> when more than one host ends up usable: <c>AddServyxSshDocker</c>
-    /// only ever wires <see cref="Hosts"/>[0] (see this type's remarks), so a second configured host would
-    /// otherwise be silently accepted here and then silently ignored there.
     /// </para>
     /// </remarks>
     /// <param name="configuration">The application configuration.</param>
@@ -238,14 +238,6 @@ public sealed class SshDockerWiringOptions
             logger.LogWarning(
                 "'{Section}' found {Found} host(s) configured, {Accepted} accepted, {Rejected} rejected.",
                 SectionKey, childCount, hosts.Count, rejected.Count);
-        }
-
-        if (hosts.Count > 1)
-        {
-            logger.LogWarning(
-                "'{Section}' configures {Count} hosts, but only the first ('{FirstHost}') is wired for "
-                + "observation — the rest are accepted but not connected to anything.",
-                SectionKey, hosts.Count, hosts[0].Name);
         }
 
         return hosts.Count == 0 ? None : new SshDockerWiringOptions(hosts);

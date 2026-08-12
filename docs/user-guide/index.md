@@ -30,8 +30,8 @@ Guides are grouped by what they're for: **operator guides** walk through doing s
 | Page | What it covers |
 |---|---|
 | [Installation](installation.md) | Prerequisites, running Servyx, the mock demonstration mode, where data lives. |
-| [Connecting a host](connecting-a-host.md) | Local vs remote Docker, SSH/SFTP as independent channels, host-key trust. |
-| [Adopting a remote host](adopting-a-remote-host.md) | Declaring an `ssh+docker` host, host-key pinning, getting its SSH key into the secret store. |
+| [Connecting a host](connecting-a-host.md) | Local vs remote Docker, SSH/SFTP as independent channels, host-key trust, connecting a host from the `/hosts` page. |
+| [Adopting a remote host](adopting-a-remote-host.md) | Connecting an `ssh+docker` host via `/hosts` or configuration, host-key pinning, getting its SSH key into the secret store. |
 | [Adopting servers](adopting-servers.md) | What "adoption" means, what discovery inspects, reading the server list. |
 | [Enabling writes](enabling-writes.md) | The two switches that turn write access on, the three write-mode tiers, and what each unlocks. |
 | [Lifecycle control](lifecycle-control.md) | Start/Restart/Stop/Kill, the stop-escalation ladder, and two-step confirmation. |

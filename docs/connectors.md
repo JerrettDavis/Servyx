@@ -4,12 +4,21 @@
 > architecture — the target shape this codebase is being built toward, not what ships today.
 > `IConnector`, `ICompositeConnector`, `IConnectorPool`, and the discovery-strategy hierarchy exist
 > in this document as design and, in a few cases, as domain types (`ConnectorDescriptor`,
-> `TrustPolicy`, `HostKeyRecord`) — but **there is no persisted connector store**. Nothing in this
-> codebase writes a `ConnectorDescriptor` to disk, a database, or any other store, and there is no
-> UI flow for creating or editing one. See "The `ssh+docker` transport, as shipped" at the bottom
-> of this document for what actually exists and runs today: a config-driven, transiently-built
-> `TargetDescriptor` (not `ConnectorDescriptor`) read fresh from `Servyx:Hosts:<name>` on every
-> process start.
+> `TrustPolicy`, `HostKeyRecord`) — but **none of that has been built**. Nothing in this codebase
+> writes a `ConnectorDescriptor` to disk, a database, or any other store, and there is no UI flow
+> for creating or editing one.
+>
+> A narrower, already-shipped thing exists alongside this aspirational layer and should not be
+> confused with it: `ssh+docker` hosts can now also be registered from the `/hosts` page in the
+> dashboard, persisted as `Host` rows in Servyx's own database (see
+> `src/Core/Servyx.Domain/Entities/Host.cs` and `IHostRepository`) rather than as
+> `ConnectorDescriptor`s. Config-declared hosts (`Servyx:Hosts:<name>`) and these UI-registered
+> hosts are combined by `HostConnectionRegistry` for discovery and adoption — see
+> [Adopting a remote host](user-guide/adopting-a-remote-host.md) for the operator-facing version.
+> See "The `ssh+docker` transport, as shipped" at the bottom of this document for what actually
+> exists and runs today: a config-driven, transiently-built `TargetDescriptor` (not
+> `ConnectorDescriptor`) read fresh from `Servyx:Hosts:<name>` on every process start, now combined
+> with database-registered hosts for discovery.
 
 ## `ITransport` vs `IConnector`
 
@@ -246,10 +255,12 @@ One pooled SSH connection is maintained per `ConnectorKey`, multiplexing multipl
 ## The `ssh+docker` transport, as shipped
 
 Everything above this section is the target architecture. What actually runs today, against a
-remote Docker host over SSH, is a much smaller and entirely config-driven slice of it — no
-`IConnector`, no `ICompositeConnector`, no discovery-strategy hierarchy, no persisted store. This
-section documents that slice as it exists in the code, in
-`src/Infrastructure/Servyx.Infrastructure.Ssh/Docker/`.
+remote Docker host over SSH, is a much smaller slice of it — no `IConnector`, no
+`ICompositeConnector`, no discovery-strategy hierarchy, no persisted `ConnectorDescriptor` store.
+It is not, however, purely config-driven any more: a host can also be registered from the
+dashboard's `/hosts` page and persisted as a `Host` row in Servyx's database, and both kinds are
+combined for discovery (see `HostConnectionRegistry` below). This section documents that slice as
+it exists in the code, in `src/Infrastructure/Servyx.Infrastructure.Ssh/Docker/`.
 
 ### `Servyx:Hosts:<name>` configuration shape
 
@@ -280,10 +291,21 @@ written into either tracked file. Set them instead via `dotnet user-secrets` (de
 environment variables / your host's secret manager (`Servyx__Hosts__example-remote__Endpoint`,
 etc. — ASP.NET Core's `__` configuration-key separator) in any deployed environment.
 
-Only the **first** enabled host is wired to anything (`AddServyxSshDocker` uses `options.Hosts[0]`)
-— this milestone assumes a single remote target, mirroring the single-target shape
-`LiveDashboardDataService`'s probe already assumes. A second declared host is parsed and visible on
-`SshDockerWiringOptions.Hosts`, but nothing connects to it.
+**Discovery vs. the single-target surfaces.** `HostConnectionRegistry` fans discovery out across
+*every* entry in `SshDockerWiringOptions.Hosts` plus every enabled database-registered `Host` row
+(see `IHostRepository`), deduplicated by name — a config-declared host wins on a name collision, so
+a database row with the same name as a configured host is shadowed rather than conflicting. That
+combined set is what `CompositeServerDiscovery` and the "Adopt a server" flow query, and each
+discovered server is tagged with the host it came from.
+
+Outside discovery, `AddServyxSshDocker` still wires `Servyx.Domain.Observability.ILogStream`,
+`IMetricsSource`, and the dashboard's own probe target to `options.Hosts[0]` only — the single
+config-declared host that fills that one slot, mirroring the single-target shape
+`LiveDashboardDataService`'s probe already assumes. This means a server discovered on a second (or
+third) config-declared host, or on any database-registered host, is discoverable and adoptable, but
+once adopted its live logs, metrics, and settings surfaces still resolve against `Hosts[0]`, not
+against the host it actually runs on. Extending those surfaces to resolve per-server, against the
+correct host, is scoped as future work in [the roadmap](../roadmap.md#m8--remote-and-non-docker-targets).
 
 `SecretUrn` format, as elsewhere in this document:
 

@@ -87,14 +87,17 @@ public sealed class Server
     /// The host this server runs on, or <see langword="null"/> when Servyx does not model one for it.
     /// </summary>
     /// <remarks>
-    /// Nullable, and <see langword="null"/> for every server adopted today: nothing in this codebase creates
-    /// a <c>Host</c> row, so there is nothing for an adopted server to point at. Null is the honest "not
-    /// modeled" state; a fabricated <c>HostId.New()</c> would be a foreign key to a row that does not exist,
-    /// and would make host-scoped queries look answerable when they are not. Wiring adoption to a real
-    /// <c>Hosts</c> row is later-phase scope. Note the consequence for grant matching: a
-    /// (<c>HostId</c>, <c>ContainerId</c>) pair would compare null to null for every adopted server and
-    /// contribute nothing while appearing to check more, which is why <see cref="ContainerId"/> alone is the
-    /// grant key.
+    /// Set on adoption (see <c>ServerAdoptionService.AdoptAsync</c>) ONLY when the discovered container's
+    /// host resolves to an actual, durable <c>Host</c> row — i.e. it was discovered on a database-registered
+    /// host (see <c>IHostRepository</c>/<c>IHostRegistrationService</c>). It stays <see langword="null"/> for
+    /// a container adopted from the local/non-SSH discovery source, or one discovered on a
+    /// configuration-declared host (<c>Servyx:Hosts</c>) that has no corresponding row — configuration hosts
+    /// are authoritative for connecting but are never themselves persisted as a <c>Host</c> row. Null is the
+    /// honest "not modeled" state in both cases; a fabricated <c>HostId.New()</c> would be a foreign key to a
+    /// row that does not exist, and would make host-scoped queries look answerable when they are not. Note
+    /// the consequence for grant matching: a (<c>HostId</c>, <c>ContainerId</c>) pair would compare null to
+    /// null for every server left unresolved this way and contribute nothing while appearing to check more,
+    /// which is why <see cref="ContainerId"/> alone is the grant key.
     /// </remarks>
     public HostId? HostId { get; set; }
 

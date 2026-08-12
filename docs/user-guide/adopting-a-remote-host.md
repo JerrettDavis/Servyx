@@ -4,9 +4,18 @@ Servyx's headline capability is watching a game server that runs on a machine yo
 
 ![The servers list showing a local server and a second server adopted over ssh+docker, distinguished by its Host column](../images/servers-list-remote-host.png)
 
-## Declaring a remote host
+## Connecting the host
 
-A remote host is declared in configuration, under `Servyx:Hosts:<name>`, where `<name>` is a label you choose for it:
+A remote host needs to be connected to Servyx before there is anything for the adoption steps below to find. There are two ways to do that:
+
+- **The `/hosts` page (recommended once Servyx is running).** Go to **Hosts** in the sidebar, enter the SSH endpoint, probe it, confirm the fingerprint Servyx shows you, then supply the SSH credential and register. See [Connecting a host from the UI](connecting-a-host.md#connecting-a-host-from-the-ui) for the full step-by-step. This is faster for a host added after Servyx is already up, and it verifies the host key interactively as part of the flow — no manual `ssh-keygen` step required.
+- **Configuration (`Servyx:Hosts:<name>`).** Still fully supported, and still the only option if the host needs to be present the moment Servyx starts — before the dashboard is reachable, `/hosts` isn't an option yet. The rest of this section walks through the config keys.
+
+Both kinds of host — config-declared and UI-registered — are wired concurrently for discovery and adoption; see [Multiple hosts, wired together](connecting-a-host.md#multiple-hosts-wired-together) for how they combine and the precedence rule on a name collision. The container-adoption steps later on this page ([What adoption looks like](#what-adoption-looks-like) onward) are identical regardless of which way the host was connected.
+
+## Declaring a remote host in configuration
+
+A remote host can be declared in configuration, under `Servyx:Hosts:<name>`, where `<name>` is a label you choose for it:
 
 ```json
 {
@@ -36,13 +45,19 @@ A remote host is declared in configuration, under `Servyx:Hosts:<name>`, where `
 | `PinnedFingerprints` | A comma-separated list of `SHA256:...` fingerprints. If set, this is compared directly against the key the host presents on every connection attempt, ahead of anything else. |
 | `Container` | The name of the container on that host Servyx should observe. Required. |
 
-## Only the first configured host is wired
+## Multiple hosts, and the precedence rule
 
-**Only `Servyx:Hosts[0]` is currently connected to anything.** You can declare more than one host under `Servyx:Hosts`, and every entry that parses correctly is accepted and validated — but the running dashboard has exactly one slot for a remote, `ssh+docker`-observed server, and only the first configured host fills it. A second (or third) configured host is accepted, not rejected, but is not wired to anything: it will not appear in the server list, and Servyx logs a warning at startup naming it and saying so plainly. This is a genuine limitation of the current milestone, not a bug to work around — if you need to watch more than one remote box, that support does not exist yet.
+You can declare more than one host under `Servyx:Hosts`, and you can also register hosts through the `/hosts` page — every config-declared host and every enabled UI-registered host is wired concurrently for discovery, and each server that turns up is tagged with the host it came from.
+
+If a config-declared host and a UI-registered host share the same name, the config-declared one wins: it is authoritative, and the UI-registered entry with that name is silently shadowed (logged as a warning) rather than treated as a conflict. See [Multiple hosts, wired together](connecting-a-host.md#multiple-hosts-wired-together) for the full rule and rationale.
+
+**Scope limitation that still applies:** discovery and adoption are multi-host-aware, but once a server from a UI-registered host is adopted, its other management surfaces — settings, live logs, backups — still resolve against the primary configured host only. Full multi-host support for those surfaces has not shipped yet; that is a genuine, deliberate limitation of the current milestone, not a bug to work around.
 
 ## Host-key pinning fails closed
 
-Before Servyx runs a single command against a remote host, it verifies the SSH host key the box presents. This check is enforced structurally, not as a step someone can forget: SSH.NET's own connection handshake is wired to abort unless the verifier reports the key as **Trusted** — no exec session, no file-read session, nothing is ever constructed for any other outcome (unknown host, changed key, or explicitly revoked key). There is no configuration path that skips this.
+Before Servyx runs a single command against a remote host, it verifies the SSH host key the box presents. This check is enforced structurally, not as a step someone can forget: SSH.NET's own connection handshake is wired to abort unless the verifier reports the key as **Trusted** — no exec session, no file-read session, nothing is ever constructed for any other outcome (unknown host, changed key, or explicitly revoked key). There is no configuration path that skips this, and there is no UI path that skips it either.
+
+This section describes fingerprint verification for a **config-declared** host, where you obtain and pin the fingerprint yourself before Servyx ever connects. If you're connecting through the `/hosts` page instead, the probe-and-confirm step there does the same job interactively: Servyx shows you the fingerprint it actually observed and requires you to confirm it before the credential step even appears — see [Connecting a host from the UI](connecting-a-host.md#connecting-a-host-from-the-ui). Neither path trusts a host key without an explicit confirmation; they just collect that confirmation differently.
 
 A key becomes Trusted one of two ways:
 
@@ -88,7 +103,7 @@ Two behaviors are worth knowing before you rely on this:
 
 ## What adoption looks like
 
-Once a host is declared, enabled, its key pinned, and its credential imported, the server it observes shows up in the servers list exactly like a local one — same columns, same State/Health badges — with one visible difference: its **Host** column reads `ssh+docker` instead of a local Docker socket/pipe description.
+Once a host is connected — either declared, enabled, its key pinned, and its credential imported in configuration, or registered and fingerprint-confirmed through `/hosts` — the server it observes shows up in the servers list exactly like a local one — same columns, same State/Health badges — with one visible difference: its **Host** column reads `ssh+docker` instead of a local Docker socket/pipe description.
 
 ## Reading the remote server's Overview tab
 

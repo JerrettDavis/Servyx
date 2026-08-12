@@ -1,0 +1,27 @@
+@page "/hosts"
+
+<SvxPageTitle Section="Hosts" />
+
+<div class="svx-page-header">
+    <h2>Hosts</h2>
+    <p class="svx-page-description">
+        Register a remote SSH host so Servyx can discover containers on it for adoption, and see what is
+        already registered.
+    </p>
+</div>
+
+<HostRegistrationPanel OnRegistered="ReloadRegisteredHostsAsync" />
+
+<RegisteredHostsPanel @ref="_registeredHostsPanel" />
+
+@code {
+    private RegisteredHostsPanel? _registeredHostsPanel;
+
+    private async Task ReloadRegisteredHostsAsync()
+    {
+        if (_registeredHostsPanel is not null)
+        {
+            await _registeredHostsPanel.ReloadAsync();
+        }
+    }
+}

@@ -27,8 +27,8 @@ public class NavMenuProvisioningTests : BunitContext
 
         var cut = Render<NavMenu>();
 
-        // The nine read-only routes are unaffected: still live links, same count as before.
-        cut.FindAll("a.svx-nav-link").Should().HaveCount(9);
+        // The ten read-only routes are unaffected: still live links, same count as before.
+        cut.FindAll("a.svx-nav-link").Should().HaveCount(10);
         cut.FindAll("a[href='deploy']").Should().BeEmpty();
 
         // Deploy is present, just not as a live link.
@@ -45,7 +45,7 @@ public class NavMenuProvisioningTests : BunitContext
     {
         var cut = Render<NavMenu>();
 
-        cut.FindAll("a.svx-nav-link").Should().HaveCount(9);
+        cut.FindAll("a.svx-nav-link").Should().HaveCount(10);
         cut.FindAll("a[href='deploy']").Should().BeEmpty();
 
         var locked = cut.Find("[data-testid=nav-link-locked-deploy]");
@@ -60,7 +60,7 @@ public class NavMenuProvisioningTests : BunitContext
 
         var cut = Render<NavMenu>();
 
-        cut.FindAll("a.svx-nav-link").Should().HaveCount(10);
+        cut.FindAll("a.svx-nav-link").Should().HaveCount(11);
         cut.FindAll("a[href='deploy']").Should().ContainSingle();
 
         // Live, not locked: no disabled locked-entry button anywhere in the sidebar.

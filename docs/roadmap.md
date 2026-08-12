@@ -224,20 +224,32 @@ loopback.
 compose as independent channels, host keys are pinned (trust-on-first-use
 or a configured fingerprint) and fail closed, and a declared remote host's
 Docker calls route over it — see [Connecting a host](user-guide/connecting-a-host.md)
-and [Adopting a remote host](user-guide/adopting-a-remote-host.md). Only the
-first configured `Servyx:Hosts` entry is wired to anything at present. A
-local-process target exists for provisioning and for backups
-(`Servyx.Infrastructure.Process`), but full bare-process-host parity with
-the Docker adoption/lifecycle path was not independently re-verified in
-this pass.
+and [Adopting a remote host](user-guide/adopting-a-remote-host.md). UI-driven
+host registration has also shipped: the `/hosts` page probes a host,
+surfaces its fingerprint for explicit confirmation, and registers the
+credential without touching configuration. Config-declared hosts
+(`Servyx:Hosts:<name>`) and UI-registered hosts are wired **concurrently**
+for discovery and adoption, deduplicated by name with config taking
+precedence on a collision. A local-process target exists for provisioning
+and for backups (`Servyx.Infrastructure.Process`), but full
+bare-process-host parity with the Docker adoption/lifecycle path was not
+independently re-verified in this pass.
 
-**Goal:** Extend beyond local Docker to bare process hosts and SSH targets.
+**Goal:** Extend beyond local Docker to bare process hosts and SSH targets,
+and extend multi-host awareness beyond discovery/adoption to every
+per-server surface.
 
 **Acceptance criteria:**
 
 - Bare process hosts and SSH hosts are supported targets.
 - An injection test registers a host literally named `; rm -rf /` and proves
   the name is never interpreted as a shell fragment.
+- A server adopted from a UI-registered (or non-primary config-declared)
+  host resolves its settings, live logs, and backups surfaces against the
+  correct host, not just the primary configured one. This is the one piece
+  of multi-host support that discovery/adoption shipping did **not**
+  include — those two remain scoped to the primary configured host for an
+  adopted server today.
 
 ## M9 — Provisioning, Mods, Plugin SDK
 

@@ -19,8 +19,8 @@ namespace Servyx.Web.Tests.Pages;
 /// </summary>
 public class AdoptionPanelTests : BunitContext
 {
-    private static AdoptionCandidate Candidate(string containerId = "container-1", string name = "palworld-server") =>
-        new(containerId, name, "thijsvanloef/palworld-server-docker:latest", "running", ["palworld"]);
+    private static AdoptionCandidate Candidate(string containerId = "container-1", string name = "palworld-server", string? hostName = null) =>
+        new(containerId, name, "thijsvanloef/palworld-server-docker:latest", "running", ["palworld"], hostName);
 
     private FakeServerAdoptionService RegisterFakeAdoptionService()
     {
@@ -42,6 +42,30 @@ public class AdoptionPanelTests : BunitContext
         row.TextContent.Should().Contain("palworld-server");
         row.TextContent.Should().Contain("thijsvanloef/palworld-server-docker:latest");
         row.TextContent.Should().Contain("running");
+    }
+
+    [Fact]
+    public void Candidates_show_the_resolved_host_name_when_one_is_known()
+    {
+        var fake = RegisterFakeAdoptionService();
+        fake.Candidates.Add(Candidate(hostName: "prod-host-1"));
+
+        var cut = Render<AdoptionPanel>();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=adopt-candidate-host]").Should().HaveCount(1));
+
+        cut.Find("[data-testid=adopt-candidate-host]").TextContent.Should().Be("prod-host-1");
+    }
+
+    [Fact]
+    public void Candidates_show_Local_as_the_host_when_none_is_resolved()
+    {
+        var fake = RegisterFakeAdoptionService();
+        fake.Candidates.Add(Candidate(hostName: null));
+
+        var cut = Render<AdoptionPanel>();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid=adopt-candidate-host]").Should().HaveCount(1));
+
+        cut.Find("[data-testid=adopt-candidate-host]").TextContent.Should().Be("Local");
     }
 
     [Fact]

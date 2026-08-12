@@ -45,9 +45,12 @@ namespace Servyx.Composition;
 /// <para>
 /// <strong>The key is <c>Server.ContainerId</c> and nothing else.</strong> Not the container name (an
 /// operator can rename a container outside Servyx at any time, and names are not unique across hosts), and
-/// not the (<c>HostId</c>, <c>ContainerId</c>) pair — <c>Server.HostId</c> is null by design for every
-/// adopted server today, so a pair match would compare null to null and contribute nothing while appearing
-/// to check more. See <c>docs/plans/ui-management-surface.md</c> §2 "Grant key semantics".
+/// not the (<c>HostId</c>, <c>ContainerId</c>) pair — <c>Server.HostId</c> is set on adoption only when the
+/// discovered container's host resolves to a database-registered <c>Host</c> row, and stays null for one
+/// adopted from local/non-SSH discovery or from a configuration-declared host (<c>Servyx:Hosts</c>) that has
+/// no row of its own. A pair match would therefore compare null to null for every server left unresolved
+/// that way and contribute nothing while appearing to check more. See
+/// <c>docs/plans/ui-management-surface.md</c> §2 "Grant key semantics".
 /// </para>
 /// <para>
 /// <strong>Every failure direction is read-only.</strong> A missing row, a blank container id, a closed

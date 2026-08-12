@@ -525,6 +525,15 @@ public static class ServyxCoreCompositionExtensions
         builder.Services.AddServyxServerDefinitionBindingStore();
         builder.Services.AddServyxServerRepository();
 
+        // IHostRepository — durable storage behind Servyx's own host-registration bookkeeping (Increment 1).
+        // Registered here, unconditionally, for the same reason as IServerRepository immediately above: this
+        // is Servyx's own database, not a mutating call to any managed host, so it needs no write grant and
+        // must resolve with the provisioning gate closed. AddServyxSshDocker() above resolves IHostRepository
+        // lazily (inside a singleton factory, only actually invoked on first discovery call) via
+        // HostConnectionRegistry — registration order relative to that earlier call does not matter, only
+        // that IHostRepository is registered by the time the container is built, which this guarantees.
+        builder.Services.AddServyxHostRepository();
+
         // Desired-value persistence for the settings tab (Phase 4a). Registered unconditionally, alongside
         // the rest of this block and for the same reason: IServerSettingsService writes ONLY to Servyx's own
         // database — it never issues a command to a container (see its own remarks) — so it needs no write

@@ -1,0 +1,358 @@
+@using System.Security.Claims
+@using System.Text
+@using Servyx.Application.Hosts
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
+@* Registration touches only Servyx's own state — the host key store, the secret store, and the Hosts
+   table — and never issues a command to the remote machine beyond the read-only key-exchange probe (see
+   IHostRegistrationService's own remarks), so these are plain .svx-btn/.svx-btn-primary rather than
+   <GatedButton>, matching AdoptionPanel's and ImportDefinitionDialog's reasoning for the same choice. *@
+
+<div class="svx-card" data-testid="host-registration-section">
+    <h3>Register a remote SSH host</h3>
+    <p class="svx-page-description">
+        Registering a host lets Servyx discover containers on it for adoption. Three explicit steps, not
+        one form: probing shows you the host key Servyx actually observed so you can confirm it out of
+        band before anything is trusted, exactly like <a href="https://en.wikipedia.org/wiki/Trust_on_first_use">
+        trust-on-first-use</a> is supposed to work.
+    </p>
+    <p class="svx-page-description" data-testid="host-registration-scope-note">
+        <strong>Scope note:</strong> once registered, this host's containers appear for discovery and
+        adoption below. Other management surfaces for existing servers — settings, live logs, backups —
+        still operate only against the primary configured host until broader multi-host support lands.
+        Registering a host here does not change that yet.
+    </p>
+
+    @if (_registration is null)
+    {
+        <p class="svx-page-description" data-testid="host-registration-unavailable">
+            This process did not compose a host registration service, so a host cannot be registered from
+            this page.
+        </p>
+    }
+    else
+    {
+        <div class="host-registration-step" data-testid="host-endpoint-step">
+            <label>
+                <span>Endpoint</span>
+                <input class="svx-input" type="text" data-testid="endpoint-input"
+                       placeholder="ssh:user@host:22" value="@_endpoint"
+                       disabled="@_probing" @onchange="OnEndpointChanged" />
+            </label>
+            <button type="button" class="svx-btn svx-btn-primary" data-testid="probe-button"
+                    disabled="@(_probing || string.IsNullOrWhiteSpace(_endpoint))"
+                    @onclick="ProbeAsync">
+                @(_probing ? "Probing…" : "Probe")
+            </button>
+
+            @if (_probeError is not null)
+            {
+                <p class="svx-deploy-error" data-testid="probe-error">@_probeError</p>
+            }
+        </div>
+
+        @if (_probeResult is { } probe)
+        {
+            <div class="host-registration-step" data-testid="host-fingerprint-step">
+                <p class="svx-page-description">
+                    <strong>@probe.Host:@probe.Port</strong> presented this host key. Verify it out of band
+                    — for example against your provider's console, or a fingerprint you saved when you
+                    built the box — before trusting it. Servyx never invents a fingerprint or accepts one
+                    it did not itself observe; see <code>ssh-keygen -F &lt;host&gt; -l</code> for one way to
+                    read a fingerprint you already trust.
+                </p>
+                <dl class="svx-deploy-facts">
+                    <dt>Algorithm</dt>
+                    <dd data-testid="fingerprint-algorithm"><code>@probe.Algorithm</code></dd>
+                    <dt>SHA256 fingerprint</dt>
+                    <dd data-testid="fingerprint-value"><code>@probe.Sha256Fingerprint</code></dd>
+                </dl>
+                <label class="host-fingerprint-confirm">
+                    <input type="checkbox" class="svx-checkbox" data-testid="fingerprint-confirm-checkbox"
+                           @bind="_fingerprintConfirmed" />
+                    <span>I've verified this fingerprint out of band and trust it.</span>
+                </label>
+            </div>
+        }
+
+        @if (_probeResult is not null && _fingerprintConfirmed)
+        {
+            <div class="host-registration-step" data-testid="host-credential-step">
+                <label>
+                    <span>Host name</span>
+                    <input class="svx-input" type="text" data-testid="host-name-input"
+                           value="@_hostName" @onchange="e => _hostName = e.Value?.ToString() ?? string.Empty" />
+                </label>
+
+                <label class="host-registration-file-label" for="private-key-file-input">
+                    Upload a private key file (optional, up to 64 KB)
+                </label>
+                <InputFile id="private-key-file-input" @key="_fileInputKey"
+                           data-testid="private-key-file-input"
+                           OnChange="OnPrivateKeyFileSelectedAsync" />
+
+                <label>
+                    <span>Or paste the private key directly</span>
+                    <textarea class="svx-textarea host-registration-key-textarea" rows="10"
+                              data-testid="private-key-textarea" autocomplete="off" spellcheck="false"
+                              value="@_privateKeyText"
+                              @onchange="e => _privateKeyText = e.Value?.ToString() ?? string.Empty"></textarea>
+                </label>
+
+                <label>
+                    <span>Passphrase (optional)</span>
+                    <input class="svx-input" type="password" data-testid="passphrase-input"
+                           autocomplete="new-password" value="@_passphrase"
+                           @onchange="e => _passphrase = e.Value?.ToString()" />
+                </label>
+
+                <button type="button" class="svx-btn svx-btn-primary" data-testid="register-button"
+                        disabled="@(_registering || string.IsNullOrWhiteSpace(_hostName) || string.IsNullOrEmpty(_privateKeyText))"
+                        @onclick="RegisterAsync">
+                    @(_registering ? "Registering…" : "Register host")
+                </button>
+            </div>
+        }
+
+        @if (_registerError is not null)
+        {
+            <p class="svx-deploy-error" data-testid="register-error">@_registerError</p>
+        }
+
+        @if (_registerResult is { Outcome: RegistrationOutcome.Registered })
+        {
+            <p class="svx-deploy-applied" data-testid="register-success">
+                Registered '@_lastRegisteredName' at <code>@_lastRegisteredEndpoint</code>. Pinned
+                fingerprint <code>@_registerResult.PinnedFingerprint</code>. Its containers are now
+                discoverable for adoption on the servers page.
+            </p>
+        }
+        else if (_registerResult is not null)
+        {
+            <p class="svx-deploy-error" data-testid="register-outcome-error">@_registerResult.Detail</p>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>Raised after a host is registered, so the hosting page can refresh the registered-hosts list. The control deliberately does not reach into that list itself.</summary>
+    [Parameter]
+    public EventCallback OnRegistered { get; set; }
+
+    /// <summary>The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Mirrors <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.</summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    /// <summary>Matches <c>ImportDefinitionDialog.MaxUploadBytes</c>'s reasoning: rejected at read time, not only after a round trip to <see cref="IHostRegistrationService.RegisterAsync"/>.</summary>
+    private const long MaxPrivateKeyUploadBytes = 64 * 1024;
+
+    private IHostRegistrationService? _registration;
+
+    private string _endpoint = string.Empty;
+    private string? _probedEndpoint;
+    private bool _probing;
+    private HostProbeResult? _probeResult;
+    private string? _probeError;
+    private bool _fingerprintConfirmed;
+
+    private string _hostName = string.Empty;
+    private string _privateKeyText = string.Empty;
+    private string? _passphrase;
+    private Guid _fileInputKey = Guid.NewGuid();
+
+    private bool _registering;
+    private string? _registerError;
+    private RegistrationResult? _registerResult;
+    private string? _lastRegisteredName;
+    private string? _lastRegisteredEndpoint;
+
+    /// <summary>
+    /// Resolved via <see cref="IServiceProvider"/> rather than <c>@@inject</c>: <see cref="IHostRegistrationService"/>
+    /// is registered unconditionally in a real host, but this component must still render gracefully wherever it
+    /// is not — the same "optional collaborator" pattern <c>AdoptionPanel</c> and <c>ImportDefinitionDialog</c> use.
+    /// </summary>
+    protected override void OnInitialized()
+    {
+        _registration = Services.GetService(typeof(IHostRegistrationService)) as IHostRegistrationService;
+    }
+
+    /// <summary>
+    /// Any edit to the endpoint invalidates a prior probe: the confirmed fingerprint and the credential step
+    /// both belong to whatever endpoint was actually probed, never to whatever is currently typed.
+    /// </summary>
+    private void OnEndpointChanged(ChangeEventArgs e)
+    {
+        _endpoint = e.Value?.ToString() ?? string.Empty;
+        _probeResult = null;
+        _probeError = null;
+        _fingerprintConfirmed = false;
+        _registerResult = null;
+        _registerError = null;
+    }
+
+    private async Task ProbeAsync()
+    {
+        if (_registration is null || _probing || string.IsNullOrWhiteSpace(_endpoint))
+        {
+            return;
+        }
+
+        _probing = true;
+        _probeError = null;
+        _probeResult = null;
+        _fingerprintConfirmed = false;
+
+        try
+        {
+            var result = await _registration.ProbeAsync(_endpoint);
+            _probedEndpoint = _endpoint;
+
+            if (result.Outcome == HostProbeOutcome.Reached)
+            {
+                _probeResult = result;
+            }
+            else
+            {
+                _probeError = result.Detail ?? "The host could not be reached.";
+            }
+        }
+        catch (Exception ex)
+        {
+            // Degrades honestly rather than surfacing an unhandled exception, matching AdoptionPanel's
+            // AdoptAsync/ForgetAsync try/catch posture for every other backend call on this page.
+            _probeError = $"Could not probe this host: {ex.Message}";
+        }
+        finally
+        {
+            _probing = false;
+        }
+    }
+
+    private async Task OnPrivateKeyFileSelectedAsync(InputFileChangeEventArgs e)
+    {
+        _registerError = null;
+
+        if (e.File.Size > MaxPrivateKeyUploadBytes)
+        {
+            _registerError =
+                $"The selected file is {e.File.Size:N0} bytes, over the {MaxPrivateKeyUploadBytes / 1024} KB " +
+                "limit for a private key upload. Paste the key directly instead, or choose a smaller file.";
+            return;
+        }
+
+        try
+        {
+            using var stream = e.File.OpenReadStream(MaxPrivateKeyUploadBytes);
+            using var reader = new StreamReader(stream);
+            _privateKeyText = await reader.ReadToEndAsync();
+        }
+        catch (IOException ex)
+        {
+            // An I/O error message, not a private-key one — safe to surface, matching
+            // ImportDefinitionDialog.OnFileSelectedAsync's identical handling.
+            _registerError = $"The selected file could not be read: {ex.Message}";
+        }
+    }
+
+    private async Task RegisterAsync()
+    {
+        if (_registration is null || _registering)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(_hostName))
+        {
+            _registerError = "Choose a name for this host.";
+            return;
+        }
+
+        if (_probeResult is not { Outcome: HostProbeOutcome.Reached } probe || _probedEndpoint != _endpoint)
+        {
+            // Belt as well as braces: the credential step is only rendered once these hold, but a directly
+            // driven handler must refuse the same way rather than registering against a stale observation.
+            _registerError = "Probe this endpoint again before registering — the confirmed fingerprint is no longer current.";
+            return;
+        }
+
+        if (string.IsNullOrEmpty(_privateKeyText))
+        {
+            _registerError = "Paste or upload the private key for this host.";
+            return;
+        }
+
+        _registering = true;
+        _registerError = null;
+        _registerResult = null;
+
+        var name = _hostName.Trim();
+        var endpoint = _probedEndpoint;
+        var keyBytes = Encoding.UTF8.GetBytes(_privateKeyText);
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            _registerResult = await _registration.RegisterAsync(
+                name,
+                endpoint,
+                probe.Sha256Fingerprint!,
+                keyBytes,
+                string.IsNullOrEmpty(_passphrase) ? null : _passphrase,
+                actor);
+
+            if (_registerResult.Outcome == RegistrationOutcome.Registered)
+            {
+                _lastRegisteredName = name;
+                _lastRegisteredEndpoint = endpoint;
+                ResetForm();
+                await OnRegistered.InvokeAsync();
+            }
+        }
+        catch (Exception)
+        {
+            // Never surface the raw exception message here: unlike ProbeAsync/DeregisterAsync's own
+            // catch blocks, this call just handled a private key and passphrase, and an unanticipated
+            // exception's message is not a value this component may echo back to the UI. A generic
+            // refusal is the honest, safe answer — the registered-hosts list is the source of truth for
+            // whether anything actually landed.
+            _registerResult = null;
+            _registerError =
+                "Registration failed unexpectedly. Nothing was necessarily stored — check the registered " +
+                "hosts list below before retrying.";
+        }
+        finally
+        {
+            // Cleared unconditionally, success or failure: the private key and passphrase must never be
+            // re-rendered back into their inputs once a registration attempt has been made.
+            _privateKeyText = string.Empty;
+            _passphrase = null;
+            _registering = false;
+        }
+    }
+
+    /// <summary>Discards everything through the credential step; does not touch <see cref="_registerResult"/> so the success banner stays visible.</summary>
+    private void ResetForm()
+    {
+        _endpoint = string.Empty;
+        _probedEndpoint = null;
+        _probeResult = null;
+        _probeError = null;
+        _fingerprintConfirmed = false;
+        _hostName = string.Empty;
+        _fileInputKey = Guid.NewGuid();
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks on why this is one constant value in practice.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
+    }
+}

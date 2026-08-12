@@ -3,6 +3,7 @@ using Servyx.Domain.Common;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Entities;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Servers;
 
 namespace Servyx.Application.Servers;
@@ -11,21 +12,27 @@ namespace Servyx.Application.Servers;
 /// <see cref="IServerAdoptionService"/> implementation. Every write here touches ONLY <see cref="IServerRepository"/>
 /// and <see cref="IServerDefinitionBindingStore"/> — Servyx's own database — and this type holds no
 /// <c>ITransport</c>/execution-target dependency of any kind, so there is no collaborator through which a
-/// container command could even be issued. Both read paths — <see cref="ListCandidatesAsync"/> and
-/// <see cref="ListTrackedAsync"/> — report a genuine read failure through their result type
+/// container command could even be issued. <see cref="IHostRepository"/> is also held, but read-only: it is
+/// used to resolve a discovered container's <see cref="DiscoveredServer.HostKey"/> to a durable
+/// <see cref="Host"/> row (see <see cref="AdoptAsync"/>'s remarks on <see cref="Server.HostId"/>), never
+/// written to from here — host registration itself is <c>IHostRegistrationService</c>'s own surface. Both
+/// read paths — <see cref="ListCandidatesAsync"/> and <see cref="ListTrackedAsync"/> — report a genuine read
+/// failure through their result type
 /// (<see cref="CandidatesResult.DiscoveryFailed"/>/<see cref="TrackedServersResult.TrackingFailed"/>) rather
 /// than flattening it into an indistinguishable empty list; the one exception is
-/// <see cref="ListCandidatesAsync"/>'s own already-adopted exclusion check, which degrades to "no exclusions
-/// known" on its own persistence failure rather than failing the whole listing — see that private helper's
-/// remarks for why the two failure modes are held to different standards. Mutating paths
-/// (<see cref="AdoptAsync"/>/<see cref="ForgetAsync"/>) let a genuine persistence fault propagate as an
-/// exception, reserving the result type for expected, non-exceptional outcomes only.
+/// <see cref="ListCandidatesAsync"/>'s own already-adopted exclusion check (and, for the same reason, its
+/// host-name resolution for display), both of which degrade to "no exclusions known"/"show the host key
+/// as-is" on their own persistence failure rather than failing the whole listing — see
+/// <see cref="TryGetAdoptedContainerIdsAsync"/>'s remarks for why the two failure modes are held to different
+/// standards. Mutating paths (<see cref="AdoptAsync"/>/<see cref="ForgetAsync"/>) let a genuine persistence
+/// fault propagate as an exception, reserving the result type for expected, non-exceptional outcomes only.
 /// </summary>
 public sealed class ServerAdoptionService : IServerAdoptionService
 {
     private readonly IServerDiscovery _discovery;
     private readonly IServerRepository _repository;
     private readonly IServerDefinitionBindingStore _bindingStore;
+    private readonly IHostRepository _hostRepository;
     private readonly IAdoptionDefinitionCatalog _definitions;
     private readonly ILogger<ServerAdoptionService> _logger;
     private readonly TimeProvider _timeProvider;
@@ -36,6 +43,7 @@ public sealed class ServerAdoptionService : IServerAdoptionService
         IServerDiscovery discovery,
         IServerRepository repository,
         IServerDefinitionBindingStore bindingStore,
+        IHostRepository hostRepository,
         IAdoptionDefinitionCatalog definitions,
         ILogger<ServerAdoptionService> logger,
         TimeProvider? timeProvider = null)
@@ -43,12 +51,14 @@ public sealed class ServerAdoptionService : IServerAdoptionService
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(bindingStore);
+        ArgumentNullException.ThrowIfNull(hostRepository);
         ArgumentNullException.ThrowIfNull(definitions);
         ArgumentNullException.ThrowIfNull(logger);
 
         _discovery = discovery;
         _repository = repository;
         _bindingStore = bindingStore;
+        _hostRepository = hostRepository;
         _definitions = definitions;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -112,11 +122,17 @@ public sealed class ServerAdoptionService : IServerAdoptionService
         }
 
         var alreadyAdoptedContainerIds = await TryGetAdoptedContainerIdsAsync(ct).ConfigureAwait(false);
+        var hostsByName = await TryGetHostsByNameAsync(ct).ConfigureAwait(false);
 
         return CandidatesResult.Ok(byContainerId.Values
             .Where(entry => !alreadyAdoptedContainerIds.Contains(entry.Server.ServerId))
             .Select(entry => new AdoptionCandidate(
-                entry.Server.ServerId, entry.Server.Name, entry.Server.Image, entry.Server.State, entry.DefinitionIds))
+                entry.Server.ServerId,
+                entry.Server.Name,
+                entry.Server.Image,
+                entry.Server.State,
+                entry.DefinitionIds,
+                ResolveHostNameForDisplay(entry.Server.HostKey, hostsByName)))
             .ToList());
     }
 
@@ -143,6 +159,49 @@ public sealed class ServerAdoptionService : IServerAdoptionService
             _logger.LogWarning(ex, "Failed to read already-adopted servers; candidates will not be filtered.");
             return [];
         }
+    }
+
+    /// <summary>
+    /// Best-effort, same reasoning as <see cref="TryGetAdoptedContainerIdsAsync"/>: a failure reading the
+    /// host table degrades to "no registered hosts known this cycle" — every candidate's display name then
+    /// falls back to its raw <see cref="DiscoveredServer.HostKey"/> (see
+    /// <see cref="ResolveHostNameForDisplay"/>) — rather than failing the whole candidate listing over what
+    /// is, here, a purely cosmetic lookup.
+    /// </summary>
+    private async Task<IReadOnlyDictionary<string, Host>> TryGetHostsByNameAsync(CancellationToken ct)
+    {
+        try
+        {
+            var hosts = await _hostRepository.ListAsync(ct).ConfigureAwait(false);
+            return hosts.ToDictionary(h => h.Name, StringComparer.Ordinal);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex, "Failed to read registered hosts; adoption candidates will show their raw host key instead of a resolved host name.");
+            return new Dictionary<string, Host>(StringComparer.Ordinal);
+        }
+    }
+
+    /// <summary>
+    /// Resolves a discovered container's <see cref="DiscoveredServer.HostKey"/> to a display name: the
+    /// matching <see cref="Host"/> row's own <see cref="Host.Name"/> when <paramref name="hostKey"/> names a
+    /// database-registered host, <paramref name="hostKey"/> itself when it names a configuration-declared
+    /// host with no corresponding row (see <see cref="AdoptAsync"/>'s remarks for why that gap exists), or
+    /// <see langword="null"/> when discovery has no host notion at all for this container.
+    /// </summary>
+    private static string? ResolveHostNameForDisplay(string? hostKey, IReadOnlyDictionary<string, Host> hostsByName)
+    {
+        if (hostKey is null)
+        {
+            return null;
+        }
+
+        return hostsByName.TryGetValue(hostKey, out var host) ? host.Name : hostKey;
     }
 
     /// <inheritdoc />
@@ -220,6 +279,23 @@ public sealed class ServerAdoptionService : IServerAdoptionService
             return AdoptionResult.AlreadyAdopted(alreadyAdopted.Id);
         }
 
+        // Resolves match.HostKey to a real Host row when one exists. HostKey is NOT reliably backed by a
+        // Host row: CompositeServerDiscovery tags every result with the name HostConnectionRegistry combined
+        // configured hosts (Servyx:Hosts) and database-registered hosts under — a name that, for a
+        // configuration-declared host, was never written to the Hosts table at all (see
+        // RegisteredHostTargetFactory/HostConnectionRegistry's own remarks: configuration hosts are
+        // authoritative but are never persisted as a Host row, only database registrations are). So
+        // "HostKey is non-null" does NOT imply "a Host row exists for it" — only a lookup can tell the two
+        // apart. A null HostKey (the local/non-SSH discovery source, which has no host notion at all) also
+        // resolves to no row. Either way, Server.HostId is set ONLY when TryGetByNameAsync actually finds a
+        // row — never fabricated — matching Server.HostId's own "honest, not-modeled-is-null" contract.
+        // Unlike the same lookup in ListCandidatesAsync (a cosmetic display concern that degrades on its own
+        // read failure), a genuine failure here is allowed to propagate as an exception, per this class's own
+        // documented policy for AdoptAsync/ForgetAsync.
+        Host? resolvedHost = match.HostKey is null
+            ? null
+            : await _hostRepository.TryGetByNameAsync(match.HostKey, ct).ConfigureAwait(false);
+
         var now = _timeProvider.GetUtcNow();
         var server = new Server
         {
@@ -228,11 +304,7 @@ public sealed class ServerAdoptionService : IServerAdoptionService
             ContainerId = containerId,
             GameDefinitionId = definitionRef.Id,
             DefinitionContentHash = definitionRef.ContentHash,
-            // Phase 1 has no host-management concept yet — nothing in this codebase ever creates a Host row.
-            // Left null (Server.HostId's honest "not modeled" state) rather than fabricated with a random,
-            // unlinked HostId.New() — see that property's own remarks. Wiring adoption to a real Hosts row is
-            // later-phase scope.
-            HostId = null,
+            HostId = resolvedHost?.Id,
             AdoptionMode = AdoptionMode.Adopted,
             // Always ReadOnly on adoption: granting write access is a separate, deliberate operator act
             // (a later phase), never an automatic side effect of adoption.

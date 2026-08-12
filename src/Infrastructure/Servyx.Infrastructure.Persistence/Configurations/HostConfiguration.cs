@@ -39,7 +39,28 @@ public sealed class HostConfiguration : IEntityTypeConfiguration<Host>
         builder.Property(host => host.ProviderAccountId)
             .HasMaxLength(128);
 
+        builder.Property(host => host.Endpoint)
+            .IsRequired()
+            .HasMaxLength(512);
+
+        builder.Property(host => host.CredentialUrn)
+            .HasMaxLength(512);
+
+        builder.Property(host => host.TrustPolicy)
+            .IsRequired()
+            .HasMaxLength(32);
+
+        builder.Property(host => host.PinnedFingerprints)
+            .HasMaxLength(1024);
+
+        builder.Property(host => host.RegisteredBy)
+            .HasMaxLength(200);
+
         builder.HasIndex(host => host.ConnectorId);
+
+        // Two rows for the same human-chosen name would make registration and lookup ambiguous.
+        builder.HasIndex(host => host.Name)
+            .IsUnique();
 
         // Answers "which host is this provider resource?" during an orphan sweep without a table scan.
         builder.HasIndex(host => new { host.ProviderAccountId, host.ProviderResourceId });

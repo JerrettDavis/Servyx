@@ -1,8 +1,11 @@
 using Microsoft.Extensions.Logging;
+using Servyx.Application.Hosts;
 using Servyx.Composition;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Transport;
 using Servyx.Web.Authentication;
 using Servyx.Web.Components;
+using Servyx.Web.Hosts;
 using Servyx.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -47,6 +50,35 @@ builder.Services.AddServyxOperatorAuthentication(
     // Lets an operator (or a test host) point the encrypted secret files somewhere other than the default
     // servyx-data/secrets beside the binaries, in the same spirit as Servyx:Persistence:ConnectionString.
     builder.Configuration["Servyx:Secrets:RootDirectory"]);
+
+// The runtime (UI-driven) counterpart to the config-driven Servyx:Secrets:Import startup path: lets a future
+// "adopt a remote host" form put an SSH private key into the same encrypted secret store without an
+// operator editing configuration and restarting. Registered here, immediately after
+// AddServyxOperatorAuthentication, because that call is what registers the ISecretStore this store is built
+// on (see AddServyxSecrets inside it) — same singleton lifetime as OperatorCredentialStore, for the same
+// reason: it owns no state of its own beyond the ISecretStore reference, so one instance for the process
+// lifetime is exactly right.
+builder.Services.AddSingleton<SshHostCredentialStore>();
+
+// ── Host registration ────────────────────────────────────────────────────────────────────────────
+//
+// The use case itself (probe → confirm a fingerprint → register) lives in Servyx.Application, where it belongs:
+// it orchestrates the Hosts table, the host key store, the secret store, and the discovery cache, and it
+// contains the security decision this whole feature rests on — a caller-supplied fingerprint is only ever
+// compared against one this process observed on the wire, never pinned on faith. See
+// IHostRegistrationService.RegisterAsync's remarks.
+//
+// The wiring is here, in the outer composition root, for one reason: exactly one of its collaborators —
+// IHostCredentialImporter — is implemented by a Presentation-layer type. SshHostCredentialStore lives in this
+// project because the ISecretStore it writes through is registered by AddServyxOperatorAuthentication above,
+// which is Web-only (an MCP host authenticates its own transport and does not run it). Servyx.Application must
+// never reference Servyx.Web, so the seam is declared in Servyx.Domain (IHostCredentialImporter, alongside
+// IHostRepository and for the same documented reason) and bound to the concrete store here — a composition
+// root is precisely the place that is allowed to know both halves. The other two collaborators need no such
+// indirection: IHostKeyStore is already a Domain abstraction with a Servyx.Infrastructure implementation, and
+// IHostKeyProbe/IHostConnectionRefresher are registered by AddServyxSshDocker inside AddServyxCore.
+builder.Services.AddSingleton<IHostCredentialImporter>(sp => sp.GetRequiredService<SshHostCredentialStore>());
+builder.Services.AddSingleton<IHostRegistrationService, HostRegistrationService>();
 
 // ── Presentation ─────────────────────────────────────────────────────────────────────────────────
 //

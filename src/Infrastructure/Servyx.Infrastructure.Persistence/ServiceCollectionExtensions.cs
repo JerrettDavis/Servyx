@@ -2,10 +2,12 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Provisioning;
 using Servyx.Domain.Servers;
 using Servyx.Infrastructure.Persistence.Configuration;
 using Servyx.Infrastructure.Persistence.Definitions;
+using Servyx.Infrastructure.Persistence.Hosts;
 using Servyx.Infrastructure.Persistence.Interceptors;
 using Servyx.Infrastructure.Persistence.Provisioning;
 using Servyx.Infrastructure.Persistence.Servers;
@@ -123,6 +125,26 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddSingleton<IServerRepository, EfServerRepository>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfHostRepository"/> as the <see cref="IHostRepository"/>, backed by the
+    /// <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling of
+    /// <see cref="AddServyxServerRepository"/> for the same reason — this is the durable store behind
+    /// Servyx's own host registration bookkeeping, a distinct opt-in decision, not a side effect of asking
+    /// for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching <see cref="AddServyxServerRepository"/>. See
+    /// <see cref="EfHostRepository"/>'s own remarks for why that is safe here.
+    /// </remarks>
+    public static IServiceCollection AddServyxHostRepository(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IHostRepository, EfHostRepository>();
 
         return services;
     }

@@ -17,12 +17,22 @@ namespace Servyx.Application.Servers;
 /// Usually one entry; more than one only when two loaded definitions share adoption criteria specific
 /// enough to both match the same container.
 /// </param>
+/// <param name="HostName">
+/// The human-readable name of the host this container was discovered on, for display only. Resolved from
+/// the discovered workload's <see cref="Servyx.Domain.Discovery.DiscoveredServer.HostKey"/>: the name of the
+/// matching database-registered <see cref="Servyx.Domain.Entities.Host"/> row when one exists, the host key
+/// itself when discovery fanned out to a configuration-declared host with no corresponding row (see
+/// <see cref="IServerAdoptionService"/>'s implementation for why one can exist without the other), or
+/// <see langword="null"/> when discovery has no multi-host notion at all (a single, non-SSH source) — the
+/// same condition under which <see cref="Servyx.Domain.Entities.Server.HostId"/> is left unset on adoption.
+/// </param>
 public sealed record AdoptionCandidate(
     string ContainerId,
     string Name,
     string Image,
     string State,
-    IReadOnlyList<string> SuggestedDefinitionIds);
+    IReadOnlyList<string> SuggestedDefinitionIds,
+    string? HostName = null);
 
 /// <summary>
 /// Result of listing adoption candidates, distinguishing a genuine (possibly empty) listing from a

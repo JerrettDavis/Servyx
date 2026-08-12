@@ -3,8 +3,11 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
+using Servyx.Domain.Common;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Discovery;
+using Servyx.Domain.Entities;
+using Servyx.Domain.Hosts;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker;
@@ -15,14 +18,35 @@ using Servyx.Web.Tests.Fakes;
 namespace Servyx.Web.Tests.Services;
 
 /// <summary>
+/// Shared across every <c>AddServyxSshDocker</c> wiring test below (<see cref="SshDockerWiringTests"/> and
+/// <see cref="SshDockerWiringReportingTests"/>), which each compose their own minimal
+/// <see cref="IServiceCollection"/> rather than the full composition root.
+/// </summary>
+internal static class SshDockerWiringTestSupport
+{
+    /// <summary>
+    /// A substituted <see cref="IHostRepository"/> that answers with zero rows unless a test explicitly
+    /// configures otherwise — <see cref="HostConnectionRegistry"/> (the production <see cref="IHostConnectionSource"/>
+    /// <c>AddServyxSshDocker</c> now registers alongside discovery) needs one resolvable in the container for
+    /// <see cref="IServerDiscovery"/> to resolve at all, even in tests that never call <c>DiscoverAsync</c>.
+    /// </summary>
+    internal static IHostRepository EmptyHostRepository()
+    {
+        var repository = Substitute.For<IHostRepository>();
+        repository.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([]));
+        return repository;
+    }
+}
+
+/// <summary>
 /// Composes <c>AddServyxSshDocker</c> the way <c>Program.cs</c> does — right after <c>AddServyxDocker()</c>
 /// — and asserts the write-guard and replacement-vs-no-op properties the whole registration exists for.
 /// </summary>
 /// <remarks>
 /// None of these tests open a real socket. Resolving <see cref="IServerDiscovery"/>, <see cref="ITransport"/>
 /// etc. only constructs objects; the SSH connection <c>SshDockerServiceCollectionExtensions</c>'s
-/// <c>LazyConnectingExecutionTarget</c> would eventually open happens only on a real <see cref="IExecutionTarget"/>
-/// call, which nothing here makes.
+/// <see cref="LazyConnectingExecutionTarget"/> would eventually open happens only on a real
+/// <see cref="IExecutionTarget"/> call, which nothing here makes.
 /// </remarks>
 public class SshDockerWiringTests
 {
@@ -50,6 +74,7 @@ public class SshDockerWiringTests
         services.AddLogging();
         services.AddSingleton(Substitute.For<ISecretStore>());
         services.AddSingleton(Substitute.For<IHostKeyVerifier>());
+        services.AddSingleton(SshDockerWiringTestSupport.EmptyHostRepository());
         return services;
     }
 
@@ -85,13 +110,14 @@ public class SshDockerWiringTests
     }
 
     [Fact]
-    public async Task Server_discovery_resolves_to_the_ssh_docker_implementation_and_not_the_docker_one()
+    public async Task Server_discovery_resolves_to_the_composite_ssh_docker_implementation_and_not_the_docker_one()
     {
         // Async disposal: resolving IServerDiscovery constructs the shared LazyConnectingExecutionTarget
-        // singleton, which — like every IExecutionTarget — implements only IAsyncDisposable.
+        // singleton (via HostConnectionRegistry), which — like every IExecutionTarget — implements only
+        // IAsyncDisposable.
         await using var provider = ComposedWithHost();
 
-        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<SshDockerServerDiscovery>();
+        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<CompositeServerDiscovery>();
     }
 
     [Fact]
@@ -157,6 +183,58 @@ public class SshDockerWiringTests
         services.Count(d => d.ServiceType == typeof(IServerDiscovery)).Should().Be(discoveryRegistrationsBefore);
 
         using var provider = services.BuildServiceProvider();
+        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<DockerServerDiscovery>();
+    }
+
+    /// <summary>
+    /// Increment 4b: <c>AddServyxSshDocker</c> used to no-op entirely whenever
+    /// <see cref="SshDockerWiringOptions.Any"/> was <see langword="false"/>, so a fresh, zero-config install
+    /// never registered <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
+    /// <see cref="CompositeServerDiscovery"/> at all — there was nothing in the container for a
+    /// database-registered host (added later, through the UI, with no process restart) to be discovered
+    /// through. This proves the fix at the DI-composition level: with zero config hosts, those three are still
+    /// resolvable and the registry still reports a database-registered host — while
+    /// <see cref="With_no_hosts_configured_the_docker_registrations_are_left_untouched"/> above proves the
+    /// general-purpose <see cref="IServerDiscovery"/> slot deliberately stays untouched (still local Docker),
+    /// so this fix does not regress a plain local-docker-only install.
+    /// </summary>
+    [Fact]
+    public async Task With_no_hosts_configured_the_host_connection_registry_still_registers_and_sees_a_database_host()
+    {
+        var dbHost = new Host
+        {
+            Id = HostId.New(),
+            Name = "db-only-host",
+            ConnectorId = "ssh:db-only-host",
+            Endpoint = "db-host.example.com:22",
+            TrustPolicy = "trustOnFirstUse",
+            Enabled = true,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        };
+        var repository = Substitute.For<IHostRepository>();
+        repository.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([dbHost]));
+
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddSingleton(Substitute.For<ISecretStore>());
+        services.AddSingleton(Substitute.For<IHostKeyVerifier>());
+        services.AddSingleton(repository);
+        services.AddServyxDocker();
+
+        var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
+        options.Any.Should().BeFalse();
+        services.AddServyxSshDocker(options, NullLogger.Instance);
+
+        await using var provider = services.BuildServiceProvider();
+
+        var source = provider.GetRequiredService<IHostConnectionSource>();
+        var connections = await source.GetConnectionsAsync();
+
+        connections.Should().ContainSingle().Which.HostKey.Should().Be("db-only-host");
+
+        // Resolvable directly (the seam a later host-registration flow attaches to), even though
+        // IServerDiscovery itself is not swapped to it while options.Any is false — see the sibling test above.
+        provider.GetRequiredService<CompositeServerDiscovery>().Should().NotBeNull();
         provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<DockerServerDiscovery>();
     }
 }
@@ -307,8 +385,15 @@ public class SshDockerWiringReportingTests
             "its malformed sibling");
     }
 
+    /// <summary>
+    /// Configuring more than one host used to log a warning that only <c>Hosts[0]</c> would ever be wired to
+    /// anything. That is no longer true for discovery — <see cref="CompositeServerDiscovery"/> fans out across
+    /// every configured host — so the warning is gone; <see cref="TargetDescriptor"/> (and every other
+    /// Hosts[0]-scoped surface) is still wired from the first host only, which is a real, still-current
+    /// limitation this test keeps pinned.
+    /// </summary>
     [Fact]
-    public void Configuring_more_than_one_host_warns_that_only_the_first_is_used()
+    public async Task Configuring_more_than_one_host_no_longer_warns_but_still_scopes_TargetDescriptor_to_the_first()
     {
         var configuration = ConfigurationFrom(
             ("Servyx:Hosts:alpha-host:Enabled", "true"),
@@ -322,22 +407,26 @@ public class SshDockerWiringReportingTests
         var options = SshDockerWiringOptions.FromConfiguration(configuration, logger);
 
         options.Hosts.Should().HaveCount(2);
-        logger.Entries.Should().ContainSingle(e =>
-            e.Level == LogLevel.Warning
-            && e.Message.Contains("2")
-            && e.Message.Contains(options.Hosts[0].Name),
-            "the warning must name which host actually wins, not just that there is more than one");
+        logger.Entries.Should().BeEmpty(
+            "configuring more than one host is fully supported now that discovery fans out across all of "
+            + "them — there is nothing left to warn about");
 
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddSingleton(Substitute.For<ISecretStore>());
         services.AddSingleton(Substitute.For<IHostKeyVerifier>());
+        services.AddSingleton(SshDockerWiringTestSupport.EmptyHostRepository());
         services.AddServyxDocker();
         services.AddServyxSshDocker(options, logger);
 
-        using var provider = services.BuildServiceProvider();
+        await using var provider = services.BuildServiceProvider();
+
         var target = provider.GetRequiredService<TargetDescriptor>();
         target.Endpoint.Should().Be(options.Hosts[0].Target.Endpoint,
-            "AddServyxSshDocker wires only options.Hosts[0], whichever host that turned out to be");
+            "TargetDescriptor/ITransport/IExecutionTarget/ILogStream/IMetricsSource are still wired only from " +
+            "options.Hosts[0] — this increment scopes multi-host support to discovery only");
+
+        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<CompositeServerDiscovery>(
+            "discovery, unlike the surfaces above, is wired to fan out across every configured host");
     }
 }

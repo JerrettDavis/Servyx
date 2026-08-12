@@ -11,6 +11,7 @@ public class NavMenuTests : BunitContext
     [
         ("Dashboard", ""),
         ("Servers", "servers"),
+        ("Hosts", "hosts"),
         ("Games", "games"),
         ("Backups", "backups"),
         ("Mods", "mods"),
@@ -21,12 +22,12 @@ public class NavMenuTests : BunitContext
     ];
 
     [Fact]
-    public void RendersAllNineNavEntries_WithCorrectHrefs()
+    public void RendersAllTenNavEntries_WithCorrectHrefs()
     {
         var cut = Render<NavMenu>();
 
         var links = cut.FindAll("a.svx-nav-link");
-        links.Should().HaveCount(9);
+        links.Should().HaveCount(10);
 
         foreach (var (_, href) in ExpectedEntries)
         {
