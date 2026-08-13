@@ -909,65 +909,83 @@ public static class ServyxCoreCompositionExtensions
 
             // ── SSH-hosted backups ───────────────────────────────────────────────────────────────────────
             //
-            // Opt-in per server on top of this gate, and empty by default: SshBackupWiringOptions returns None
-            // unless a server names itself under Servyx:Servers:<name>:Ssh:Enabled AND supplies the two values
-            // nothing can be inferred from — :Host and :Root. With nothing configured, not one line below runs, so
-            // no SSH transport is constructed, no secret is resolved, no socket is opened, and the container is
-            // byte-for-byte what it was before SSH backups existed.
+            // Statically opt-in per server on top of this gate, and empty by default: SshBackupWiringOptions
+            // returns None unless a server names itself under Servyx:Servers:<name>:Ssh:Enabled AND supplies
+            // the two values nothing can be inferred from — :Host and :Root.
+            //
+            // Everything below is now registered UNCONDITIONALLY, regardless of sshBackups.Any — the same
+            // move ServyxRconChannels' own registration made (see its remarks): a server adopted purely
+            // through the UI, on a registered ssh+docker host with zero Servyx:Servers:<name>:Ssh:* ever
+            // declared, still needs a route to its backups, and ServyxSshBackupContextSource now derives one
+            // for exactly that server — see its own remarks on FromAdoptedAsync. Gating this block on
+            // sshBackups.Any, as it used to, meant a zero-static-config install (this repo's own
+            // appsettings.Development.json is exactly one) never even registered an SshBackupProvider, so an
+            // adopted remote server's Backups panel had no route to reach at all, static or derived.
             //
             // AddServyxSsh() is deliberately NOT called. It registers a second ITransport, and ITransport is
             // injected singly by ServyxBackupContextSource — the Docker context source — so a second registration
             // would resolve there and point Docker's backups at an SSH host. (It also registers an IConnectorPool
             // whose factory throws pending a connector registry; not calling it sidesteps that too, and nothing
-            // here needs a pooled connector.) The SSH transport is therefore composed inline below, inside the
-            // same WriteGuardedTransport wrapper AddServyxSsh() would have put it in and over the same grants.
+            // here needs a pooled connector.) The SSH transport for a STATICALLY configured server is therefore
+            // composed inline below, inside the same WriteGuardedTransport wrapper AddServyxSsh() would have put
+            // it in and over the same grants — but only when sshBackups.Any, so that ISecretStore/IHostKeyVerifier
+            // are never required on a host that declared no static SSH-hosted server at all (a process with no
+            // secret store — see ServyxRconChannels' own remarks — must still start). An adopted server never
+            // reaches this transport: its execution target comes from IServerExecutionTargetResolver instead,
+            // which is registered regardless (see ServyxSshBackupContextSource's own remarks).
             // Reuses sshDockerLogger — the same bootstrap logger already stood up for the ssh+docker wiring above —
             // so FromConfiguration can warn in-line about a declared-but-inert ForeignDirectory (see its remarks)
             // rather than that warning living as unreviewable, untestable Program.cs logic.
             var sshBackups = SshBackupWiringOptions.FromConfiguration(builder.Configuration, provisioningGate, sshDockerLogger);
             builder.Services.AddSingleton(sshBackups);
 
-            if (sshBackups.Any)
+            // The SSH half of Servyx:Servers:<name>:WriteMode. The local docker half of that key emits no
+            // grant at all any more (it is a database row); these are scoped to the exact endpoint the
+            // session connects to, and to nothing wider. Without one, a statically-configured SSH server can
+            // still be listed, inspected and dry-run pruned — only creating and restoring are refused. Empty
+            // when sshBackups.Any is false, which registers nothing here — an adopted server's writes are
+            // gated by WritableServers instead (see ServyxSshBackupContextSource.ContainerGrantWriteModeResolver).
+            foreach (var sshGrant in sshBackups.WriteGrants)
             {
-                // The SSH half of Servyx:Servers:<name>:WriteMode. The local docker half of that key emits no
-                // grant at all any more (it is a database row); these are scoped to the exact
-                // endpoint the session connects to, and to nothing wider. Without one, an SSH server can still be
-                // listed, inspected and dry-run pruned — only creating and restoring are refused.
-                foreach (var sshGrant in sshBackups.WriteGrants)
-                {
-                    builder.Services.AddSingleton(sshGrant);
-                }
+                builder.Services.AddSingleton(sshGrant);
+            }
 
-                // The seam AddServyxSshBackups() deliberately does not default. Registered as the implementation
-                // type as well so its cached SSH sessions are disposed with the container.
-                builder.Services.AddSingleton(sp => new ServyxSshBackupContextSource(
-                    sshBackups,
-                    new WriteGuardedTransport(
+            // Registered as the implementation type as well so its cached (static-path) SSH sessions are
+            // disposed with the container.
+            builder.Services.AddSingleton(sp => new ServyxSshBackupContextSource(
+                sshBackups,
+                sshBackups.Any
+                    ? new WriteGuardedTransport(
                         new SshTransport(
                             sp.GetRequiredService<ISecretStore>(),
                             sp.GetRequiredService<IHostKeyVerifier>(),
                             sp.GetRequiredService<ILoggerFactory>()),
-                        new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>())),
-                    sp.GetRequiredService<ServyxRconChannels>()));
-                builder.Services.AddSingleton<ISshBackupContextSource>(
-                    sp => sp.GetRequiredService<ServyxSshBackupContextSource>());
+                        new GrantedWriteModeResolver(sp.GetServices<WriteModeGrant>()))
+                    : null,
+                sp.GetRequiredService<ServyxRconChannels>(),
+                sp.GetRequiredService<IServerQueryService>(),
+                sp.GetRequiredService<IServerExecutionTargetResolver>(),
+                sp.GetRequiredService<WritableServers>(),
+                singleDefinition));
+            builder.Services.AddSingleton<ISshBackupContextSource>(
+                sp => sp.GetRequiredService<ServyxSshBackupContextSource>());
 
-                builder.Services.AddServyxSshBackups();
+            builder.Services.AddServyxSshBackups();
 
-                // Two IBackupProviders are now registered, and BackupDashboardService takes one. Rather than let
-                // registration order decide — which would make "Docker backups still work" a property of the order
-                // of two lines in this file — the dashboard is composed over an explicit router that dispatches on
-                // the server the call is about. See ServyxBackupProviderRouter for why routing beats keyed
-                // resolution here: half of IBackupProvider's members take an opaque backup or restore-plan id that
-                // names no server, and the router is the only place that can remember who issued one.
-                builder.Services.AddSingleton<IBackupDashboard>(sp => new BackupDashboardService(
-                    ServyxBackupProviderRouter.FromRegistered(sp.GetServices<IBackupProvider>(), sshBackups.ServerKeys)));
-            }
-            else
-            {
-                // The unchanged path: one provider, resolved singly, exactly as before.
-                builder.Services.AddServyxBackupDashboard();
-            }
+            // Two IBackupProviders are now always registered, and BackupDashboardService takes one. Rather
+            // than let registration order decide — which would make "Docker backups still work" a property
+            // of the order of two lines in this file — the dashboard is composed over an explicit router that
+            // dispatches on the server the call is about. See ServyxBackupProviderRouter for why routing beats
+            // keyed resolution here: half of IBackupProvider's members take an opaque backup or restore-plan
+            // id that names no server, and the router is the only place that can remember who issued one. The
+            // router itself falls back to a live host probe for a server not in sshBackups.ServerKeys — see
+            // its own remarks — so this composes correctly whether sshBackups is empty, statically populated,
+            // or both.
+            builder.Services.AddSingleton<IBackupDashboard>(sp => new BackupDashboardService(
+                ServyxBackupProviderRouter.FromRegistered(
+                    sp.GetServices<IBackupProvider>(),
+                    sshBackups.ServerKeys,
+                    sp.GetRequiredService<IHostConnectionSource>())));
 
             // Opt-in on top of the gate: BackupScheduleOptions.FromConfiguration returns Disabled unless a
             // server names itself under Servyx:Servers:<name>:Backup:Enabled, so registering the service here

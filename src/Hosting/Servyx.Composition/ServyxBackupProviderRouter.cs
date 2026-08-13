@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Servyx.Domain.Backups;
 using Servyx.Infrastructure.Ssh.Backups;
+using Servyx.Infrastructure.Ssh.Docker;
 
 namespace Servyx.Composition;
 
@@ -41,22 +42,40 @@ namespace Servyx.Composition;
 /// <c>DockerBackupProvider</c> and <c>SshBackupProvider</c> today; nothing here is authoritative, so an
 /// entry that outlives its plan can only route a call that both providers would refuse anyway.
 /// </para>
+/// <para>
+/// <strong>A server id not in <see cref="SshServerIds"/> is not necessarily Docker's.</strong> When
+/// <paramref name="hostConnections"/> is supplied, every routing decision that misses the static set falls
+/// back to a cheap, cached-after-first-read probe of every registered/configured ssh+docker host (the same
+/// <c>docker container inspect</c> <c>HostAwareLogStream</c>/<c>HostAwareMetricsSource</c> already issue) for
+/// a container named <paramref name="serverId"/> — a server adopted through the UI, with zero
+/// <c>Servyx:Servers:&lt;name&gt;:Ssh:*</c> ever declared, still routes to the SSH provider. Zero registered/
+/// configured hosts (the common case) short-circuits before any probe, so a purely local Docker install pays
+/// nothing extra for this. A server the probe cannot place on any host — genuinely local, or genuinely
+/// unknown — still falls through to the default provider, exactly as before this fallback existed.
+/// </para>
 /// </remarks>
 public sealed class ServyxBackupProviderRouter : IBackupProvider
 {
     private readonly IBackupProvider _default;
     private readonly IBackupProvider _ssh;
     private readonly HashSet<string> _sshServerIds;
+    private readonly IHostConnectionSource? _hostConnections;
     private readonly ConcurrentDictionary<string, byte> _sshPlans = new(StringComparer.Ordinal);
 
     /// <summary>Creates a router.</summary>
     /// <param name="defaultProvider">The provider every unrecognised call goes to. In this host, Docker's.</param>
     /// <param name="sshProvider">The provider owning the servers named by <paramref name="sshServerIds"/>.</param>
-    /// <param name="sshServerIds">The ids of the SSH-hosted servers.</param>
+    /// <param name="sshServerIds">The ids of the statically-configured SSH-hosted servers.</param>
+    /// <param name="hostConnections">
+    /// The live registered/configured ssh+docker host set, consulted for a server id not in
+    /// <paramref name="sshServerIds"/> — see this type's remarks. <see langword="null"/> disables that
+    /// fallback: routing is then exactly the static-set lookup this type has always done.
+    /// </param>
     public ServyxBackupProviderRouter(
         IBackupProvider defaultProvider,
         IBackupProvider sshProvider,
-        IEnumerable<string> sshServerIds)
+        IEnumerable<string> sshServerIds,
+        IHostConnectionSource? hostConnections = null)
     {
         ArgumentNullException.ThrowIfNull(defaultProvider);
         ArgumentNullException.ThrowIfNull(sshProvider);
@@ -65,6 +84,7 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
         _default = defaultProvider;
         _ssh = sshProvider;
         _sshServerIds = new HashSet<string>(sshServerIds, StringComparer.OrdinalIgnoreCase);
+        _hostConnections = hostConnections;
     }
 
     /// <summary>The server ids routed to the SSH provider. Every other id goes to the default.</summary>
@@ -77,11 +97,13 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
     /// re-point either half.
     /// </summary>
     /// <param name="providers">Every registered <see cref="IBackupProvider"/>. Must contain exactly one SSH provider and exactly one other.</param>
-    /// <param name="sshServerIds">The ids of the SSH-hosted servers.</param>
+    /// <param name="sshServerIds">The ids of the statically-configured SSH-hosted servers.</param>
+    /// <param name="hostConnections">The live registered/configured ssh+docker host set — see the constructor's remarks.</param>
     /// <exception cref="InvalidOperationException">The container does not hold exactly one provider of each kind.</exception>
     public static ServyxBackupProviderRouter FromRegistered(
         IEnumerable<IBackupProvider> providers,
-        IEnumerable<string> sshServerIds)
+        IEnumerable<string> sshServerIds,
+        IHostConnectionSource? hostConnections = null)
     {
         ArgumentNullException.ThrowIfNull(providers);
 
@@ -98,28 +120,31 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
                 + "order.");
         }
 
-        return new ServyxBackupProviderRouter(others[0], ssh[0], sshServerIds);
+        return new ServyxBackupProviderRouter(others[0], ssh[0], sshServerIds, hostConnections);
     }
 
     /// <inheritdoc />
-    public Task<BackupArtifact> CreateAsync(string serverId, CancellationToken ct = default)
+    public async Task<BackupArtifact> CreateAsync(string serverId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
-        return ForServer(serverId).CreateAsync(serverId, ct);
+        var provider = await ForServerAsync(serverId, ct).ConfigureAwait(false);
+        return await provider.CreateAsync(serverId, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<BackupArtifact>> ListAsync(string serverId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<BackupArtifact>> ListAsync(string serverId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
-        return ForServer(serverId).ListAsync(serverId, ct);
+        var provider = await ForServerAsync(serverId, ct).ConfigureAwait(false);
+        return await provider.ListAsync(serverId, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
-    public Task<IReadOnlyList<string>> InspectAsync(string backupId, CancellationToken ct = default)
+    public async Task<IReadOnlyList<string>> InspectAsync(string backupId, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(backupId);
-        return ForBackup(backupId).InspectAsync(backupId, ct);
+        var provider = await ForBackupAsync(backupId, ct).ConfigureAwait(false);
+        return await provider.InspectAsync(backupId, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -127,7 +152,7 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(backupId);
 
-        var provider = ForBackup(backupId);
+        var provider = await ForBackupAsync(backupId, ct).ConfigureAwait(false);
         var plan = await provider.PlanRestoreAsync(backupId, ct).ConfigureAwait(false);
 
         // A restore-plan id names no server, so this is the only moment at which the owning provider is
@@ -154,16 +179,24 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
     }
 
     /// <inheritdoc />
-    public Task<PruneResult> PruneAsync(string serverId, RetentionPolicy policy, bool dryRun, CancellationToken ct = default)
+    public async Task<PruneResult> PruneAsync(string serverId, RetentionPolicy policy, bool dryRun, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(serverId);
         ArgumentNullException.ThrowIfNull(policy);
 
-        return ForServer(serverId).PruneAsync(serverId, policy, dryRun, ct);
+        var provider = await ForServerAsync(serverId, ct).ConfigureAwait(false);
+        return await provider.PruneAsync(serverId, policy, dryRun, ct).ConfigureAwait(false);
     }
 
-    private IBackupProvider ForServer(string serverId) =>
-        _sshServerIds.Contains(serverId) ? _ssh : _default;
+    private async Task<IBackupProvider> ForServerAsync(string serverId, CancellationToken ct)
+    {
+        if (_sshServerIds.Contains(serverId))
+        {
+            return _ssh;
+        }
+
+        return await IsAdoptedOnRegisteredHostAsync(serverId, ct).ConfigureAwait(false) ? _ssh : _default;
+    }
 
     /// <summary>
     /// Routes an opaque backup id by the server it encodes. The decoder is
@@ -171,8 +204,51 @@ public sealed class ServyxBackupProviderRouter : IBackupProvider
     /// would then be free to disagree with; an id that does not decode routes to the default, where an
     /// unknown id already fails as "not found" rather than being trusted.
     /// </summary>
-    private IBackupProvider ForBackup(string backupId) =>
-        BackupArtifactId.TryGetServerId(backupId, out var serverId) && _sshServerIds.Contains(serverId)
-            ? _ssh
-            : _default;
+    private Task<IBackupProvider> ForBackupAsync(string backupId, CancellationToken ct) =>
+        BackupArtifactId.TryGetServerId(backupId, out var serverId)
+            ? ForServerAsync(serverId, ct)
+            : Task.FromResult(_default);
+
+    /// <summary>
+    /// Probes every currently-connectable registered/configured ssh+docker host, concurrently, for a
+    /// container named <paramref name="serverId"/> — the same read-only <c>docker container inspect</c>
+    /// <c>HostAwareLogStream.FindHostKeyAsync</c> issues. Short-circuits to <see langword="false"/> with no
+    /// round trip at all when no <see cref="_hostConnections"/> was supplied, or it reports zero hosts — the
+    /// common, zero-config-and-zero-registered-hosts case.
+    /// </summary>
+    private async Task<bool> IsAdoptedOnRegisteredHostAsync(string serverId, CancellationToken ct)
+    {
+        if (_hostConnections is null)
+        {
+            return false;
+        }
+
+        var hosts = await _hostConnections.GetConnectionsAsync(ct).ConfigureAwait(false);
+        if (hosts.Count == 0)
+        {
+            return false;
+        }
+
+        var probes = await Task.WhenAll(hosts.Select(host => ProbeAsync(host, serverId, ct))).ConfigureAwait(false);
+        return probes.Any(found => found);
+    }
+
+    private static async Task<bool> ProbeAsync(HostConnection host, string serverId, CancellationToken ct)
+    {
+        try
+        {
+            var result = await host.ExecutionTarget.ExecuteAsync(DockerCli.Inspect(serverId), ct).ConfigureAwait(false);
+            return result.Succeeded;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception)
+        {
+            // A host that cannot be reached right now must not stop the search for a good one — mirrors
+            // HostAwareLogStream.ProbeAsync's own partial-failure handling.
+            return false;
+        }
+    }
 }

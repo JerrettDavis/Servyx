@@ -3,14 +3,20 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using NSubstitute;
 using Servyx.Application.Backups;
+using Servyx.Application.Servers;
+using Servyx.Definitions;
 using Servyx.Domain.Backups;
+using Servyx.Domain.Definitions.Model;
+using Servyx.Domain.Lifecycle;
 using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
 using Servyx.Infrastructure.Ssh.Backups;
+using Servyx.Infrastructure.Ssh.Docker;
 using Servyx.Web.Services;
 using Servyx.Composition;
+using Servyx.Web.Tests.Documentation;
 using Servyx.Web.Tests.Fakes;
 
 namespace Servyx.Web.Tests.Services;
@@ -492,6 +498,159 @@ public class SshBackupWiringTests
         context.Quiesce.Should().BeNull();
     }
 
+    // ── Adopted (DB-registered host) servers, no static config at all ──────────────────────────────
+
+    private const string AdoptedServer = "valheim-adopted";
+    private const string AdoptedHostKey = "gamebox-1";
+
+    private static GameDefinition RealDefinitionWithBackupInclude(IReadOnlyList<string> include)
+    {
+        var repoRoot = RepoRootLocator.Find();
+        var yaml = File.ReadAllText(Path.Combine(repoRoot.FullName, "definitions", "palworld-docker.yaml"));
+        var real = new GameDefinitionYamlParser().Parse(yaml).Definition!;
+        return real with { Backup = real.Backup with { Include = include } };
+    }
+
+    private static IServerQueryService AdoptedQuery(string? mountHostPath = "/srv/valheim/data", string? hostKey = AdoptedHostKey)
+    {
+        var query = Substitute.For<IServerQueryService>();
+        query.GetServerDetailAsync(AdoptedServer, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDetail?>(new ServerDetail(
+                new ServerSummary(
+                    AdoptedServer, AdoptedServer, "valheim", ServerState.Running, ServerHealthStatus.Healthy,
+                    null, null, hostKey ?? "docker", [], HostKey: hostKey),
+                "lloesche/valheim-server:latest",
+                mountHostPath,
+                "/config",
+                null, null, null, null, [])));
+
+        return query;
+    }
+
+    private static IServerExecutionTargetResolver ResolverFor(string hostKey, IExecutionTarget target)
+    {
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+        resolver.ResolveAsync(AdoptedServer, hostKey, Arg.Any<CancellationToken>()).Returns(Task.FromResult(target));
+        return resolver;
+    }
+
+    [Fact]
+    public async Task An_adopted_server_derives_a_context_from_its_registered_host_without_any_static_config()
+    {
+        var definition = RealDefinitionWithBackupInclude(["${DATA_DIR}/saves", "${COMPOSE_DIR}/.env"]);
+        var query = AdoptedQuery();
+        var innerTarget = Substitute.For<IExecutionTarget>();
+        var resolver = ResolverFor(AdoptedHostKey, innerTarget);
+        var writable = new WritableServers([AdoptedServer]);
+
+        await using var source = new ServyxSshBackupContextSource(
+            SshBackupWiringOptions.None, transport: null, rcon: null,
+            query, resolver, writable, definition);
+
+        var context = await source.GetAsync(AdoptedServer);
+
+        context.ServerId.Should().Be(AdoptedServer);
+        context.Root.Should().Be("/srv/valheim/data");
+        context.Include.Should().Equal("saves");
+        context.StoreDirectory.Should().Be(SshBackupWiringOptions.DefaultStoreDirectory);
+        context.Foreign.Should().BeEmpty();
+
+        // Writes are gated by the same database-backed grant everything else about this server reads —
+        // never trusted just because a route to the host exists.
+        var guarded = context.Target.Should().BeOfType<WriteGuardedExecutionTarget>().Subject;
+        guarded.WritesPermitted.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task An_adopted_server_with_no_write_grant_resolves_a_target_that_refuses_writes()
+    {
+        var definition = RealDefinitionWithBackupInclude(["${DATA_DIR}/saves"]);
+        var query = AdoptedQuery();
+        var resolver = ResolverFor(AdoptedHostKey, Substitute.For<IExecutionTarget>());
+
+        // No grant recorded for this server at all.
+        await using var source = new ServyxSshBackupContextSource(
+            SshBackupWiringOptions.None, transport: null, rcon: null,
+            query, resolver, WritableServers.None, definition);
+
+        var context = await source.GetAsync(AdoptedServer);
+
+        var guarded = context.Target.Should().BeOfType<WriteGuardedExecutionTarget>().Subject;
+        guarded.WritesPermitted.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task An_adopted_server_with_no_host_side_mount_path_is_refused_rather_than_guessed_at()
+    {
+        var definition = RealDefinitionWithBackupInclude(["${DATA_DIR}/saves"]);
+        var query = AdoptedQuery(mountHostPath: null);
+        var resolver = ResolverFor(AdoptedHostKey, Substitute.For<IExecutionTarget>());
+
+        await using var source = new ServyxSshBackupContextSource(
+            SshBackupWiringOptions.None, transport: null, rcon: null,
+            query, resolver, new WritableServers([AdoptedServer]), definition);
+
+        var act = async () => await source.GetAsync(AdoptedServer);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*no host-side*mount path*");
+    }
+
+    [Fact]
+    public async Task A_locally_hosted_server_with_no_host_key_is_refused_exactly_as_an_unconfigured_server_is()
+    {
+        // HostKey is null for a server discovery has no host notion for at all (the local Docker daemon) —
+        // this is Docker's ServyxBackupContextSource's job, not this type's, so it must not be silently
+        // treated as an adopted ssh+docker server just because the fallback is wired up.
+        var definition = RealDefinitionWithBackupInclude(["${DATA_DIR}/saves"]);
+        var query = AdoptedQuery(hostKey: null);
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+
+        await using var source = new ServyxSshBackupContextSource(
+            SshBackupWiringOptions.None, transport: null, rcon: null,
+            query, resolver, new WritableServers([AdoptedServer]), definition);
+
+        var act = async () => await source.GetAsync(AdoptedServer);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not configured as an SSH-hosted server*");
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task The_adopted_fallback_is_never_reached_when_it_was_not_wired_up_at_all()
+    {
+        // The constructor overload every existing static-only test in this file uses — query/resolver/writable
+        // all default to null. A server with no static entry must still refuse exactly as it always has.
+        await using var source = new ServyxSshBackupContextSource(SshBackupWiringOptions.None, Transport());
+
+        var act = async () => await source.GetAsync(AdoptedServer);
+
+        await act.Should().ThrowAsync<InvalidOperationException>().WithMessage("*not configured as an SSH-hosted server*");
+    }
+
+    [Fact]
+    public async Task A_statically_configured_server_is_never_shadowed_by_the_adopted_fallback()
+    {
+        // Regression guard: when a server has BOTH a static entry and would otherwise resolve via
+        // IServerQueryService, the static entry wins — SshBackupWiringOptions.Find is checked first and the
+        // adopted branch is never reached.
+        var configuration = SshConfigured();
+        var options = SshBackupWiringOptions.FromConfiguration(
+            configuration, ProvisioningGate.FromConfiguration(configuration));
+
+        var query = Substitute.For<IServerQueryService>();
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+        var transport = Transport();
+
+        await using var source = new ServyxSshBackupContextSource(
+            options, transport, rcon: null, query, resolver, new WritableServers([SshServer]));
+
+        var context = await source.GetAsync(SshServer);
+
+        context.Root.Should().Be("/srv/valheim");
+        await query.DidNotReceive().GetServerDetailAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
     // ── Two providers, one dashboard ─────────────────────────────────────────────────────────────
 
     [Fact]
@@ -525,6 +684,80 @@ public class SshBackupWiringTests
         ssh.LivePruneCalls.Should().Be(1);
         docker.CreateCalls.Should().Be(0);
         docker.LivePruneCalls.Should().Be(0);
+    }
+
+    private static IHostConnectionSource HostsReportingContainer(string hostKey, bool found)
+    {
+        var target = Substitute.For<IExecutionTarget>();
+        target.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new CommandResult(found ? 0 : 1, string.Empty, string.Empty, TimeSpan.Zero)));
+
+        var source = Substitute.For<IHostConnectionSource>();
+        source.GetConnectionsAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<HostConnection>>([new HostConnection(hostKey, target)]));
+        return source;
+    }
+
+    private static IHostConnectionSource NoRegisteredHosts()
+    {
+        var source = Substitute.For<IHostConnectionSource>();
+        source.GetConnectionsAsync(Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<HostConnection>>([]));
+        return source;
+    }
+
+    [Fact]
+    public async Task A_server_found_on_a_registered_host_routes_to_the_ssh_provider_with_no_static_entry_at_all()
+    {
+        var docker = new ScriptedBackupProvider();
+        var ssh = new ScriptedBackupProvider();
+        var router = new ServyxBackupProviderRouter(docker, ssh, [], HostsReportingContainer(AdoptedHostKey, found: true));
+
+        await router.CreateAsync(AdoptedServer);
+
+        ssh.CreateCalls.Should().Be(1);
+        docker.CreateCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_server_found_on_no_registered_host_still_routes_to_the_default_provider()
+    {
+        var docker = new ScriptedBackupProvider();
+        var ssh = new ScriptedBackupProvider();
+        var router = new ServyxBackupProviderRouter(docker, ssh, [], HostsReportingContainer(AdoptedHostKey, found: false));
+
+        await router.CreateAsync(DockerServer);
+
+        docker.CreateCalls.Should().Be(1);
+        ssh.CreateCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Zero_registered_hosts_short_circuits_the_probe_and_routes_to_the_default_provider()
+    {
+        var docker = new ScriptedBackupProvider();
+        var ssh = new ScriptedBackupProvider();
+        var hostConnections = NoRegisteredHosts();
+        var router = new ServyxBackupProviderRouter(docker, ssh, [], hostConnections);
+
+        await router.CreateAsync(DockerServer);
+
+        docker.CreateCalls.Should().Be(1);
+        ssh.CreateCalls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task A_statically_configured_server_never_pays_for_a_host_probe()
+    {
+        var docker = new ScriptedBackupProvider();
+        var ssh = new ScriptedBackupProvider();
+        var hostConnections = Substitute.For<IHostConnectionSource>();
+        var router = new ServyxBackupProviderRouter(docker, ssh, [SshServer], hostConnections);
+
+        await router.CreateAsync(SshServer);
+
+        ssh.CreateCalls.Should().Be(1);
+        await hostConnections.DidNotReceive().GetConnectionsAsync(Arg.Any<CancellationToken>());
     }
 
     [Fact]
