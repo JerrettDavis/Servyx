@@ -21,6 +21,18 @@ public static class OperatorAuthentication
     /// <summary>The only anonymous-reachable page in the application.</summary>
     public const string LoginPath = "/login";
 
+    /// <summary>
+    /// Where an authenticated caller who fails a page's own <c>[Authorize(Policy = ...)]</c> — e.g.
+    /// <c>Servyx.Role.Admin</c> — lands, via <see cref="Microsoft.AspNetCore.Authentication.Cookies.CookieAuthenticationOptions.AccessDeniedPath"/>.
+    /// Deliberately <em>not</em> <see cref="LoginPath"/>: the cookie handler redirects here with
+    /// <see cref="ReturnUrlParameter"/> set to the page that refused them, and <c>AuthenticationEndpoints.GetLoginAsync</c>
+    /// bounces an already-authenticated caller straight back to that same <c>returnUrl</c> — pointing
+    /// <c>AccessDeniedPath</c> at <see cref="LoginPath"/> therefore ping-pongs forever between the two for
+    /// every caller a role policy ever refuses. This was unreachable before any page declared a policy of its
+    /// own; see <c>RoleAuthorization</c>'s own remarks for the increment that introduced the first one.
+    /// </summary>
+    public const string HomePath = "/";
+
     /// <summary>Where an authenticated session is ended.</summary>
     public const string LogoutPath = "/logout";
 

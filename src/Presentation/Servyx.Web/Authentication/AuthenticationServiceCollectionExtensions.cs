@@ -86,7 +86,9 @@ public static class AuthenticationServiceCollectionExtensions
 
                 options.LoginPath = OperatorAuthentication.LoginPath;
                 options.LogoutPath = OperatorAuthentication.LogoutPath;
-                options.AccessDeniedPath = OperatorAuthentication.LoginPath;
+                // NOT OperatorAuthentication.LoginPath — see OperatorAuthentication.HomePath's own remarks for
+                // the redirect loop that pairing produces the moment any page declares its own role policy.
+                options.AccessDeniedPath = OperatorAuthentication.HomePath;
                 options.ReturnUrlParameter = OperatorAuthentication.ReturnUrlParameter;
 
                 options.ExpireTimeSpan = OperatorAuthentication.SessionLifetime;

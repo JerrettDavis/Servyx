@@ -1,4 +1,34 @@
 @page "/users"
+@attribute [Authorize(Policy = RoleAuthorization.Admin)]
+@using System.Security.Claims
+@using Servyx.Application.Users
+@using Servyx.Domain.Common
+@using Servyx.Domain.Entities
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
+@*
+    Account/RBAC administration — the first page in this app that carries a [Authorize(Policy = ...)] of its
+    own rather than relying solely on the fallback policy. See RoleAuthorization's own remarks for why
+    Servyx.Role.Admin is the one this page needs.
+
+    An authenticated-but-insufficiently-privileged caller is refused by one of two paths, depending on how
+    they arrived. A raw HTTP request (typed URL, bookmark, refresh) is refused by ASP.NET Core's own
+    authorization middleware before any component renders — it sees this page's [Authorize] as endpoint
+    metadata, issues a Forbid, and the cookie handler redirects to OperatorAuthentication.HomePath (see its
+    own remarks for why AccessDeniedPath is deliberately not /login). An in-app navigation from an
+    already-open circuit instead reaches AuthorizeRouteView, whose NotAuthorized slot is RedirectToLogin — see
+    its own remarks for why that also lands on "/" rather than looping through /login. Both paths end up in
+    the same place; discovering the first one meant fixing a genuine redirect-loop bug this page's own
+    [Authorize] uncovered, not something invented for this comment.
+
+    The last-active-Admin guard below is deliberately a UI-layer check, not a service-layer one — the same
+    "advisory, not a substitute for the real constraint" posture IUserService.CreateAsync's own username
+    precheck documents for the unique index. There is no database constraint an admin lockout could violate,
+    so there is nothing for the service layer to enforce atomically; this list is read fresh on every load and
+    re-read after every mutation, which is enough to stop the single-operator mistake this guards against
+    without inventing a lock IUserService does not have.
+*@
 
 <SvxPageTitle Section="Users" />
 
@@ -7,7 +37,387 @@
     <p class="svx-page-description">Identity and access control for people who use this Servyx instance.</p>
 </div>
 
-<div class="svx-empty-state">
-    <h3>No additional users</h3>
-    <p>Identity, RBAC, secrets, and the audit UI arrive in Milestone 7.</p>
-</div>
+@if (_service is null)
+{
+    <div class="svx-empty-state" data-testid="users-unavailable">
+        <h3>Users cannot be managed here</h3>
+        <p>This process did not compose a user account service, so accounts cannot be listed or changed.</p>
+    </div>
+}
+else
+{
+    <div class="svx-card" data-testid="create-user-section">
+        <h3>Add a user</h3>
+        <p class="svx-page-description">
+            Creates an account with the role and initial password you choose below. Share the password with
+            the new user out of band — Servyx never shows it again after this form closes.
+        </p>
+
+        <label>
+            <span>Username</span>
+            <input class="svx-input" type="text" data-testid="new-username-input"
+                   @key="@($"username-{_formKey}")" autocomplete="off" maxlength="@CreateUserResult.MaximumUsernameLength"
+                   disabled="@_creating" @onchange="e => _newUsername = e.Value?.ToString() ?? string.Empty" />
+        </label>
+
+        <label>
+            <span>Initial password (at least @CreateUserResult.MinimumPasswordLength characters)</span>
+            <input class="svx-input" type="password" data-testid="new-password-input"
+                   @key="@($"password-{_formKey}")" autocomplete="new-password"
+                   disabled="@_creating" @onchange="e => _newPassword = e.Value?.ToString() ?? string.Empty" />
+        </label>
+
+        <label>
+            <span>Role</span>
+            <select class="svx-select" data-testid="new-role-select" value="@_newRole" disabled="@_creating"
+                    @onchange="e => _newRole = Enum.Parse<UserRole>(e.Value?.ToString() ?? nameof(UserRole.Viewer))">
+                @foreach (var role in Roles)
+                {
+                    <option value="@role">@role</option>
+                }
+            </select>
+        </label>
+
+        <button type="button" class="svx-btn svx-btn-primary" data-testid="create-user-button"
+                disabled="@_creating" @onclick="CreateAsync">
+            @(_creating ? "Creating…" : "Create user")
+        </button>
+
+        @if (_createError is not null)
+        {
+            <p class="svx-deploy-error" data-testid="create-user-error">@_createError</p>
+        }
+
+        @if (_createApplied is not null)
+        {
+            <p class="svx-deploy-applied" data-testid="create-user-applied">@_createApplied</p>
+        }
+    </div>
+
+    <div class="svx-card" data-testid="users-list-section">
+        <h3>Accounts</h3>
+
+        @if (_loading)
+        {
+            <Skeleton Rows="3" Label="Loading users" />
+        }
+        else if (_users.Count == 0)
+        {
+            <div class="svx-empty-state" data-testid="users-empty-state">
+                <h4>No accounts yet</h4>
+                <p>Create the first account above.</p>
+            </div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Users">
+                <div class="svx-row-grid-header" style="grid-template-columns: 1.3fr 1fr 1.1fr 1.3fr 1.6fr;" aria-hidden="true">
+                    <span>Username</span>
+                    <span>Role</span>
+                    <span>Status</span>
+                    <span>Created</span>
+                    <span></span>
+                </div>
+
+                @foreach (var user in _users)
+                {
+                    <div class="svx-row-link" role="listitem" data-testid="user-row" data-username="@user.Username"
+                         style="grid-template-columns: 1.3fr 1fr 1.1fr 1.3fr 1.6fr;">
+                        <span data-col-label="Username"><strong>@user.Username</strong></span>
+
+                        <span data-col-label="Role">
+                            <select class="svx-select" data-testid="role-select" data-username="@user.Username"
+                                    value="@user.Role" disabled="@(IsBusy(user.Id) || IsLastActiveAdmin(user))"
+                                    title="@(IsLastActiveAdmin(user) ? LastAdminReason : null)"
+                                    @onchange="e => ChangeRoleAsync(user, Enum.Parse<UserRole>(e.Value?.ToString() ?? user.Role.ToString()))">
+                                @foreach (var role in Roles)
+                                {
+                                    <option value="@role">@role</option>
+                                }
+                            </select>
+                        </span>
+
+                        <span data-col-label="Status">
+                            <span class="svx-badge">@(user.IsActive ? "Active" : "Inactive")</span>
+                            @if (IsLastActiveAdmin(user))
+                            {
+                                <div class="svx-page-description" data-testid="last-admin-note" data-username="@user.Username">
+                                    Last active Admin
+                                </div>
+                            }
+                        </span>
+
+                        <span data-col-label="Created">@user.CreatedAt.ToString("u")</span>
+
+                        <span data-col-label="Actions">
+                            @if (user.IsActive)
+                            {
+                                @if (_confirmingDeactivateId != user.Id)
+                                {
+                                    <button type="button" class="svx-btn svx-btn-danger svx-btn-sm" data-testid="deactivate-review"
+                                            data-username="@user.Username"
+                                            disabled="@(IsBusy(user.Id) || IsLastActiveAdmin(user))"
+                                            title="@(IsLastActiveAdmin(user) ? LastAdminReason : null)"
+                                            @onclick="() => _confirmingDeactivateId = user.Id">
+                                        Deactivate
+                                    </button>
+                                }
+                                else
+                                {
+                                    <div class="svx-deploy-confirm" data-testid="deactivate-confirm-step">
+                                        <p data-testid="deactivate-confirm-body">
+                                            Nothing has changed yet. Confirming stops "@user.Username" from
+                                            signing in — the account and its history are kept, and reactivating
+                                            later restores it exactly as it is now.
+                                        </p>
+                                        <button type="button" class="svx-btn svx-btn-danger" data-testid="deactivate-confirm"
+                                                data-username="@user.Username"
+                                                disabled="@IsBusy(user.Id)"
+                                                @onclick="() => SetActiveAsync(user, isActive: false)">
+                                            @(IsBusy(user.Id) ? "Working…" : "Yes, deactivate this account")
+                                        </button>
+                                        <button type="button" class="svx-btn" data-testid="deactivate-cancel"
+                                                disabled="@IsBusy(user.Id)"
+                                                @onclick="() => _confirmingDeactivateId = null">
+                                            Cancel
+                                        </button>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <button type="button" class="svx-btn svx-btn-sm" data-testid="reactivate-button"
+                                        data-username="@user.Username"
+                                        disabled="@IsBusy(user.Id)"
+                                        @onclick="() => SetActiveAsync(user, isActive: true)">
+                                    @(IsBusy(user.Id) ? "Working…" : "Reactivate")
+                                </button>
+                            }
+                        </span>
+                    </div>
+                }
+            </div>
+        }
+
+        @if (_actionError is not null)
+        {
+            <p class="svx-deploy-error" data-testid="user-action-error">@_actionError</p>
+        }
+    </div>
+}
+
+@code {
+    /// <summary>Every role a user can be created or changed into, in ascending order of privilege.</summary>
+    private static readonly UserRole[] Roles = [UserRole.Viewer, UserRole.Operator, UserRole.Admin];
+
+    /// <summary>Shown wherever a role change or deactivation is refused to protect the last active Admin.</summary>
+    private const string LastAdminReason =
+        "This is the last active Admin. Promote or reactivate another account to Admin first — otherwise " +
+        "nobody would be left who can manage users.";
+
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Mirrors
+    /// <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
+    private IUserService? _service;
+    private List<User> _users = [];
+    private bool _loading = true;
+
+    private string _newUsername = string.Empty;
+    private string _newPassword = string.Empty;
+    private UserRole _newRole = UserRole.Viewer;
+    private bool _creating;
+    private string? _createError;
+    private string? _createApplied;
+
+    /// <summary>Bumped after a successful create to rebuild the username/password inputs empty. See OperatorPasswordSettingsPanel's identical use.</summary>
+    private Guid _formKey = Guid.NewGuid();
+
+    private UserId? _busyId;
+    private UserId? _confirmingDeactivateId;
+    private string? _actionError;
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching every other
+    /// optional-collaborator surface in this app: a host — or a bUnit test — that never composed this service
+    /// must still render the page, degrading visibly rather than throwing.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _service = Services.GetService(typeof(IUserService)) as IUserService;
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_service is null)
+        {
+            return;
+        }
+
+        var users = await _service.ListAsync();
+        _users = users.OrderBy(u => u.Username, StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private async Task CreateAsync()
+    {
+        if (_service is null || _creating)
+        {
+            return;
+        }
+
+        _creating = true;
+        _createError = null;
+        _createApplied = null;
+
+        try
+        {
+            var username = _newUsername;
+            var role = _newRole;
+            var actor = await ResolveActorAsync();
+            var result = await _service.CreateAsync(username, _newPassword, role, actor);
+
+            if (result.Outcome == CreateUserOutcome.Created)
+            {
+                _createApplied = $"Created \"{username.Trim()}\" with the {role} role.";
+                ResetCreateForm();
+                await ReloadAsync();
+            }
+            else
+            {
+                // Every non-Created outcome — including the username-uniqueness failure the unique index also
+                // enforces — carries its own human-readable Detail; nothing here needs to know which one fired.
+                _createError = result.Detail;
+            }
+        }
+        catch (Exception ex)
+        {
+            // A plaintext password is in scope on this path, so the exception's own message is not rendered —
+            // matches OperatorPasswordSettingsPanel.ChangeAsync's identical handling.
+            _createError = $"Could not create this user: {ex.GetType().Name}. Nothing was created.";
+        }
+        finally
+        {
+            _creating = false;
+        }
+    }
+
+    private void ResetCreateForm()
+    {
+        _newUsername = string.Empty;
+        _newPassword = string.Empty;
+        _newRole = UserRole.Viewer;
+        _formKey = Guid.NewGuid();
+    }
+
+    private async Task ChangeRoleAsync(User user, UserRole role)
+    {
+        if (_service is null || IsBusy(user.Id) || role == user.Role)
+        {
+            return;
+        }
+
+        if (IsLastActiveAdmin(user) && role != UserRole.Admin)
+        {
+            // Belt-and-suspenders: the select is already disabled for this row, but a stale render or a
+            // programmatic change event should not be able to talk this guard around.
+            _actionError = $"\"{user.Username}\" is the last active Admin. Nothing was changed. {LastAdminReason}";
+            return;
+        }
+
+        _busyId = user.Id;
+        _actionError = null;
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var changed = await _service.ChangeRoleAsync(user.Id, role, actor);
+            if (!changed)
+            {
+                _actionError = $"Could not change \"{user.Username}\"'s role: Servyx no longer tracks this account.";
+            }
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _actionError = $"Could not change \"{user.Username}\"'s role: {ex.Message}";
+        }
+        finally
+        {
+            _busyId = null;
+        }
+    }
+
+    private async Task SetActiveAsync(User user, bool isActive)
+    {
+        if (_service is null || IsBusy(user.Id))
+        {
+            return;
+        }
+
+        if (!isActive && IsLastActiveAdmin(user))
+        {
+            // Same belt-and-suspenders as ChangeRoleAsync: the confirm step never opens for this row while the
+            // guard applies, but a stale render should not be able to reach this call regardless.
+            _actionError = $"\"{user.Username}\" is the last active Admin. Nothing was changed. {LastAdminReason}";
+            _confirmingDeactivateId = null;
+            return;
+        }
+
+        _busyId = user.Id;
+        _actionError = null;
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var changed = await _service.SetActiveAsync(user.Id, isActive, actor);
+            if (!changed)
+            {
+                _actionError =
+                    $"Could not {(isActive ? "reactivate" : "deactivate")} \"{user.Username}\": Servyx no longer tracks this account.";
+            }
+
+            await ReloadAsync();
+        }
+        catch (Exception ex)
+        {
+            _actionError = $"Could not {(isActive ? "reactivate" : "deactivate")} \"{user.Username}\": {ex.Message}";
+        }
+        finally
+        {
+            _busyId = null;
+            _confirmingDeactivateId = null;
+        }
+    }
+
+    /// <summary>
+    /// Whether <paramref name="user"/> is the only currently-active Admin — the account a role change or
+    /// deactivation would leave nobody able to manage users behind. Read from the in-memory list this page
+    /// already has loaded, re-read after every mutation; see this file's own remarks on why that is enough
+    /// without a service-layer lock.
+    /// </summary>
+    private bool IsLastActiveAdmin(User user) =>
+        user.IsActive
+        && user.Role == UserRole.Admin
+        && !_users.Any(other => other.Id != user.Id && other.IsActive && other.Role == UserRole.Admin);
+
+    private bool IsBusy(UserId id) => _busyId == id;
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
+    }
+}

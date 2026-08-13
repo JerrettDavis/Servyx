@@ -4,10 +4,21 @@
     Renders nothing and navigates to the sign-in page.
 
     Used as AuthorizeRouteView's NotAuthorized content, which is what handles a page that carries an explicit
-    [Authorize] whose policy the current user fails. In today's app that never fires — AuthenticationBoundary
-    has already refused an unauthenticated caller before AuthorizeRouteView is reached, and no page declares a
-    policy — but leaving the slot empty would mean a future policy failure rendered a blank page rather than
-    an answer.
+    [Authorize] whose policy the current user fails. AuthenticationBoundary has already refused an
+    unauthenticated caller before AuthorizeRouteView is reached, so this only fires for a caller who IS
+    authenticated but fails a page's own policy (e.g. Servyx.Role.Admin on the Users page) — and only for that
+    failure reached through an already-open interactive circuit (an in-app navigation to the page). The first,
+    raw HTTP request to such a page never reaches this component at all: ASP.NET Core's own authorization
+    middleware sees the same [Authorize] as endpoint metadata and issues a Forbid before any component
+    renders, which the cookie handler turns into a redirect to OperatorAuthentication.HomePath instead (see
+    its own remarks for why that path, specifically, and not this one).
+
+    NavigateTo here carries no returnUrl, unlike that HTTP-level redirect — deliberately: GetLoginAsync bounces
+    an already-authenticated caller straight back to whatever returnUrl it's given, so if this ever forwarded
+    the refused page's own path, an authenticated-but-insufficiently-privileged caller reaching this component
+    would ping-pong between it and /login forever, the same loop AccessDeniedPath's own remarks describe.
+    Landing on / (via /login's no-returnUrl-means-home default) is what both paths end up doing today, so a
+    caller sees the same outcome either way, just by two different routes.
 *@
 
 @code {

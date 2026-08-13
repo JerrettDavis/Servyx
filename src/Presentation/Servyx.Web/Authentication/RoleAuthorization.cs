@@ -10,15 +10,14 @@ namespace Servyx.Web.Authentication;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <strong>Foundation only — nothing is gated by these policies yet.</strong> This increment wires the login
-/// pipeline to mint a <see cref="ClaimTypes.Role"/> claim carrying the signed-in user's <see cref="UserRole"/>,
-/// and registers one authorization policy per role here so a later increment can gate a specific page
-/// (starting with the not-yet-built Users management page, which needs <see cref="Admin"/>) by adding
-/// <c>[Authorize(Policy = RoleAuthorization.Admin)]</c> — or the routable-component equivalent — and nothing
-/// else. No page in this process carries one of these policies today; every page still inherits protection
-/// exclusively from the <see cref="AuthorizationOptions.FallbackPolicy"/> installed by
-/// <see cref="AuthenticationServiceCollectionExtensions.AddServyxOperatorAuthentication"/>, exactly as before
-/// this increment.
+/// This increment wired the login pipeline to mint a <see cref="ClaimTypes.Role"/> claim carrying the
+/// signed-in user's <see cref="UserRole"/>, and registered one authorization policy per role here so a later
+/// increment could gate a specific page. That later increment has landed: the Users management page now
+/// carries <c>@@attribute [Authorize(Policy = RoleAuthorization.Admin)]</c>, the first page in this process to
+/// declare one of these policies for itself — see its own remarks for what that took, including a redirect
+/// loop <see cref="Servyx.Web.Authentication.OperatorAuthentication.HomePath"/> exists to avoid. Every other
+/// page still inherits protection exclusively from the <see cref="AuthorizationOptions.FallbackPolicy"/>
+/// installed by <see cref="AuthenticationServiceCollectionExtensions.AddServyxOperatorAuthentication"/>.
 /// </para>
 /// <para>
 /// <strong>Minimum, not exact, role.</strong> <see cref="UserRole"/>'s own remarks explain why its values are
