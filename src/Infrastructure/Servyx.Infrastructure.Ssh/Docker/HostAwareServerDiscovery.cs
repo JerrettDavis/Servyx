@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Servyx.Domain.Discovery;
 
 namespace Servyx.Infrastructure.Ssh.Docker;
@@ -51,6 +52,7 @@ public sealed class HostAwareServerDiscovery : IServerDiscovery
     private readonly IHostConnectionSource _connections;
     private readonly IServerDiscovery _remote;
     private readonly IServerDiscovery _local;
+    private readonly ILogger<HostAwareServerDiscovery>? _logger;
 
     /// <summary>
     /// Creates a discovery service that unions <paramref name="local"/> with <paramref name="remote"/> once
@@ -63,7 +65,9 @@ public sealed class HostAwareServerDiscovery : IServerDiscovery
     /// reports at least one host.
     /// </param>
     /// <param name="local">Always consulted — the local Docker daemon has no relationship to <paramref name="connections"/>.</param>
-    public HostAwareServerDiscovery(IHostConnectionSource connections, IServerDiscovery remote, IServerDiscovery local)
+    /// <param name="loggerFactory">Optional; used to log (and skip) a source whose query fails.</param>
+    public HostAwareServerDiscovery(
+        IHostConnectionSource connections, IServerDiscovery remote, IServerDiscovery local, ILoggerFactory? loggerFactory = null)
     {
         ArgumentNullException.ThrowIfNull(connections);
         ArgumentNullException.ThrowIfNull(remote);
@@ -72,6 +76,7 @@ public sealed class HostAwareServerDiscovery : IServerDiscovery
         _connections = connections;
         _remote = remote;
         _local = local;
+        _logger = loggerFactory?.CreateLogger<HostAwareServerDiscovery>();
     }
 
     /// <inheritdoc />
@@ -85,6 +90,14 @@ public sealed class HostAwareServerDiscovery : IServerDiscovery
     /// <see cref="IHostConnectionSource"/>, which enumerates ssh+docker hosts exclusively — it has no notion of
     /// "the local Docker daemon" (see <see cref="HostConnectionRegistry"/>'s own remarks) — so the two result
     /// sets are structurally disjoint.
+    /// <para>
+    /// One source failing does not fail the other, mirroring <see cref="CompositeServerDiscovery.DiscoverAsync"/>'s
+    /// own per-host isolation: an unreachable local Docker daemon must not blank out an operator's remote-only
+    /// candidates (and vice versa). Each source's failure is logged and skipped; only when BOTH fail is that
+    /// reported to the caller, since at that point an empty result would be indistinguishable from "no
+    /// containers exist" — the same "degrade honestly" shape <see cref="CompositeServerDiscovery"/> already
+    /// uses for its own every-host-failed case.
+    /// </para>
     /// </remarks>
     public async Task<IReadOnlyList<DiscoveredServer>> DiscoverAsync(
         string imageRepository, string requiredMountContainerPath, CancellationToken ct = default)
@@ -98,16 +111,52 @@ public sealed class HostAwareServerDiscovery : IServerDiscovery
             return await _local.DiscoverAsync(imageRepository, requiredMountContainerPath, ct).ConfigureAwait(false);
         }
 
-        var localTask = _local.DiscoverAsync(imageRepository, requiredMountContainerPath, ct);
-        var remoteTask = _remote.DiscoverAsync(imageRepository, requiredMountContainerPath, ct);
+        var localTask = DiscoverSourceAsync(_local, "local", imageRepository, requiredMountContainerPath, ct);
+        var remoteTask = DiscoverSourceAsync(_remote, "remote", imageRepository, requiredMountContainerPath, ct);
         await Task.WhenAll(localTask, remoteTask).ConfigureAwait(false);
 
-        var local = await localTask.ConfigureAwait(false);
-        var remote = await remoteTask.ConfigureAwait(false);
+        var (localResults, localFailure) = await localTask.ConfigureAwait(false);
+        var (remoteResults, remoteFailure) = await remoteTask.ConfigureAwait(false);
 
-        var combined = new List<DiscoveredServer>(local.Count + remote.Count);
-        combined.AddRange(local);
-        combined.AddRange(remote);
+        if (localFailure is not null && remoteFailure is not null)
+        {
+            throw new InvalidOperationException(
+                $"Discovery failed on both the local Docker daemon ({localFailure.Message}) and every remote "
+                + $"host ({remoteFailure.Message}).",
+                new AggregateException(localFailure, remoteFailure));
+        }
+
+        var combined = new List<DiscoveredServer>(localResults.Count + remoteResults.Count);
+        combined.AddRange(localResults);
+        combined.AddRange(remoteResults);
         return combined;
+    }
+
+    private async Task<(IReadOnlyList<DiscoveredServer> Results, Exception? Failure)> DiscoverSourceAsync(
+        IServerDiscovery source,
+        string sourceName,
+        string imageRepository,
+        string requiredMountContainerPath,
+        CancellationToken ct)
+    {
+        try
+        {
+            var results = await source.DiscoverAsync(imageRepository, requiredMountContainerPath, ct)
+                .ConfigureAwait(false);
+            return (results, null);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Discovery failed for the {Source} source; skipping it and returning results from the other "
+                + "source, if any.",
+                sourceName);
+            return ([], ex);
+        }
     }
 }

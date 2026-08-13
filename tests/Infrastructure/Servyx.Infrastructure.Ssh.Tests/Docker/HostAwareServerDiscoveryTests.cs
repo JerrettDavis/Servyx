@@ -53,6 +53,14 @@ public class HostAwareServerDiscoveryTests
         return discovery;
     }
 
+    private static IServerDiscovery FailingDiscovery(Exception failure)
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns<Task<IReadOnlyList<DiscoveredServer>>>(_ => throw failure);
+        return discovery;
+    }
+
     [Fact]
     public async Task Zero_hosts_defers_to_local_discovery_not_the_remote_one()
     {
@@ -140,6 +148,69 @@ public class HostAwareServerDiscoveryTests
                 "a host registered after construction must be discoverable on the very next call, matching " +
                 "HostConnectionRegistry's own restart-free refresh contract — and it must ADD to local " +
                 "discovery, not replace it");
+    }
+
+    /// <summary>
+    /// The exact bug a real deployment hit: an operator's local Docker daemon is unreachable (Docker Desktop
+    /// not running) while a remote SSH host they just registered is perfectly healthy. Before this fix,
+    /// <c>Task.WhenAll(localTask, remoteTask)</c> propagated the local failure and lost the remote host's
+    /// results entirely, rendering the adoption panel "could not be read" even though a container WAS
+    /// discoverable. One source failing must not blank out the other, mirroring
+    /// <see cref="CompositeServerDiscovery"/>'s own per-host isolation.
+    /// </summary>
+    [Fact]
+    public async Task Local_source_failing_does_not_prevent_discovery_from_the_remote_source()
+    {
+        var connections = new FakeHostConnectionSource([
+            new HostConnection("registered-host", Substitute.For<Servyx.Domain.Transport.IExecutionTarget>()),
+        ]);
+        var local = FailingDiscovery(new InvalidOperationException("Docker engine unreachable: The operation has timed out."));
+        var remote = StubDiscovery(MakeServer("remote-container", hostKey: "registered-host"));
+
+        var discovery = new HostAwareServerDiscovery(connections, remote, local);
+
+        var results = await discovery.DiscoverAsync(ImageRepository, RequiredMountPath);
+
+        results.Should().ContainSingle().Which.ServerId.Should().Be("remote-container");
+    }
+
+    /// <summary>The mirror image: a broken remote host must not blank out an already-adopted local server.</summary>
+    [Fact]
+    public async Task Remote_source_failing_does_not_prevent_discovery_from_the_local_source()
+    {
+        var connections = new FakeHostConnectionSource([
+            new HostConnection("registered-host", Substitute.For<Servyx.Domain.Transport.IExecutionTarget>()),
+        ]);
+        var local = StubDiscovery(MakeServer("local-container"));
+        var remote = FailingDiscovery(new InvalidOperationException("Discovery failed on every host."));
+
+        var discovery = new HostAwareServerDiscovery(connections, remote, local);
+
+        var results = await discovery.DiscoverAsync(ImageRepository, RequiredMountPath);
+
+        results.Should().ContainSingle().Which.ServerId.Should().Be("local-container");
+    }
+
+    /// <summary>
+    /// The counterpart to the two isolation tests above: a partial failure degrades, but a total one is
+    /// reported — an empty result would be indistinguishable from "nothing to adopt", exactly the reasoning
+    /// <see cref="CompositeServerDiscovery"/>'s own every-host-failed case already uses.
+    /// </summary>
+    [Fact]
+    public async Task Both_sources_failing_is_reported_rather_than_passed_off_as_an_empty_result()
+    {
+        var connections = new FakeHostConnectionSource([
+            new HostConnection("registered-host", Substitute.For<Servyx.Domain.Transport.IExecutionTarget>()),
+        ]);
+        var local = FailingDiscovery(new InvalidOperationException("local-daemon-down"));
+        var remote = FailingDiscovery(new InvalidOperationException("remote-host-unreachable"));
+
+        var discovery = new HostAwareServerDiscovery(connections, remote, local);
+
+        var act = () => discovery.DiscoverAsync(ImageRepository, RequiredMountPath);
+
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.And.Message.Should().Contain("local-daemon-down").And.Contain("remote-host-unreachable");
     }
 
     private sealed class MutableHostConnectionSource : IHostConnectionSource
