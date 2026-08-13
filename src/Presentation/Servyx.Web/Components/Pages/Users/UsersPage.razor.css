@@ -1,0 +1,32 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-confirm/.svx-deploy-error/.svx-deploy-applied exactly (same
+   tokens, same shape) — CSS isolation scopes each .razor.css to its own component, so the class names have
+   to be redefined here rather than inherited from that other page's scoped sheet. The applied box uses the
+   bordered/filled treatment (not WriteModeControl's plain inline note) because a created-user confirmation
+   is a discrete outcome, the same shape as DeployPage's and BackupsPage's "applied" boxes. */
+
+.svx-deploy-confirm {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}
+
+.svx-deploy-applied {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    border-radius: 0.5rem;
+    border: 1px solid var(--svx-success-border);
+    background: var(--svx-success-bg);
+    color: var(--svx-success-fg);
+    font-size: 0.85rem;
+}

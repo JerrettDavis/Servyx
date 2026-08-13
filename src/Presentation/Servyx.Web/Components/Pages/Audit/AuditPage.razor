@@ -119,12 +119,12 @@ else
                 }
             </div>
 
-            <div class="svx-page-description" data-testid="audit-pagination" style="display:flex; align-items:center; gap: var(--svx-space-3);">
+            <div class="audit-pagination" data-testid="audit-pagination">
                 <button type="button" class="svx-btn svx-btn-sm" data-testid="prev-page-button"
                         disabled="@(_pageNumber <= 1)" @onclick="PreviousPageAsync">
                     Previous
                 </button>
-                <span data-testid="page-indicator">
+                <span class="audit-pagination-indicator" data-testid="page-indicator">
                     Page @_pageNumber of @TotalPages (@_totalCount total)
                 </span>
                 <button type="button" class="svx-btn svx-btn-sm" data-testid="next-page-button"

@@ -1,0 +1,13 @@
+/* A toolbar, not a page description — kept out of .svx-page-description (app.css) so its max-width:62ch
+   and margin rules (meant for prose under the page header) don't constrain this row's buttons. */
+.audit-pagination {
+    display: flex;
+    align-items: center;
+    gap: var(--svx-space-3);
+    margin-top: var(--svx-space-3);
+}
+
+.audit-pagination-indicator {
+    font-size: var(--svx-text-base);
+    color: var(--svx-text-muted);
+}
