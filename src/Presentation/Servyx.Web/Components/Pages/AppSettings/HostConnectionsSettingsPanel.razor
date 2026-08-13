@@ -1,0 +1,58 @@
+@* Read-only on purpose. /hosts is the one place a host is registered or deregistered; this is a summary that
+   answers "is anything wired up?" without becoming a second, drifting copy of that page. *@
+
+<div class="svx-card" data-testid="host-connections-settings-section">
+    <h3>Host connections</h3>
+
+    @if (!Section.Available)
+    {
+        <p class="svx-page-description" data-testid="host-connections-unavailable">
+            This process did not compose a host registration service, so registered hosts cannot be read here.
+        </p>
+    }
+    else if (Section.ListingFailed)
+    {
+        @* Distinct from "none registered" below, for the reason RegisteredHostsResult.ListingFailed exists:
+           reporting zero hosts when the truth is "Servyx's own database could not be read" is worse than
+           unhelpful, because the obvious next action is to register the host again. *@
+        <div class="svx-empty-state svx-empty-state-degraded" data-testid="host-connections-degraded">
+            <h4>Registered hosts could not be read</h4>
+            <p data-testid="host-connections-degraded-detail">
+                <strong>This may not be accurate.</strong> Servyx could not read its own host
+                records@(string.IsNullOrWhiteSpace(Section.FailureDetail) ? "." : $": {Section.FailureDetail}")
+                There may be registered hosts this count cannot see — that is not the same as "no hosts
+                registered".
+            </p>
+        </div>
+    }
+    else if (Section.RegisteredCount == 0)
+    {
+        <div class="svx-empty-state" data-testid="host-connections-empty-state">
+            <h4>No remote hosts registered</h4>
+            <p>
+                Servyx manages containers on whatever Docker endpoint it was configured with. Register an SSH
+                host to discover and adopt containers on another machine.
+            </p>
+        </div>
+    }
+    else
+    {
+        <dl class="svx-deploy-facts">
+            <dt>Registered hosts</dt>
+            <dd data-testid="host-connections-count">@Section.RegisteredCount</dd>
+            <dt>Enabled</dt>
+            <dd data-testid="host-connections-enabled-count">@Section.EnabledCount of @Section.RegisteredCount</dd>
+        </dl>
+    }
+
+    <p class="svx-page-description">
+        <a href="/hosts" data-testid="host-connections-link">Manage hosts</a> — registering, verifying a host
+        key, and deregistering all happen there.
+    </p>
+</div>
+
+@code {
+    /// <summary>The host summary to render. Supplied by the page, which read every section in one call.</summary>
+    [Parameter, EditorRequired]
+    public HostConnectionsSettingsSection Section { get; set; } = HostConnectionsSettingsSection.Unavailable;
+}

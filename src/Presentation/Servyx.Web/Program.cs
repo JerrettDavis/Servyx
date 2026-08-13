@@ -97,6 +97,16 @@ else
     builder.Services.AddSingleton<IDashboardDataService, LiveDashboardDataService>();
 }
 
+// The /settings page's own data service, deliberately separate from IDashboardDataService: that interface is
+// about servers, games and backups and shares not one collaborator with this. No Mock counterpart and no
+// Servyx:DataSource branch either — every section it reports describes this process's own composition (the
+// retention window it resolved, the hosts it registered, whether an operator password exists), so a mock
+// would be describing a process that does not exist, and with nothing composed the live service already
+// answers correctly, which is that nothing is configured. Its collaborators past the authentication gate are
+// nullable with default null, so DI's default-value fallback supplies them exactly the way it does for
+// LiveDashboardDataService's optional backup dashboard and definition catalog.
+builder.Services.AddSingleton<ISettingsDataService, LiveSettingsDataService>();
+
 var app = builder.Build();
 
 // The post-Build() half of the shared composition root, deliberately NOT run via

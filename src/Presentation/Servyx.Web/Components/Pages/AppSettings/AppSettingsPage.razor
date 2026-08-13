@@ -1,4 +1,10 @@
 @page "/settings"
+@inject IServiceProvider Services
+
+@* Renders whatever sections the settings service reports, in the order it reports them, dispatching each to
+   the panel that knows its payload. A later increment adds a section by adding a SettingsSection subtype and
+   one arm below — no page-wide reshaping, which is the whole reason ISettingsDataService returns a collection
+   rather than one flat settings record. *@
 
 <SvxPageTitle Section="Settings" />
 
@@ -7,10 +13,72 @@
     <p class="svx-page-description">Application-wide Servyx configuration, distinct from any single server's settings.</p>
 </div>
 
-<div class="svx-empty-state">
-    <h3>Nothing to configure yet</h3>
-    <p>
-        Identity, RBAC, secrets, and the audit UI arrive in Milestone 7 — that is also when application-level
-        settings such as host connections and persistence become configurable from here.
-    </p>
-</div>
+@if (_service is null)
+{
+    <div class="svx-empty-state" data-testid="settings-unavailable">
+        <h3>Settings cannot be read here</h3>
+        <p>
+            This process did not compose a settings service, so nothing on this page can be reported or
+            changed.
+        </p>
+    </div>
+}
+else if (_loading)
+{
+    <Skeleton Rows="3" Label="Loading settings" />
+}
+else if (_view.Sections.Count == 0)
+{
+    <div class="svx-empty-state" data-testid="settings-empty-state">
+        <h3>Nothing to configure yet</h3>
+        <p>This process composed none of the services that application settings are read from.</p>
+    </div>
+}
+else
+{
+    @foreach (var section in _view.Sections)
+    {
+        <div @key="section.Id">
+            @if (section is RetentionSettingsSection retention)
+            {
+                <RetentionSettingsPanel Section="retention" OnChanged="ReloadAsync" />
+            }
+            else if (section is HostConnectionsSettingsSection hosts)
+            {
+                <HostConnectionsSettingsPanel Section="hosts" />
+            }
+            else if (section is OperatorCredentialSettingsSection credential)
+            {
+                <OperatorPasswordSettingsPanel Section="credential" OnChanged="ReloadAsync" />
+            }
+        </div>
+    }
+}
+
+@code {
+    private ISettingsDataService? _service;
+    private SettingsView _view = SettingsView.Empty;
+    private bool _loading = true;
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching every other
+    /// optional-collaborator surface in this app: a host — or a bUnit test rendering a single panel — that
+    /// never composed this service must still render the page, degrading visibly rather than throwing.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _service = Services.GetService(typeof(ISettingsDataService)) as ISettingsDataService;
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_service is null)
+        {
+            return;
+        }
+
+        _view = await _service.GetSettingsAsync();
+    }
+}

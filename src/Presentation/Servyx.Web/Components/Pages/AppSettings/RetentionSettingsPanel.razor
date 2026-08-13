@@ -1,0 +1,182 @@
+@inject IServiceProvider Services
+
+@* Read-only on the window itself, and deliberately so: the retention schedule is resolved once at startup
+   into the immutable options the background sweeper was constructed with, so an editor here would either lie
+   (change a value nothing reads) or invent a second source of truth that silently disagrees with
+   appsettings.json. Naming the exact keys instead is the same treatment WriteModeControl gives
+   Servyx:Provisioning:Enabled. What IS a runtime action — running a sweep now — is offered, with the two-step
+   confirmation every destructive control in this product uses, because a sweep permanently removes the images
+   a plan would have been reverted from. *@
+
+<div class="svx-card" data-testid="retention-settings-section">
+    <h3>Change plan retention</h3>
+
+    @if (!Section.Available)
+    {
+        <p class="svx-page-description" data-testid="retention-unavailable">
+            This process did not compose a change plan retention sweeper, so the retention window cannot be
+            reported and no sweep can be run from here.
+        </p>
+    }
+    else
+    {
+        <p class="svx-page-description">
+            Applying a change plan records each configuration file verbatim, before and after — including any
+            secret values it carries, in plaintext — so an exact revert can restore the original bytes. The
+            sweep discards those recordings once they are old enough. A plan that changed nothing on the
+            server loses its recordings as soon as it finishes; a plan that did change something keeps them
+            for the window below and is then permanently unrevertable.
+        </p>
+
+        <dl class="svx-deploy-facts">
+            <dt>Sweep</dt>
+            <dd data-testid="retention-enabled">
+                <span class="svx-badge">@(Section.Enabled ? "Enabled" : "Disabled")</span>
+            </dd>
+            <dt>Recordings kept for</dt>
+            <dd data-testid="retention-window">@Humanize(Section.ImageRetention)</dd>
+            <dt>Sweep runs every</dt>
+            <dd data-testid="retention-interval">@Humanize(Section.SweepInterval)</dd>
+        </dl>
+
+        @if (!Section.Enabled)
+        {
+            <p class="svx-deploy-error" data-testid="retention-disabled-warning">
+                Nothing is ever purged while the sweep is off. Expired plans are not marked stale, and
+                recorded configuration images — which include secret values in plaintext — are kept
+                indefinitely in Servyx's own database.
+            </p>
+        }
+
+        <p class="svx-page-description" data-testid="retention-configuration-note">
+            These are host configuration, read once at startup and deliberately not editable from this UI —
+            editing them here would leave a stored value silently disagreeing with the file on the host. Set
+            <code>@($"{Section.ConfigurationSectionKey}:Enabled")</code>,
+            <code>@($"{Section.ConfigurationSectionKey}:ImageRetentionDays")</code> and
+            <code>@($"{Section.ConfigurationSectionKey}:SweepMinutes")</code> in <code>appsettings.json</code>
+            (or the matching environment variables) and restart Servyx.
+        </p>
+
+        @if (!_confirming)
+        {
+            <button type="button" class="svx-btn" data-testid="retention-sweep-review"
+                    disabled="@_busy" @onclick="() => _confirming = true">
+                Run a sweep now
+            </button>
+        }
+        else
+        {
+            <div class="svx-deploy-confirm" data-testid="retention-sweep-confirm-step">
+                <p data-testid="retention-sweep-confirm-body">
+                    Nothing has been purged yet. Confirming runs the same sweep the schedule runs, applying the
+                    same window, so it can only discard what the next scheduled sweep would have discarded
+                    anyway — but it discards it now. Every plan whose recordings go can no longer be reverted,
+                    and that cannot be undone.
+                </p>
+                <button type="button" class="svx-btn svx-btn-danger" data-testid="retention-sweep-confirm"
+                        disabled="@_busy" @onclick="SweepAsync">
+                    @(_busy ? "Sweeping…" : "Yes, sweep now")
+                </button>
+                <button type="button" class="svx-btn" data-testid="retention-sweep-cancel"
+                        disabled="@_busy" @onclick="() => _confirming = false">
+                    Cancel
+                </button>
+            </div>
+        }
+
+        @if (_error is not null)
+        {
+            <p class="svx-deploy-error" data-testid="retention-sweep-error">@_error</p>
+        }
+
+        @if (_applied is not null)
+        {
+            <p class="svx-deploy-applied" data-testid="retention-sweep-applied">@_applied</p>
+        }
+    }
+</div>
+
+@code {
+    /// <summary>The retention facts to render. Supplied by the page, which read them once for every section.</summary>
+    [Parameter, EditorRequired]
+    public RetentionSettingsSection Section { get; set; } = RetentionSettingsSection.Unavailable(string.Empty);
+
+    /// <summary>Raised after a sweep, so the page can re-read every section rather than this panel mutating its parent's state.</summary>
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    private ISettingsDataService? _service;
+    private bool _confirming;
+    private bool _busy;
+    private string? _error;
+    private string? _applied;
+
+    protected override void OnInitialized() =>
+        _service = Services.GetService(typeof(ISettingsDataService)) as ISettingsDataService;
+
+    private async Task SweepAsync()
+    {
+        if (_busy || _service is null)
+        {
+            return;
+        }
+
+        _busy = true;
+        _error = null;
+        _applied = null;
+
+        try
+        {
+            var result = await _service.RunRetentionSweepAsync();
+
+            _applied = result.Outcome is RetentionSweepOutcome.Swept
+                ? $"Swept: {result.PlansMarkedStale} expired plan(s) marked stale, {result.ActionsPurged} "
+                    + $"recorded configuration image(s) across {result.PlansPurged} plan(s) discarded."
+                : null;
+
+            _error = result.Outcome switch
+            {
+                RetentionSweepOutcome.Disabled =>
+                    "Nothing was swept: retention is switched off in this process's configuration.",
+                RetentionSweepOutcome.Unavailable =>
+                    "Nothing was swept: this process did not compose a retention sweeper.",
+                RetentionSweepOutcome.Failed =>
+                    $"The sweep failed and nothing was purged: {result.Detail}",
+                _ => null,
+            };
+
+            if (OnChanged.HasDelegate)
+            {
+                await OnChanged.InvokeAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            // No secret material passes through this call, so surfacing the message is safe — matches
+            // RegisteredHostsPanel.DeregisterAsync's identical handling.
+            _error = $"Could not run a sweep: {ex.Message}";
+        }
+        finally
+        {
+            _confirming = false;
+            _busy = false;
+        }
+    }
+
+    /// <summary>
+    /// Days and hours rather than <c>TimeSpan.ToString()</c>: "30.00:00:00" is not what an operator reading a
+    /// retention window needs to see.
+    /// </summary>
+    private static string Humanize(TimeSpan value) => value switch
+    {
+        { TotalDays: >= 1 } => Plural(value.TotalDays, "day"),
+        { TotalHours: >= 1 } => Plural(value.TotalHours, "hour"),
+        _ => Plural(value.TotalMinutes, "minute"),
+    };
+
+    private static string Plural(double count, string unit)
+    {
+        var rounded = Math.Round(count, 2);
+        return $"{rounded:0.##} {unit}{(rounded == 1 ? string.Empty : "s")}";
+    }
+}
