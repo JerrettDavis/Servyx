@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using Servyx.Application.Servers;
@@ -344,6 +345,7 @@ public static class ServerReadTools
         ITransport transport,
         ServyxCoreComposition composition,
         ILoggerFactory loggerFactory,
+        IServiceProvider services,
         CancellationToken cancellationToken)
     {
         // Process-level fact ("no single definition loaded" / "the loaded definition declares no saves
@@ -360,8 +362,15 @@ public static class ServerReadTools
         // (ILogger<ServerReadTools> is not constructible over a static type) — so the logger is created from
         // the factory under this tool's own category name instead.
         var logger = loggerFactory.CreateLogger("Servyx.Mcp.Tools.ServerReadTools");
+
+        // Resolved optionally (see ArchiveTools' own remarks on this pattern) rather than as a normal injected
+        // parameter: this process may never have called AddServyxSshDocker at all, in which case nothing
+        // implements IServerExecutionTargetResolver, and a required parameter would make the SDK's DI
+        // resolution throw before ServerSavesReader's own graceful UnsupportedTransport refusal ever ran.
+        var executionTargetResolver = services.GetService<IServerExecutionTargetResolver>();
         var result = await ServerSavesReader.ReadServerSavesAsync(
-            query, transport, composition.DefinitionCatalog, serverId, logger, cancellationToken).ConfigureAwait(false);
+            query, transport, composition.DefinitionCatalog, serverId, logger, cancellationToken, executionTargetResolver)
+            .ConfigureAwait(false);
 
         return result.Availability switch
         {

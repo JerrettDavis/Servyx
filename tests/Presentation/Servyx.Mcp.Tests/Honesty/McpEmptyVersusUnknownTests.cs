@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Backups;
@@ -166,8 +167,13 @@ public sealed class McpEmptyVersusUnknownTests
         transport.Capabilities.Returns(TransportCapabilities.None);
         transport.TransportId.Returns("ssh+docker");
 
+        // No IServerExecutionTargetResolver registered: this process never called AddServyxSshDocker, so
+        // ServerReadTools resolves it optionally (see that method's own remarks) and gets null, exactly as a
+        // Docker-only host would.
+        var services = new ServiceCollection().BuildServiceProvider();
+
         var result = await ServerReadTools.SavesAsync(
-            "srv-1", query, transport, composition, NullLoggerFactory.Instance, CancellationToken.None);
+            "srv-1", query, transport, composition, NullLoggerFactory.Instance, services, CancellationToken.None);
 
         // Save inspection may or may not be process-level available depending on whether the single loaded
         // definition declares a saves block; either way this must never silently read as "Save is null,

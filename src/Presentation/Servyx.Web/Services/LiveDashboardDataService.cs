@@ -33,6 +33,7 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     private readonly TargetDescriptor _target;
     private readonly IBackupDashboard? _backupDashboard;
     private readonly ITransport? _transport;
+    private readonly IServerExecutionTargetResolver? _executionTargetResolver;
 
     /// <summary>Creates a <see cref="LiveDashboardDataService"/>.</summary>
     /// <param name="target">
@@ -63,13 +64,21 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     /// filesystem to read saves" — <see cref="SavesAvailability.NotConfigured"/>, never a fabricated empty
     /// read.
     /// </param>
+    /// <param name="executionTargetResolver">
+    /// Resolves the already-connected execution target for a server adopted on a registered/configured
+    /// ssh+docker host, so <see cref="GetServerSavesWithStatusAsync"/> can read its saves through the derived
+    /// host-side mount instead of <paramref name="transport"/> — see <c>ServerSavesReader</c>'s remarks.
+    /// <see langword="null"/> when this process never registered one (no ssh+docker host support at all), in
+    /// which case an adopted server's saves report <c>UnsupportedTransport</c>.
+    /// </param>
     public LiveDashboardDataService(
         IServerQueryService query,
         ILogger<LiveDashboardDataService> logger,
         TargetDescriptor target,
         IBackupDashboard? backupDashboard = null,
         GameDefinitionCatalog? catalog = null,
-        ITransport? transport = null)
+        ITransport? transport = null,
+        IServerExecutionTargetResolver? executionTargetResolver = null)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(logger);
@@ -81,6 +90,7 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         _backupDashboard = backupDashboard;
         _catalog = catalog;
         _transport = transport;
+        _executionTargetResolver = executionTargetResolver;
     }
 
     /// <inheritdoc />
@@ -283,7 +293,7 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     public async Task<SavesResult> GetServerSavesWithStatusAsync(string serverId, CancellationToken ct = default)
     {
         var result = await ServerSavesReader
-            .ReadServerSavesAsync(_query, _transport, _catalog, serverId, _logger, ct)
+            .ReadServerSavesAsync(_query, _transport, _catalog, serverId, _logger, ct, _executionTargetResolver)
             .ConfigureAwait(false);
         return MapSavesResult(result);
     }

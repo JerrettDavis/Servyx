@@ -307,14 +307,32 @@ public static class ServerSavesReader
     /// <see cref="SavesReadWorld.WorldCandidatesTruncated"/>/<see cref="SavesReadWorld.PlayerFilesTruncated"/>.
     /// </para>
     /// <para>
-    /// <strong>Transport gating.</strong> Only a transport that declares
-    /// <see cref="TransportCapabilities.ContainerScopedFiles"/> is safe to read through. When ssh+docker is
-    /// wired instead, the same <see cref="TargetDescriptor"/> this method would build resolves against the
-    /// SSH host's own filesystem, not the container's, so a container-internal path becomes a literal path
-    /// segment on the SSH host. Reading through that would risk displaying host files as container save data,
-    /// which is worse than not reading at all, so this method checks <see cref="ITransport.Capabilities"/>
-    /// before opening any session and reports <see cref="SavesReadAvailability.UnsupportedTransport"/> instead
-    /// of attempting a read whose result could be silently wrong.
+    /// <strong>Transport gating, local branch.</strong> A server discovered on the local Docker daemon
+    /// (<c>HostKey</c> is <see langword="null"/>) reads through <paramref name="transport"/> directly, and
+    /// only a transport that declares <see cref="TransportCapabilities.ContainerScopedFiles"/> is safe to use
+    /// that way: the same <see cref="TargetDescriptor"/> this method would build otherwise resolves against
+    /// the wired host's own filesystem, not the container's, so a container-internal path would become a
+    /// literal path segment on that host. Reading through that would risk displaying host files as container
+    /// save data, which is worse than not reading at all, so this method checks
+    /// <see cref="ITransport.Capabilities"/> before opening any session and reports
+    /// <see cref="SavesReadAvailability.UnsupportedTransport"/> instead of attempting a read whose result
+    /// could be silently wrong.
+    /// </para>
+    /// <para>
+    /// <strong>Adopted branch — routed through the derived host mount, not the process-wide transport.</strong>
+    /// A server with a non-null <c>HostKey</c> — adopted on a registered/configured ssh+docker host — never
+    /// reaches <paramref name="transport"/> at all. Its execution target is resolved through
+    /// <paramref name="executionTargetResolver"/> (the same shared, already-connected host session
+    /// <c>HostAwareLogStream</c>/<c>HostAwareMetricsSource</c> use), and the root its save paths are resolved
+    /// relative to is <see cref="ServerDetail.MountHostPath"/> — the container's host-side bind mount —
+    /// exactly the derivation <c>ServyxSshBackupContextSource.FromAdoptedAsync</c> already established for
+    /// backups. This works because a bind-mounted data directory is the same bytes on both sides of the
+    /// mount: reading it through SFTP against the host-side path is not an approximation of the container's
+    /// view, it <em>is</em> the container's view. A container with no host-side mount for its data volume (a
+    /// named volume, or a path living only in the container's writable layer) has no host-side location to
+    /// read at all, so that case reports <see cref="SavesReadAvailability.UnsupportedTransport"/> too — same
+    /// category as the local branch's capability gate, for the same reason: no mechanism this deployment has
+    /// can safely serve the read.
     /// </para>
     /// </remarks>
     public static async Task<SavesReadResult> ReadServerSavesAsync(
@@ -323,7 +341,8 @@ public static class ServerSavesReader
         GameDefinitionCatalog? catalog,
         string serverId,
         ILogger? logger,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        IServerExecutionTargetResolver? executionTargetResolver = null)
     {
         var layout = SingleLoadedDefinition(catalog)?.Saves;
         if (layout is null)
@@ -331,25 +350,9 @@ public static class ServerSavesReader
             return new SavesReadResult(null, SavesReadAvailability.NotConfigured, null);
         }
 
-        if (transport is null)
+        if (transport is null && executionTargetResolver is null)
         {
             return new SavesReadResult(null, SavesReadAvailability.NotConfigured, null);
-        }
-
-        // Refuse before opening a single session: only a transport whose file operations are themselves
-        // container-scoped is safe here. ssh+docker's file operations resolve against the SSH host's own
-        // filesystem, not the container's — see SavesReadAvailability.UnsupportedTransport's remarks and this
-        // method's own remarks. Checked via TransportCapabilities.ContainerScopedFiles, not by attempting a
-        // read and hoping it fails safely: WriteGuardedTransport delegates Capabilities to whatever it
-        // wraps, so this is a cheap, purely local check that never touches the network.
-        if (!transport.Capabilities.HasFlag(TransportCapabilities.ContainerScopedFiles))
-        {
-            return new SavesReadResult(
-                null,
-                SavesReadAvailability.UnsupportedTransport,
-                $"This process is wired to the '{transport.TransportId}' transport, which does not provide "
-                + "container-scoped file access. Save inspection requires a transport whose file operations "
-                + "are rooted inside the container, so nothing was attempted.");
         }
 
         using var timeoutCts = new CancellationTokenSource(SavesReadTimeout);
@@ -361,6 +364,33 @@ public static class ServerSavesReader
             if (detail is null)
             {
                 return new SavesReadResult(null, SavesReadAvailability.Failed, $"'{serverId}' is not an adopted server.");
+            }
+
+            if (detail.Summary.HostKey is { } hostKey)
+            {
+                return await ReadAdoptedSavesAsync(detail, hostKey, layout, executionTargetResolver, serverId, linked.Token)
+                    .ConfigureAwait(false);
+            }
+
+            if (transport is null)
+            {
+                return new SavesReadResult(null, SavesReadAvailability.NotConfigured, null);
+            }
+
+            // Refuse before opening a single session: only a transport whose file operations are themselves
+            // container-scoped is safe here. ssh+docker's file operations resolve against the SSH host's own
+            // filesystem, not the container's — see SavesReadAvailability.UnsupportedTransport's remarks and
+            // this method's own remarks. Checked via TransportCapabilities.ContainerScopedFiles, not by
+            // attempting a read and hoping it fails safely: WriteGuardedTransport delegates Capabilities to
+            // whatever it wraps, so this is a cheap, purely local check that never touches the network.
+            if (!transport.Capabilities.HasFlag(TransportCapabilities.ContainerScopedFiles))
+            {
+                return new SavesReadResult(
+                    null,
+                    SavesReadAvailability.UnsupportedTransport,
+                    $"This process is wired to the '{transport.TransportId}' transport, which does not provide "
+                    + "container-scoped file access. Save inspection requires a transport whose file operations "
+                    + "are rooted inside the container, so nothing was attempted.");
             }
 
             var dataRoot = detail.MountContainerPath;
@@ -394,5 +424,67 @@ public static class ServerSavesReader
             logger?.LogWarning(ex, "Failed to read save data for server '{ServerId}'.", serverId);
             return new SavesReadResult(null, SavesReadAvailability.Failed, ex.Message);
         }
+    }
+
+    /// <summary>
+    /// Reads <paramref name="detail"/>'s save world by resolving its registered host's already-connected
+    /// execution target and treating <see cref="ServerDetail.MountHostPath"/> — the container's host-side
+    /// bind mount — as the root <paramref name="layout"/>'s paths are relative to, exactly mirroring
+    /// <c>ServyxSshBackupContextSource.FromAdoptedAsync</c>'s derivation for backups. See
+    /// <see cref="ReadServerSavesAsync"/>'s remarks for why this is not an approximation: a bind mount is the
+    /// same bytes on both sides, so reading through SFTP against the host-side path is exactly the container's
+    /// own view.
+    /// </summary>
+    /// <remarks>
+    /// No session is disposed here (unlike the local branch's <c>transport.ConnectAsync</c> result): the
+    /// resolved target is the same shared, cached, connection this process keeps open for the whole host —
+    /// see <see cref="IServerExecutionTargetResolver"/>'s own remarks — not a session this call opened and
+    /// therefore owns. Nor is it wrapped in a write guard: <see cref="ReadSavesAsync"/> only ever calls
+    /// <c>ListDirectoryAsync</c>/<c>StatAsync</c>, so there is no write for a guard to gate.
+    /// </remarks>
+    private static async Task<SavesReadResult> ReadAdoptedSavesAsync(
+        ServerDetail detail,
+        string hostKey,
+        SavesLayout layout,
+        IServerExecutionTargetResolver? executionTargetResolver,
+        string serverId,
+        CancellationToken ct)
+    {
+        if (executionTargetResolver is null)
+        {
+            // Composition defect, not a runtime condition an operator can hit: a server with a non-null
+            // HostKey was necessarily discovered through AddServyxSshDocker, which registers
+            // IServerExecutionTargetResolver unconditionally — see that method's own remarks.
+            return new SavesReadResult(
+                null,
+                SavesReadAvailability.UnsupportedTransport,
+                $"'{serverId}' is adopted on registered host '{hostKey}', but this process has no per-server "
+                + "execution target resolver wired to reach it through.");
+        }
+
+        if (string.IsNullOrWhiteSpace(detail.MountHostPath))
+        {
+            return new SavesReadResult(
+                null,
+                SavesReadAvailability.UnsupportedTransport,
+                $"'{serverId}' is adopted on registered host '{hostKey}', but no host-side mount path is known "
+                + "for its data volume — its data directory is not bind-mounted (a named volume or a "
+                + "writable-layer path has no location on the host to read), so save inspection cannot reach "
+                + "it over SSH.");
+        }
+
+        var root = Normalize(detail.MountHostPath);
+        var target = await executionTargetResolver.ResolveAsync(serverId, hostKey, ct).ConfigureAwait(false);
+        return await ReadSavesAsync(target, root, layout, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Normalizes a host-side mount path to forward slashes with no trailing slash, the same way
+    /// <c>ServyxSshBackupContextSource.Normalize</c> does for the identical <c>MountHostPath</c> value.
+    /// </summary>
+    private static string Normalize(string root)
+    {
+        var normalized = root.Trim().Replace('\\', '/').TrimEnd('/');
+        return normalized.Length == 0 ? "/" : normalized;
     }
 }

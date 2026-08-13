@@ -432,4 +432,135 @@ public class LiveDashboardDataServiceSavesTests
         result.Save!.PlayerFilesTruncated.Should().BeFalse();
         result.Save.WorldCandidatesTruncated.Should().BeFalse();
     }
+
+    // -- SSH-adopted servers: routed through the derived host-side mount, never the process-wide transport ------
+
+    private const string SshHostKey = "gamebox-1";
+
+    private static ServerDetail AdoptedSshDetail(string? mountHostPath = "/srv/palworld/data") => new(
+        new ServerSummary(
+            ServerId, "Palworld Server", "palworld", ServerState.Running, ServerHealthStatus.Healthy,
+            null, null, SshHostKey, [], HostKey: SshHostKey),
+        "thijsvanloef/palworld-server-docker:latest",
+        mountHostPath,
+        DataRoot,
+        null, null, null, null, []);
+
+    private static IServerExecutionTargetResolver ResolverFor(IExecutionTarget target)
+    {
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+        resolver.ResolveAsync(ServerId, SshHostKey, Arg.Any<CancellationToken>()).Returns(Task.FromResult(target));
+        return resolver;
+    }
+
+    private static async Task<LiveDashboardDataService> BuildSshAsync(
+        SavesLayout? saves,
+        ServerDetail? detail,
+        IServerExecutionTargetResolver? resolver,
+        ITransport? transport = null)
+    {
+        var catalog = await SavesFakes.CatalogFor(SavesFakes.MinimalDefinition(saves));
+        return new LiveDashboardDataService(
+            QueryFor(detail),
+            NullLogger<LiveDashboardDataService>.Instance,
+            Target,
+            backupDashboard: null,
+            catalog: catalog,
+            transport: transport,
+            executionTargetResolver: resolver);
+    }
+
+    [Fact]
+    public async Task AdoptedSshServer_ReadsSavesThroughTheDerivedHostMountPath()
+    {
+        const string worldId = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+        var target = new InMemoryExecutionTarget()
+            .AddDirectory("Pal/Saved/SaveGames/0")
+            .AddDirectory($"Pal/Saved/SaveGames/0/{worldId}")
+            .AddFile($"Pal/Saved/SaveGames/0/{worldId}/Level.sav", 111)
+            .AddFile($"Pal/Saved/SaveGames/0/{worldId}/LevelMeta.sav", 222);
+
+        var sut = await BuildSshAsync(PalworldLayout(), AdoptedSshDetail(), ResolverFor(target));
+
+        var result = await sut.GetServerSavesWithStatusAsync(ServerId);
+
+        result.Availability.Should().Be(SavesAvailability.Listed);
+        result.FailureDetail.Should().BeNull();
+        result.Save.Should().NotBeNull();
+        result.Save!.WorldId.Should().Be(worldId);
+        result.Save.LevelFileSizeBytes.Should().Be(111);
+    }
+
+    [Fact]
+    public async Task AdoptedSshServer_WithNoTransportWired_StillReadsThroughTheResolver()
+    {
+        // The process-wide transport (Docker's, typically) plays no part in the adopted branch — this proves
+        // it by leaving it null entirely, the same "no process-wide transport at all" state a pure ssh+docker
+        // install without AddServyxDocker would be in.
+        var target = new InMemoryExecutionTarget();
+
+        var sut = await BuildSshAsync(PalworldLayout(), AdoptedSshDetail(), ResolverFor(target), transport: null);
+
+        var result = await sut.GetServerSavesWithStatusAsync(ServerId);
+
+        result.Availability.Should().Be(SavesAvailability.Listed, "a missing world root is a genuine empty read, not a failure");
+        result.Save.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task AdoptedSshServer_WithNoHostSideMountPath_ReportsUnsupportedTransport_NeverGuessesAPath()
+    {
+        var resolver = ResolverFor(new InMemoryExecutionTarget());
+
+        var sut = await BuildSshAsync(PalworldLayout(), AdoptedSshDetail(mountHostPath: null), resolver);
+
+        var result = await sut.GetServerSavesWithStatusAsync(ServerId);
+
+        result.Availability.Should().Be(
+            SavesAvailability.UnsupportedTransport,
+            "a container with no host-side bind mount (a named volume, or a writable-layer-only path) has no location on the host to read");
+        result.Save.Should().BeNull();
+        result.FailureDetail.Should().Contain("no host-side").And.Contain("mount path");
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task AdoptedSshServer_WithNoExecutionTargetResolverWired_ReportsUnsupportedTransport()
+    {
+        // Composition defect, not a runtime condition an operator can hit (see ServerSavesReader's remarks) —
+        // still must degrade gracefully rather than throwing out of GetServerSavesWithStatusAsync. A local
+        // transport is wired (this process also runs local Docker) so the "nothing at all is wired" early
+        // exit does not mask the branch actually under test here.
+        var sut = await BuildSshAsync(
+            PalworldLayout(), AdoptedSshDetail(), resolver: null, transport: new FakeSavesTransport());
+
+        var result = await sut.GetServerSavesWithStatusAsync(ServerId);
+
+        result.Availability.Should().Be(SavesAvailability.UnsupportedTransport);
+        result.Save.Should().BeNull();
+        result.FailureDetail.Should().Contain("execution target resolver");
+    }
+
+    [Fact]
+    public async Task LocallyAdoptedServer_WithNoHostKey_IsUnaffectedByAResolverBeingWired()
+    {
+        // HostKey is null for a server discovered on the local Docker daemon — a resolver being available in
+        // this process (e.g. some other server is adopted over SSH) must not change how this one is read.
+        const string worldId = "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+        var localTarget = new InMemoryExecutionTarget()
+            .AddDirectory("Pal/Saved/SaveGames/0")
+            .AddDirectory($"Pal/Saved/SaveGames/0/{worldId}")
+            .AddFile($"Pal/Saved/SaveGames/0/{worldId}/Level.sav", 1)
+            .AddFile($"Pal/Saved/SaveGames/0/{worldId}/LevelMeta.sav", 1);
+        var transport = new FakeSavesTransport { Target = localTarget };
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+
+        var sut = await BuildSshAsync(PalworldLayout(), AdoptedDetail(), resolver, transport);
+
+        var result = await sut.GetServerSavesWithStatusAsync(ServerId);
+
+        result.Availability.Should().Be(SavesAvailability.Listed);
+        result.Save!.WorldId.Should().Be(worldId);
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
 }
