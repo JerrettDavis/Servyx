@@ -19,6 +19,7 @@ public class SshHostKeyProbeAdapterTests
     [InlineData("host:99999")]
     [InlineData("[::1")]
     [InlineData("user@")]
+    [InlineData("ssh paladmin@10.0.0.4")]
     public async Task An_unparseable_endpoint_is_reported_as_InvalidEndpoint_rather_than_throwing(string endpoint)
     {
         IHostKeyProbe probe = new SshHostKeyProbeAdapter(TimeSpan.FromSeconds(2));
@@ -46,6 +47,35 @@ public class SshHostKeyProbeAdapterTests
         observation.Sha256Fingerprint.Should().BeNull();
         observation.PublicKeyBlob.Should().BeNull();
         observation.FailureReason.Should().NotBeNullOrWhiteSpace();
+    }
+
+    /// <summary>
+    /// The registration bug this rejection exists for. "ssh paladmin@host" — a space where the colon after
+    /// "ssh" belongs — used to parse cleanly: the prefix went unstripped, so everything before the '@' became
+    /// the username "ssh paladmin". Nothing downstream noticed, because the host-key probe never authenticates,
+    /// so registration reported success and the failure surfaced only much later as an unexplained empty
+    /// adoption list. Refusing it at the parse is what turns it back into a form error the operator can fix.
+    /// </summary>
+    [Fact]
+    public async Task A_missing_colon_after_ssh_is_refused_and_the_reason_names_the_username_it_parsed_to()
+    {
+        IHostKeyProbe probe = new SshHostKeyProbeAdapter(TimeSpan.FromSeconds(2));
+
+        var observation = await probe.ObserveAsync("ssh paladmin@10.0.0.4:22");
+
+        observation.Status.Should().Be(HostKeyObservationStatus.InvalidEndpoint);
+        observation.FailureReason.Should().Contain("ssh paladmin").And.Contain("ssh:user@host:port");
+    }
+
+    /// <summary>A username is legal without the "ssh:" prefix and must keep parsing.</summary>
+    [Fact]
+    public async Task A_well_formed_endpoint_gets_far_enough_to_report_a_connectivity_failure()
+    {
+        IHostKeyProbe probe = new SshHostKeyProbeAdapter(TimeSpan.FromSeconds(5));
+
+        var observation = await probe.ObserveAsync("ssh:paladmin@127.0.0.1:1");
+
+        observation.Status.Should().Be(HostKeyObservationStatus.Unreachable);
     }
 
     [Fact]

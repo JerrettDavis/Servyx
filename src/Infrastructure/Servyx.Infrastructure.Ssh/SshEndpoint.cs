@@ -40,6 +40,19 @@ public static class SshEndpoint
         {
             username = remainder[..atIndex];
             remainder = remainder[(atIndex + 1)..];
+
+            // A username can never contain whitespace, so its presence means the text before the '@' was not
+            // only a username. The case this catches is "ssh user@host" — a missing colon after "ssh", which
+            // leaves the prefix unstripped above and folded into the username as "ssh user". Rejecting it here
+            // is what stops it reaching SshCredentialResolver as a plausible-looking name that no host will
+            // ever authenticate.
+            if (username.Any(char.IsWhiteSpace))
+            {
+                throw new ArgumentException(
+                    $"'{endpoint}' parses to the username '{username}', which contains whitespace. Write the "
+                    + "endpoint as 'ssh:user@host:port' — note the colon directly after 'ssh'.",
+                    nameof(endpoint));
+            }
         }
 
         string host;

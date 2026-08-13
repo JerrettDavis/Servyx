@@ -26,10 +26,21 @@ namespace Servyx.Infrastructure.Ssh;
 /// only because the constructor requires one; a <see cref="NoneAuthenticationMethod"/> is used because it is
 /// never actually exercised against the remote host.
 /// </para>
+/// <para>
+/// <strong>Why it still connects as the endpoint's own username.</strong> Authentication never runs, so the
+/// username has no bearing on whether a fingerprint comes back — but a probe that succeeds under a name the
+/// real connection will never use makes the registration form report success for an endpoint that cannot
+/// authenticate. Passing <see cref="SshEndpoint.Parse"/>'s username hint through means the probe is exercising
+/// the same parse the transport later will, so a mis-parsed endpoint fails here rather than silently at first
+/// use. <see cref="FallbackProbeUser"/> covers only an endpoint that names no user at all.
+/// </para>
 /// </remarks>
 public static class SshHostKeyProbe
 {
     private static readonly TimeSpan DefaultTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>The username used when the endpoint names none, so <see cref="ConnectionInfo"/> still has one.</summary>
+    private const string FallbackProbeUser = "servyx-hostkey-probe";
 
     /// <summary>Probes <paramref name="endpoint"/> (parsed via <see cref="SshEndpoint.Parse"/>) with a 10-second timeout.</summary>
     public static Task<SshHostKeyProbeResult> ProbeAsync(string endpoint, CancellationToken ct = default) =>
@@ -43,13 +54,14 @@ public static class SshHostKeyProbe
     /// </summary>
     public static async Task<SshHostKeyProbeResult> ProbeAsync(string endpoint, TimeSpan timeout, CancellationToken ct = default)
     {
-        var (parsedEndpoint, _) = SshEndpoint.Parse(endpoint);
+        var (parsedEndpoint, usernameHint) = SshEndpoint.Parse(endpoint);
+        var probeUser = usernameHint ?? FallbackProbeUser;
 
         var connectionInfo = new ConnectionInfo(
             parsedEndpoint.Host,
             parsedEndpoint.Port,
-            "servyx-hostkey-probe",
-            new NoneAuthenticationMethod("servyx-hostkey-probe"))
+            probeUser,
+            new NoneAuthenticationMethod(probeUser))
         {
             Timeout = timeout,
         };
