@@ -168,3 +168,51 @@ public class ModInstallIdTests
         ModInstallId.TryParse("garbage", out _).Should().BeFalse();
     }
 }
+
+public class UserIdTests
+{
+    [Fact]
+    public void New_ProducesUniqueValues()
+    {
+        UserId.New().Should().NotBe(UserId.New());
+    }
+
+    [Fact]
+    public void Equality_IsValueBased()
+    {
+        var guid = Guid.NewGuid();
+        var a = new UserId(guid);
+        var b = new UserId(guid);
+
+        a.Should().Be(b);
+        (a == b).Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryParse_RoundTripsCanonicalString()
+    {
+        var original = UserId.New();
+        UserId.TryParse(original.ToString(), out var parsed).Should().BeTrue();
+        parsed.Should().Be(original);
+    }
+
+    [Fact]
+    public void TryParse_RejectsGarbage()
+    {
+        UserId.TryParse("garbage", out var parsed).Should().BeFalse();
+        parsed.Should().Be(default(UserId));
+    }
+
+    [Fact]
+    public void TryParse_RejectsNull()
+    {
+        UserId.TryParse(null, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_ThrowsOnGarbage()
+    {
+        var act = () => UserId.Parse("garbage");
+        act.Should().Throw<FormatException>();
+    }
+}

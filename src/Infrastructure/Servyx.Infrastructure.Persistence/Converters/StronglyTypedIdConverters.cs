@@ -46,3 +46,16 @@ public sealed class ChangePlanIdConverter : ValueConverter<ChangePlanId, Guid>
     {
     }
 }
+
+/// <summary>
+/// Persists a <see cref="UserId"/> as its underlying <see cref="Guid"/>.
+/// </summary>
+/// <remarks>See <see cref="ServerIdConverter"/> for why this is a named type rather than an inline lambda pair.</remarks>
+public sealed class UserIdConverter : ValueConverter<UserId, Guid>
+{
+    /// <summary>Creates the converter.</summary>
+    public UserIdConverter()
+        : base(id => id.Value, value => new UserId(value))
+    {
+    }
+}

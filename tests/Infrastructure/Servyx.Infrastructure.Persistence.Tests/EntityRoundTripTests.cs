@@ -309,6 +309,126 @@ public class EntityRoundTripTests
     }
 
     [Fact]
+    public void User_RoundTripsEveryField_AcrossContextInstances()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        var id = UserId.New();
+        var createdAt = new DateTimeOffset(2026, 8, 13, 9, 0, 0, TimeSpan.Zero);
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Users.Add(new User
+            {
+                Id = id,
+                Username = "alice",
+                PasswordHash = "PBKDF2-SHA256$600000$c2FsdA==$a2V5$",
+                Role = UserRole.Operator,
+                IsActive = true,
+                CreatedAt = createdAt,
+            });
+
+            write.SaveChanges().Should().Be(1);
+        }
+
+        using var read = fixture.CreateContext();
+        var loaded = read.Users.Single();
+
+        loaded.Id.Should().Be(id);
+        loaded.Username.Should().Be("alice");
+        loaded.PasswordHash.Should().Be("PBKDF2-SHA256$600000$c2FsdA==$a2V5$");
+        loaded.Role.Should().Be(UserRole.Operator);
+        loaded.IsActive.Should().BeTrue();
+        loaded.CreatedAt.Should().Be(createdAt);
+    }
+
+    [Fact]
+    public void User_Role_IsStoredAsItsName_NotItsOrdinal()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Users.Add(new User
+            {
+                Id = UserId.New(),
+                Username = "admin-user",
+                PasswordHash = "PBKDF2-SHA256$600000$c2FsdA==$a2V5$",
+                Role = UserRole.Admin,
+                IsActive = true,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+            });
+            write.SaveChanges();
+        }
+
+        using var read = fixture.CreateContext();
+        var connection = read.Database.GetDbConnection();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT Role FROM Users";
+        using var reader = command.ExecuteReader();
+
+        reader.Read().Should().BeTrue();
+        // A reordering of UserRole's members must never silently reinterpret an existing row — see
+        // UserConfiguration's HasConversion<string>().
+        reader.GetString(0).Should().Be("Admin");
+    }
+
+    [Fact]
+    public void User_Username_IsUnique()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        using (var write = fixture.CreateContext())
+        {
+            write.Users.Add(new User
+            {
+                Id = UserId.New(),
+                Username = "shared-name",
+                PasswordHash = "PBKDF2-SHA256$600000$c2FsdA==$a2V5$",
+                Role = UserRole.Viewer,
+                IsActive = true,
+                CreatedAt = DateTimeOffset.UnixEpoch,
+            });
+            write.SaveChanges();
+        }
+
+        using var write2 = fixture.CreateContext();
+        write2.Users.Add(new User
+        {
+            Id = UserId.New(),
+            Username = "shared-name",
+            PasswordHash = "PBKDF2-SHA256$600000$c2FsdA==$a2V5$",
+            Role = UserRole.Viewer,
+            IsActive = true,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        // Enforced at the database — see UserConfiguration's unique index on Username.
+        var act = () => write2.SaveChanges();
+        act.Should().Throw<DbUpdateException>();
+    }
+
+    [Fact]
+    public void User_RequiredColumns_AreEnforcedByTheDatabase()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+
+        using var write = fixture.CreateContext();
+        write.Users.Add(new User
+        {
+            Id = UserId.New(),
+            Username = null!,
+            PasswordHash = "PBKDF2-SHA256$600000$c2FsdA==$a2V5$",
+            Role = UserRole.Viewer,
+            IsActive = true,
+            CreatedAt = DateTimeOffset.UnixEpoch,
+        });
+
+        var act = () => write.SaveChanges();
+        act.Should().Throw<DbUpdateException>();
+    }
+
+    [Fact]
     public void RequiredColumns_AreEnforcedByTheDatabase()
     {
         using var fixture = new SqliteDatabaseFixture();

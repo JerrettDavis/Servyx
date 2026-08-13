@@ -221,6 +221,50 @@ public readonly record struct ChangeReceiptId
 }
 
 /// <summary>
+/// Strongly-typed identifier for a Servyx user account.
+/// </summary>
+public readonly record struct UserId
+{
+    /// <summary>
+    /// Creates a <see cref="UserId"/> wrapping the given <see cref="Guid"/>.
+    /// </summary>
+    public UserId(Guid value) => Value = value;
+
+    /// <summary>
+    /// The underlying identifier value.
+    /// </summary>
+    public Guid Value { get; }
+
+    /// <summary>
+    /// Creates a new, unique <see cref="UserId"/>.
+    /// </summary>
+    public static UserId New() => new(Guid.NewGuid());
+
+    /// <summary>
+    /// Parses a <see cref="UserId"/> from its canonical string form. Throws <see cref="FormatException"/> on invalid input.
+    /// </summary>
+    public static UserId Parse(string value) => new(Guid.Parse(value));
+
+    /// <summary>
+    /// Attempts to parse a <see cref="UserId"/> from its canonical string form.
+    /// </summary>
+    public static bool TryParse(string? value, out UserId id)
+    {
+        if (Guid.TryParse(value, out var guid))
+        {
+            id = new UserId(guid);
+            return true;
+        }
+
+        id = default;
+        return false;
+    }
+
+    /// <inheritdoc />
+    public override string ToString() => Value.ToString();
+}
+
+/// <summary>
 /// Strongly-typed identifier for a planned mod installation.
 /// </summary>
 public readonly record struct ModInstallId

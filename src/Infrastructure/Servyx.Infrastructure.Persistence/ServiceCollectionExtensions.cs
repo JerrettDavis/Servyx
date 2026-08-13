@@ -5,12 +5,14 @@ using Servyx.Domain.Definitions;
 using Servyx.Domain.Hosts;
 using Servyx.Domain.Provisioning;
 using Servyx.Domain.Servers;
+using Servyx.Domain.Users;
 using Servyx.Infrastructure.Persistence.Configuration;
 using Servyx.Infrastructure.Persistence.Definitions;
 using Servyx.Infrastructure.Persistence.Hosts;
 using Servyx.Infrastructure.Persistence.Interceptors;
 using Servyx.Infrastructure.Persistence.Provisioning;
 using Servyx.Infrastructure.Persistence.Servers;
+using Servyx.Infrastructure.Persistence.Users;
 
 namespace Servyx.Infrastructure.Persistence;
 
@@ -186,6 +188,25 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddSingleton<IChangePlanStore, EfChangePlanStore>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfUserRepository"/> as the <see cref="IUserRepository"/>, backed by the
+    /// <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling of
+    /// <see cref="AddServyxHostRepository"/> for the same reason — this is the durable store behind Servyx's
+    /// own user account bookkeeping, a distinct opt-in decision, not a side effect of asking for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching <see cref="AddServyxHostRepository"/>. See
+    /// <see cref="EfUserRepository"/>'s own remarks for why that is safe here.
+    /// </remarks>
+    public static IServiceCollection AddServyxUserRepository(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IUserRepository, EfUserRepository>();
 
         return services;
     }

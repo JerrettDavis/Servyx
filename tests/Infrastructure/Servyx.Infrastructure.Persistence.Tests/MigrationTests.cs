@@ -55,6 +55,7 @@ public class MigrationTests
         context.ServerSettingValues.Should().BeEmpty();
         context.ChangePlans.Should().BeEmpty();
         context.ChangePlanActions.Should().BeEmpty();
+        context.Users.Should().BeEmpty();
     }
 
     /// <summary>

@@ -79,6 +79,12 @@ public sealed class ServyxDbContext : DbContext
     /// <summary>The ordered actions making up each <see cref="ChangePlanRecord"/>. See <see cref="ChangePlanActionRecord"/>'s own remarks.</summary>
     public DbSet<ChangePlanActionRecord> ChangePlanActions => Set<ChangePlanActionRecord>();
 
+    /// <summary>
+    /// Servyx user accounts — the durable store behind the identity/RBAC foundation. Not yet consulted by
+    /// authentication; see <see cref="User"/>'s own remarks.
+    /// </summary>
+    public DbSet<User> Users => Set<User>();
+
     /// <inheritdoc />
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {
@@ -87,6 +93,7 @@ public sealed class ServyxDbContext : DbContext
         configurationBuilder.Properties<ServerId>().HaveConversion<ServerIdConverter>();
         configurationBuilder.Properties<HostId>().HaveConversion<HostIdConverter>();
         configurationBuilder.Properties<ChangePlanId>().HaveConversion<ChangePlanIdConverter>();
+        configurationBuilder.Properties<UserId>().HaveConversion<UserIdConverter>();
 
         base.ConfigureConventions(configurationBuilder);
     }
