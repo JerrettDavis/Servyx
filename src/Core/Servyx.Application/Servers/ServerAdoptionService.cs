@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Servyx.Application.Auditing;
 using Servyx.Domain.Common;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Discovery;
@@ -34,10 +35,17 @@ public sealed class ServerAdoptionService : IServerAdoptionService
     private readonly IServerDefinitionBindingStore _bindingStore;
     private readonly IHostRepository _hostRepository;
     private readonly IAdoptionDefinitionCatalog _definitions;
+    private readonly IAuditLogger? _auditLogger;
     private readonly ILogger<ServerAdoptionService> _logger;
     private readonly TimeProvider _timeProvider;
 
     /// <summary>Creates a <see cref="ServerAdoptionService"/>.</summary>
+    /// <param name="auditLogger">
+    /// Records <see cref="AdoptAsync"/>/<see cref="ForgetAsync"/> to Servyx's accountability trail. Nullable,
+    /// unlike every other collaborator here, purely so this constructor's large existing test suite (which
+    /// predates the audit trail) keeps compiling without threading a fake through every call site; a caller
+    /// that omits it simply gets no audit entries. The composition root always supplies one.
+    /// </param>
     /// <param name="timeProvider">Clock used to stamp <see cref="Server.CreatedAt"/>. Defaults to <see cref="TimeProvider.System"/>.</param>
     public ServerAdoptionService(
         IServerDiscovery discovery,
@@ -46,7 +54,8 @@ public sealed class ServerAdoptionService : IServerAdoptionService
         IHostRepository hostRepository,
         IAdoptionDefinitionCatalog definitions,
         ILogger<ServerAdoptionService> logger,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        IAuditLogger? auditLogger = null)
     {
         ArgumentNullException.ThrowIfNull(discovery);
         ArgumentNullException.ThrowIfNull(repository);
@@ -62,6 +71,7 @@ public sealed class ServerAdoptionService : IServerAdoptionService
         _definitions = definitions;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _auditLogger = auditLogger;
     }
 
     /// <inheritdoc />
@@ -234,7 +244,8 @@ public sealed class ServerAdoptionService : IServerAdoptionService
     }
 
     /// <inheritdoc />
-    public async Task<AdoptionResult> AdoptAsync(string containerId, string gameDefinitionId, CancellationToken ct = default)
+    public async Task<AdoptionResult> AdoptAsync(
+        string containerId, string gameDefinitionId, string? actor = null, CancellationToken ct = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(containerId);
         ArgumentException.ThrowIfNullOrWhiteSpace(gameDefinitionId);
@@ -323,6 +334,17 @@ public sealed class ServerAdoptionService : IServerAdoptionService
                 new ServerDefinitionBinding(containerId, ServerDefinitionBindingState.Bound, definitionRef, [], now), ct)
             .ConfigureAwait(false);
 
+        if (_auditLogger is not null)
+        {
+            await _auditLogger.RecordAsync(
+                string.IsNullOrWhiteSpace(actor) ? AuditActors.System : actor,
+                AuditActions.ServerAdopted,
+                targetType: "server",
+                targetId: containerId,
+                details: $"definition {definitionRef.Id}",
+                ct: ct).ConfigureAwait(false);
+        }
+
         return AdoptionResult.Adopted(server.Id);
     }
 
@@ -349,9 +371,24 @@ public sealed class ServerAdoptionService : IServerAdoptionService
     /// discovery evidence the container is gone, not by this method.
     /// </para>
     /// </remarks>
-    public async Task<ForgetResult> ForgetAsync(ServerId id, CancellationToken ct = default)
+    public async Task<ForgetResult> ForgetAsync(ServerId id, string? actor = null, CancellationToken ct = default)
     {
         var removed = await _repository.RemoveAsync(id, ct).ConfigureAwait(false);
-        return removed ? ForgetResult.Forgotten() : ForgetResult.NotFound(id);
+        if (!removed)
+        {
+            return ForgetResult.NotFound(id);
+        }
+
+        if (_auditLogger is not null)
+        {
+            await _auditLogger.RecordAsync(
+                string.IsNullOrWhiteSpace(actor) ? AuditActors.System : actor,
+                AuditActions.ServerForgotten,
+                targetType: "server",
+                targetId: id.ToString(),
+                ct: ct).ConfigureAwait(false);
+        }
+
+        return ForgetResult.Forgotten();
     }
 }

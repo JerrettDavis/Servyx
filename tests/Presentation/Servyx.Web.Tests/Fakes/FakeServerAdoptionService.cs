@@ -59,7 +59,8 @@ public sealed class FakeServerAdoptionService : IServerAdoptionService
             : TrackedServersResult.Ok(Tracked.ToList()));
 
     /// <inheritdoc />
-    public Task<AdoptionResult> AdoptAsync(string containerId, string gameDefinitionId, CancellationToken ct = default)
+    public Task<AdoptionResult> AdoptAsync(
+        string containerId, string gameDefinitionId, string? actor = null, CancellationToken ct = default)
     {
         AdoptCalls.Add((containerId, gameDefinitionId));
 
@@ -76,7 +77,7 @@ public sealed class FakeServerAdoptionService : IServerAdoptionService
     }
 
     /// <inheritdoc />
-    public Task<ForgetResult> ForgetAsync(ServerId id, CancellationToken ct = default)
+    public Task<ForgetResult> ForgetAsync(ServerId id, string? actor = null, CancellationToken ct = default)
     {
         ForgetCalls.Add(id);
 

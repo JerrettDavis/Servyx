@@ -1,7 +1,9 @@
+@using System.Security.Claims
 @using Servyx.Application.Servers
 @using Servyx.Definitions
 @using Servyx.Domain.Common
 @using Servyx.Domain.Definitions.Model
+@using Servyx.Web.Authentication
 @inject IServiceProvider Services
 
 @* Adoption touches only Servyx's own database — it never issues a command to a container — so, unlike the
@@ -202,6 +204,13 @@
 }
 
 @code {
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Mirrors
+    /// <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
     private IServerAdoptionService? _adoption;
     private GameDefinitionCatalog? _catalog;
 
@@ -325,7 +334,8 @@
         _adoptError = null;
         try
         {
-            var result = await _adoption.AdoptAsync(candidate.ContainerId, definitionId);
+            var actor = await ResolveActorAsync();
+            var result = await _adoption.AdoptAsync(candidate.ContainerId, definitionId, actor);
             if (result.Outcome != AdoptionOutcome.Adopted)
             {
                 _adoptError = result.Detail;
@@ -358,7 +368,8 @@
         _forgetError = null;
         try
         {
-            var result = await _adoption.ForgetAsync(id);
+            var actor = await ResolveActorAsync();
+            var result = await _adoption.ForgetAsync(id, actor);
             if (result.Outcome != ForgetOutcome.Forgotten)
             {
                 _forgetError = result.Detail;
@@ -376,5 +387,18 @@
             _forgetBusy = false;
             _forgetConfirmingId = null;
         }
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
     }
 }

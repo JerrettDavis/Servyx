@@ -1,6 +1,7 @@
 using System.Text;
 using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Application.Hosts;
+using Servyx.Application.Tests.Auditing;
 using Servyx.Domain.Common;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Entities;
@@ -172,6 +173,7 @@ public class HostRegistrationServiceTests
         RecordingHostKeyStore HostKeys,
         RecordingCredentialImporter Credentials,
         CountingRefresher Refresher,
+        FakeAuditLogger AuditLogger,
         TestTimeProvider Time);
 
     private static Harness Build()
@@ -181,12 +183,14 @@ public class HostRegistrationServiceTests
         var hostKeys = new RecordingHostKeyStore();
         var credentials = new RecordingCredentialImporter();
         var refresher = new CountingRefresher();
+        var auditLogger = new FakeAuditLogger();
         var time = new TestTimeProvider(new DateTimeOffset(2026, 8, 12, 9, 0, 0, TimeSpan.Zero));
 
         var service = new HostRegistrationService(
-            repository, probe, hostKeys, credentials, refresher, NullLogger<HostRegistrationService>.Instance, time);
+            repository, probe, hostKeys, credentials, refresher, auditLogger,
+            NullLogger<HostRegistrationService>.Instance, time);
 
-        return new Harness(service, repository, probe, hostKeys, credentials, refresher, time);
+        return new Harness(service, repository, probe, hostKeys, credentials, refresher, auditLogger, time);
     }
 
     private static Task<RegistrationResult> RegisterAsync(
@@ -601,6 +605,33 @@ public class HostRegistrationServiceTests
     }
 
     [Fact]
+    public async Task Registering_a_host_records_a_HostRegisteredAuditEntry()
+    {
+        var harness = Build();
+        await harness.Service.ProbeAsync(Endpoint);
+
+        await RegisterAsync(harness);
+
+        var entry = harness.AuditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be(Actor);
+        entry.Action.Should().Be(AuditActions.HostRegistered);
+        entry.TargetType.Should().Be("host");
+        entry.TargetId.Should().Be("prod-host");
+        entry.Details.Should().Be(Endpoint);
+    }
+
+    [Fact]
+    public async Task A_refused_registration_records_no_audit_entry()
+    {
+        var harness = Build();
+        await harness.Service.ProbeAsync(Endpoint);
+
+        await RegisterAsync(harness, fingerprint: AttackerFingerprint);
+
+        harness.AuditLogger.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Listing_reports_a_read_failure_honestly_rather_than_as_an_empty_list()
     {
         var harness = Build();
@@ -659,6 +690,33 @@ public class HostRegistrationServiceTests
         result.Outcome.Should().Be(DeregistrationOutcome.NotFound);
         result.Detail.Should().Contain("never-registered");
         harness.Refresher.InvalidateCount.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task Deregistering_records_a_HostDeregisteredAuditEntry()
+    {
+        var harness = Build();
+        await harness.Service.ProbeAsync(Endpoint);
+        await RegisterAsync(harness);
+        harness.AuditLogger.Entries.Clear();
+
+        await harness.Service.DeregisterAsync("prod-host", Actor);
+
+        var entry = harness.AuditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be(Actor);
+        entry.Action.Should().Be(AuditActions.HostDeregistered);
+        entry.TargetType.Should().Be("host");
+        entry.TargetId.Should().Be("prod-host");
+    }
+
+    [Fact]
+    public async Task Deregistering_an_unknown_host_records_no_audit_entry()
+    {
+        var harness = Build();
+
+        await harness.Service.DeregisterAsync("never-registered", Actor);
+
+        harness.AuditLogger.Entries.Should().BeEmpty();
     }
 
     [Fact]

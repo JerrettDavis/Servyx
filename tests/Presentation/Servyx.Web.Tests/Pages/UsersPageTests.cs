@@ -240,7 +240,7 @@ public class UsersPageTests : BunitContext
     private (UserService Service, FakeUserRepository Repository) Arrange()
     {
         var repository = new FakeUserRepository();
-        var service = new UserService(repository, NullLogger<UserService>.Instance);
+        var service = new UserService(repository, new FakeAuditLogger(), NullLogger<UserService>.Instance);
         Services.AddSingleton<IUserService>(service);
         return (service, repository);
     }

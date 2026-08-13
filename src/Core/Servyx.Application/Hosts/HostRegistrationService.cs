@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Logging;
+using Servyx.Application.Auditing;
 using Servyx.Domain.Common;
 using Servyx.Domain.Connectors;
 using Servyx.Domain.Entities;
@@ -65,6 +66,7 @@ public sealed class HostRegistrationService : IHostRegistrationService
     private readonly IHostKeyStore _hostKeys;
     private readonly IHostCredentialImporter _credentials;
     private readonly IHostConnectionRefresher _connections;
+    private readonly IAuditLogger _auditLogger;
     private readonly ILogger<HostRegistrationService> _logger;
     private readonly TimeProvider _timeProvider;
 
@@ -79,6 +81,7 @@ public sealed class HostRegistrationService : IHostRegistrationService
         IHostKeyStore hostKeys,
         IHostCredentialImporter credentials,
         IHostConnectionRefresher connections,
+        IAuditLogger auditLogger,
         ILogger<HostRegistrationService> logger,
         TimeProvider? timeProvider = null)
     {
@@ -87,6 +90,7 @@ public sealed class HostRegistrationService : IHostRegistrationService
         ArgumentNullException.ThrowIfNull(hostKeys);
         ArgumentNullException.ThrowIfNull(credentials);
         ArgumentNullException.ThrowIfNull(connections);
+        ArgumentNullException.ThrowIfNull(auditLogger);
         ArgumentNullException.ThrowIfNull(logger);
 
         _repository = repository;
@@ -94,6 +98,7 @@ public sealed class HostRegistrationService : IHostRegistrationService
         _hostKeys = hostKeys;
         _credentials = credentials;
         _connections = connections;
+        _auditLogger = auditLogger;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -294,6 +299,10 @@ public sealed class HostRegistrationService : IHostRegistrationService
             trimmedEndpoint,
             actor);
 
+        await _auditLogger.RecordAsync(
+            actor, AuditActions.HostRegistered, targetType: "host", targetId: trimmedName,
+            details: trimmedEndpoint, ct).ConfigureAwait(false);
+
         // The observation has done its job; dropping it means a second registration attempt under a different
         // name re-probes rather than reusing a record the operator has moved on from.
         _observations.TryRemove(trimmedEndpoint, out _);
@@ -360,6 +369,10 @@ public sealed class HostRegistrationService : IHostRegistrationService
             + "untouched, and no command was issued to the host itself.",
             trimmedName,
             actor);
+
+        await _auditLogger.RecordAsync(
+            actor, AuditActions.HostDeregistered, targetType: "host", targetId: trimmedName, ct: ct)
+            .ConfigureAwait(false);
 
         return DeregistrationResult.Deregistered();
     }

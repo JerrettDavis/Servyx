@@ -1,6 +1,10 @@
+@using System.Security.Claims
+@using Servyx.Application.Auditing
 @using Servyx.Domain.Configuration
+@using Servyx.Domain.Entities
 @using Servyx.Domain.Transport
 @using Servyx.Composition
+@using Servyx.Web.Authentication
 @using Servyx.Web.Services
 @inject IServiceProvider Services
 
@@ -310,7 +314,15 @@
     [Parameter]
     public IReadOnlyList<string> UnsavedKeys { get; set; } = [];
 
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c>. Mirrors
+    /// <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
+
     private IPlanExecutor? _executor;
+    private IAuditLogger? _auditLogger;
     private ProvisioningGate _gate = ProvisioningGate.Closed;
     private PanelState _state = PanelState.Idle;
     private ConfigChangePlan? _plan;
@@ -324,6 +336,7 @@
     protected override void OnInitialized()
     {
         _executor = Services.GetService(typeof(IPlanExecutor)) as IPlanExecutor;
+        _auditLogger = Services.GetService(typeof(IAuditLogger)) as IAuditLogger;
         _gate = Services.GetService(typeof(ProvisioningGate)) as ProvisioningGate ?? ProvisioningGate.Closed;
     }
 
@@ -419,6 +432,19 @@
         try
         {
             _receipt = await _executor.ApplyAsync(_plan.Id);
+
+            // Audit is a breadcrumb alongside the plan's own rich ledger (ChangePlanRecord.AppliedAt/AppliedBy
+            // already record this in full), not a duplicate of it — see AuditEntry's own remarks. Best-effort:
+            // _auditLogger is null on a host that never composed one, and AuditLogger itself never throws for
+            // an ordinary write failure — see its own remarks — so this can never turn a successful apply into
+            // a reported failure.
+            if (_auditLogger is not null)
+            {
+                var actor = await ResolveActorAsync();
+                await _auditLogger.RecordAsync(
+                    actor, AuditActions.ChangePlanApplied, targetType: "changeplan", targetId: _plan.Id,
+                    details: $"server {ServerId}");
+            }
         }
         catch (Exception ex)
         {
@@ -429,6 +455,19 @@
             _applying = false;
             _confirmingApply = false;
         }
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c> exactly — see its remarks.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
     }
 
     /// <summary>

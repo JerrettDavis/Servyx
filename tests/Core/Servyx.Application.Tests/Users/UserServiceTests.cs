@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
+using Servyx.Application.Tests.Auditing;
 using Servyx.Application.Users;
 using Servyx.Domain.Common;
 using Servyx.Domain.Entities;
@@ -79,13 +80,14 @@ public class UserServiceTests
         public override DateTimeOffset GetUtcNow() => now;
     }
 
-    private static (UserService Service, FakeUserRepository Repository) Build()
+    private static (UserService Service, FakeUserRepository Repository, FakeAuditLogger AuditLogger) Build()
     {
         var repository = new FakeUserRepository();
+        var auditLogger = new FakeAuditLogger();
         var time = new TestTimeProvider(new DateTimeOffset(2026, 8, 13, 9, 0, 0, TimeSpan.Zero));
-        var service = new UserService(repository, NullLogger<UserService>.Instance, time);
+        var service = new UserService(repository, auditLogger, NullLogger<UserService>.Instance, time);
 
-        return (service, repository);
+        return (service, repository, auditLogger);
     }
 
     // ── CreateAsync ──────────────────────────────────────────────────────────────────────────────────
@@ -93,7 +95,7 @@ public class UserServiceTests
     [Fact]
     public async Task Creating_a_user_persists_a_row_with_a_hashed_password_never_the_plaintext()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
 
         var result = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Operator, Actor);
 
@@ -116,7 +118,7 @@ public class UserServiceTests
     [Fact]
     public async Task Creating_a_user_trims_the_username()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
 
         await service.CreateAsync("  alice  ", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
@@ -128,7 +130,7 @@ public class UserServiceTests
     [InlineData("   ")]
     public async Task Creating_a_user_with_a_blank_username_is_refused(string username)
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
 
         var result = await service.CreateAsync(username, "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
@@ -139,7 +141,7 @@ public class UserServiceTests
     [Fact]
     public async Task Creating_a_user_with_a_username_over_the_maximum_length_is_refused()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
         var tooLong = new string('a', CreateUserResult.MaximumUsernameLength + 1);
 
         var result = await service.CreateAsync(tooLong, "correct-horse-battery-staple", UserRole.Viewer, Actor);
@@ -154,7 +156,7 @@ public class UserServiceTests
     [InlineData("elevenchars")]
     public async Task Creating_a_user_with_a_weak_password_is_refused(string password)
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
 
         var result = await service.CreateAsync("alice", password, UserRole.Viewer, Actor);
 
@@ -165,7 +167,7 @@ public class UserServiceTests
     [Fact]
     public async Task Creating_a_second_user_under_an_existing_username_is_refused()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
 
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
         var second = await service.CreateAsync("alice", "another-strong-password", UserRole.Admin, Actor);
@@ -179,7 +181,7 @@ public class UserServiceTests
     [Fact]
     public async Task TryGetAsync_ReturnsNull_ForAnUnknownId()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         (await service.TryGetAsync(UserId.New())).Should().BeNull();
     }
@@ -187,7 +189,7 @@ public class UserServiceTests
     [Fact]
     public async Task TryGetByUsernameAsync_ReturnsTheMatchingRow()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         var found = await service.TryGetByUsernameAsync("alice");
@@ -199,7 +201,7 @@ public class UserServiceTests
     [Fact]
     public async Task ListAsync_ReturnsEveryCreatedUser()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
         await service.CreateAsync("bob", "another-strong-password", UserRole.Admin, Actor);
@@ -214,7 +216,7 @@ public class UserServiceTests
     [Fact]
     public async Task ChangeRoleAsync_UpdatesTheStoredRole()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
         var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         var changed = await service.ChangeRoleAsync(created.UserId!.Value, UserRole.Admin, Actor);
@@ -226,7 +228,7 @@ public class UserServiceTests
     [Fact]
     public async Task ChangeRoleAsync_ForAnUnknownId_ReturnsFalse()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         (await service.ChangeRoleAsync(UserId.New(), UserRole.Admin, Actor)).Should().BeFalse();
     }
@@ -234,7 +236,7 @@ public class UserServiceTests
     [Fact]
     public async Task SetActiveAsync_CanDeactivateAndReactivate_WithoutRemovingTheRow()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
         var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         (await service.SetActiveAsync(created.UserId!.Value, false, Actor)).Should().BeTrue();
@@ -248,9 +250,89 @@ public class UserServiceTests
     [Fact]
     public async Task SetActiveAsync_ForAnUnknownId_ReturnsFalse()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         (await service.SetActiveAsync(UserId.New(), false, Actor)).Should().BeFalse();
+    }
+
+    // ── Audit trail ──────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task CreateAsync_RecordsAUserCreatedAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+
+        var result = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Operator, Actor);
+
+        var entry = auditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be(Actor);
+        entry.Action.Should().Be(AuditActions.UserCreated);
+        entry.TargetType.Should().Be("user");
+        entry.TargetId.Should().Be("alice");
+        entry.Details.Should().Contain("Operator");
+        result.Outcome.Should().Be(CreateUserOutcome.Created, "the audit entry should describe a real creation, not a refused one");
+    }
+
+    [Fact]
+    public async Task CreateAsync_RefusedForAWeakPassword_RecordsNoAuditEntry()
+    {
+        // Only a genuine mutation is audited — a refused attempt writes nothing to the account table and must
+        // write nothing to the audit trail either, or the trail would misreport an account that was never
+        // actually created.
+        var (service, _, auditLogger) = Build();
+
+        await service.CreateAsync("alice", "short", UserRole.Viewer, Actor);
+
+        auditLogger.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ChangeRoleAsync_RecordsAUserRoleChangedAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+        var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+
+        await service.ChangeRoleAsync(created.UserId!.Value, UserRole.Admin, Actor);
+
+        var entry = auditLogger.Entries.Should().ContainSingle(e => e.Action == AuditActions.UserRoleChanged).Which;
+        entry.Actor.Should().Be(Actor);
+        entry.TargetType.Should().Be("user");
+        entry.TargetId.Should().Be("alice");
+        entry.Details.Should().Contain("Admin");
+    }
+
+    [Fact]
+    public async Task ChangeRoleAsync_ForAnUnknownId_RecordsNoAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+
+        await service.ChangeRoleAsync(UserId.New(), UserRole.Admin, Actor);
+
+        auditLogger.Entries.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task SetActiveAsync_Deactivating_RecordsAUserDeactivatedAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+        var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+
+        await service.SetActiveAsync(created.UserId!.Value, false, Actor);
+
+        var entry = auditLogger.Entries.Should().ContainSingle(e => e.Action == AuditActions.UserDeactivated).Which;
+        entry.TargetId.Should().Be("alice");
+    }
+
+    [Fact]
+    public async Task SetActiveAsync_Reactivating_RecordsAUserActivatedAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+        var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+        await service.SetActiveAsync(created.UserId!.Value, false, Actor);
+
+        await service.SetActiveAsync(created.UserId!.Value, true, Actor);
+
+        auditLogger.Entries.Should().ContainSingle(e => e.Action == AuditActions.UserActivated);
     }
 
     // ── VerifyPasswordAsync ──────────────────────────────────────────────────────────────────────────
@@ -258,7 +340,7 @@ public class UserServiceTests
     [Fact]
     public async Task VerifyPasswordAsync_AcceptsTheCorrectPassword_AndRejectsAnyOther()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeTrue();
@@ -268,7 +350,7 @@ public class UserServiceTests
     [Fact]
     public async Task VerifyPasswordAsync_ForAnUnknownUsername_ReturnsFalseRatherThanThrowing()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         (await service.VerifyPasswordAsync("nobody", "anything at all")).Should().BeFalse();
     }
@@ -278,7 +360,7 @@ public class UserServiceTests
     [InlineData("")]
     public async Task VerifyPasswordAsync_ForAnEmptyCandidate_ReturnsFalse(string? candidate)
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         (await service.VerifyPasswordAsync("alice", candidate)).Should().BeFalse();
@@ -287,7 +369,7 @@ public class UserServiceTests
     [Fact]
     public async Task VerifyPasswordAsync_ForADeactivatedAccount_AuthenticatesNobody()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
         await service.SetActiveAsync(created.UserId!.Value, false, Actor);
 
@@ -300,7 +382,7 @@ public class UserServiceTests
     [Fact]
     public async Task ChangePasswordAsync_WithTheCorrectCurrentPassword_ReplacesTheStoredVerifier()
     {
-        var (service, repository) = Build();
+        var (service, repository, _) = Build();
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         var result = await service.ChangePasswordAsync(
@@ -317,7 +399,7 @@ public class UserServiceTests
     [Fact]
     public async Task ChangePasswordAsync_WithTheWrongCurrentPassword_ChangesNothing()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         var result = await service.ChangePasswordAsync("alice", "not-the-password", "a-brand-new-password-1");
@@ -331,7 +413,7 @@ public class UserServiceTests
     public async Task ChangePasswordAsync_ForAnUnknownUsername_ReportsTheSameOutcomeAsAWrongPassword()
     {
         // Deliberate: a distinct outcome here would let this member be used to probe which usernames exist.
-        var (service, _) = Build();
+        var (service, _, _) = Build();
 
         var result = await service.ChangePasswordAsync("nobody", "anything-at-all", "a-brand-new-password-1");
 
@@ -341,7 +423,7 @@ public class UserServiceTests
     [Fact]
     public async Task ChangePasswordAsync_ForADeactivatedAccount_ReportsTheSameOutcomeAsAWrongPassword()
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
         await service.SetActiveAsync(created.UserId!.Value, false, Actor);
 
@@ -359,7 +441,7 @@ public class UserServiceTests
     [InlineData("elevenchars")]
     public async Task ChangePasswordAsync_WithAWeakNewPassword_IsRefused(string newPassword)
     {
-        var (service, _) = Build();
+        var (service, _, _) = Build();
         await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
 
         var result = await service.ChangePasswordAsync("alice", "correct-horse-battery-staple", newPassword);

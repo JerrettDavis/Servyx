@@ -42,6 +42,17 @@ public interface IServerAdoptionService
     /// granting write access is a separate, deliberate act outside this phase's scope) and records its
     /// definition binding. Never issues any command to the container itself.
     /// </summary>
+    /// <param name="containerId">The discovery-native id of the container to adopt.</param>
+    /// <param name="gameDefinitionId">Which loaded game definition governs the adopted server.</param>
+    /// <param name="actor">
+    /// The authenticated operator's identity, for the audit trail. Optional, unlike <c>IUserService</c>'s and
+    /// <c>IHostRegistrationService</c>'s actor parameters — this method predates the audit trail and already
+    /// has a large existing test suite calling it without one, so a default of
+    /// <see cref="Servyx.Domain.Entities.AuditActors.System"/> keeps every one of those call sites compiling
+    /// unchanged rather than forcing an unrelated rewrite. A caller with a real operator identity (the
+    /// adoption panel) always supplies it.
+    /// </param>
+    /// <param name="ct">Cancels the adoption.</param>
     /// <remarks>
     /// Idempotent: adopting an already-adopted container returns
     /// <see cref="AdoptionOutcome.AlreadyAdopted"/> rather than creating a second row or throwing. An unknown
@@ -51,12 +62,16 @@ public interface IServerAdoptionService
     /// for a UI should catch it there, the same way <c>LiveDashboardDataService</c> already catches and
     /// degrades every other backend call rather than this service inventing a second convention.
     /// </remarks>
-    Task<AdoptionResult> AdoptAsync(string containerId, string gameDefinitionId, CancellationToken ct = default);
+    Task<AdoptionResult> AdoptAsync(
+        string containerId, string gameDefinitionId, string? actor = null, CancellationToken ct = default);
 
     /// <summary>
     /// Removes Servyx's own tracking record for <paramref name="id"/> — the <c>Server</c> row — and nothing
     /// else. This method issues NO command to the container: the workload keeps running exactly as it was,
     /// untouched. "Forget" only ever means "Servyx stops tracking it."
     /// </summary>
-    Task<ForgetResult> ForgetAsync(ServerId id, CancellationToken ct = default);
+    /// <param name="id">The tracked server to forget.</param>
+    /// <param name="actor">The authenticated operator's identity, for the audit trail. See <see cref="AdoptAsync"/>'s remarks on why this is optional.</param>
+    /// <param name="ct">Cancels the operation.</param>
+    Task<ForgetResult> ForgetAsync(ServerId id, string? actor = null, CancellationToken ct = default);
 }

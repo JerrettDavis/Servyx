@@ -29,7 +29,7 @@ public class LiveSettingsDataServiceTests
     private static UserService BuildUserService(out FakeUserRepository repository)
     {
         repository = new FakeUserRepository();
-        return new UserService(repository, NullLogger<UserService>.Instance);
+        return new UserService(repository, new FakeAuditLogger(), NullLogger<UserService>.Instance);
     }
 
     private static async Task<UserService> BuildUserServiceWithAccountAsync()

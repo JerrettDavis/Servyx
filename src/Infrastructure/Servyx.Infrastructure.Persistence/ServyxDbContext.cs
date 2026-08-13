@@ -85,6 +85,13 @@ public sealed class ServyxDbContext : DbContext
     /// </summary>
     public DbSet<User> Users => Set<User>();
 
+    /// <summary>
+    /// Servyx's cross-cutting accountability trail — who did what, to what, and when. See
+    /// <see cref="AuditEntry"/>'s own remarks for how this differs from <see cref="ChangePlans"/>/
+    /// <see cref="ChangePlanActions"/>.
+    /// </summary>
+    public DbSet<AuditEntry> AuditEntries => Set<AuditEntry>();
+
     /// <inheritdoc />
     protected override void ConfigureConventions(ModelConfigurationBuilder configurationBuilder)
     {

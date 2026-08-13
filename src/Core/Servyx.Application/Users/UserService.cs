@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Logging;
+using Servyx.Application.Auditing;
 using Servyx.Domain.Common;
 using Servyx.Domain.Entities;
 using Servyx.Domain.Secrets;
@@ -12,17 +13,21 @@ namespace Servyx.Application.Users;
 public sealed class UserService : IUserService
 {
     private readonly IUserRepository _repository;
+    private readonly IAuditLogger _auditLogger;
     private readonly ILogger<UserService> _logger;
     private readonly TimeProvider _timeProvider;
 
     /// <summary>Creates a <see cref="UserService"/>.</summary>
     /// <param name="timeProvider">Clock used for the row's <see cref="User.CreatedAt"/>. Defaults to <see cref="TimeProvider.System"/>.</param>
-    public UserService(IUserRepository repository, ILogger<UserService> logger, TimeProvider? timeProvider = null)
+    public UserService(
+        IUserRepository repository, IAuditLogger auditLogger, ILogger<UserService> logger, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(repository);
+        ArgumentNullException.ThrowIfNull(auditLogger);
         ArgumentNullException.ThrowIfNull(logger);
 
         _repository = repository;
+        _auditLogger = auditLogger;
         _logger = logger;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
@@ -70,6 +75,10 @@ public sealed class UserService : IUserService
         _logger.LogInformation(
             "Created user account '{Username}' with role {Role}, by '{Actor}'.", trimmedUsername, role, actor);
 
+        await _auditLogger.RecordAsync(
+            actor, AuditActions.UserCreated, targetType: "user", targetId: trimmedUsername,
+            details: $"role {role}", ct).ConfigureAwait(false);
+
         return CreateUserResult.Created(user.Id);
     }
 
@@ -101,6 +110,11 @@ public sealed class UserService : IUserService
         }
 
         _logger.LogInformation("Changed user '{Username}' to role {Role}, by '{Actor}'.", updated.Username, role, actor);
+
+        await _auditLogger.RecordAsync(
+            actor, AuditActions.UserRoleChanged, targetType: "user", targetId: updated.Username,
+            details: $"role changed to {role}", ct).ConfigureAwait(false);
+
         return true;
     }
 
@@ -120,6 +134,14 @@ public sealed class UserService : IUserService
             isActive ? "Reactivated" : "Deactivated",
             updated.Username,
             actor);
+
+        await _auditLogger.RecordAsync(
+            actor,
+            isActive ? AuditActions.UserActivated : AuditActions.UserDeactivated,
+            targetType: "user",
+            targetId: updated.Username,
+            ct: ct).ConfigureAwait(false);
+
         return true;
     }
 

@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Servyx.Application.Servers;
+using Servyx.Application.Tests.Auditing;
 using Servyx.Domain.Common;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Discovery;
@@ -115,7 +116,8 @@ public class ServerAdoptionServiceTests
         InMemoryServerRepository Repository,
         IServerDefinitionBindingStore Bindings,
         IHostRepository Hosts,
-        IAdoptionDefinitionCatalog Catalog);
+        IAdoptionDefinitionCatalog Catalog,
+        FakeAuditLogger AuditLogger);
 
     private static Fixture CreateFixture(IReadOnlyList<DefinitionAdoptionCriteria>? criteriaSet = null, TimeProvider? timeProvider = null)
     {
@@ -126,15 +128,17 @@ public class ServerAdoptionServiceTests
         hosts.ListAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult<IReadOnlyList<Host>>([]));
         hosts.TryGetByNameAsync(Arg.Any<string>(), Arg.Any<CancellationToken>()).Returns(Task.FromResult<Host?>(null));
         var catalog = Substitute.For<IAdoptionDefinitionCatalog>();
+        var auditLogger = new FakeAuditLogger();
 
         var criteria = criteriaSet ?? [PalworldAdoptionCriteria];
         catalog.AllCriteria().Returns(criteria);
         catalog.TryGetRefById(PalworldRef.Id).Returns(PalworldRef);
 
         var service = new ServerAdoptionService(
-            discovery, repository, bindings, hosts, catalog, NullLogger<ServerAdoptionService>.Instance, timeProvider);
+            discovery, repository, bindings, hosts, catalog, NullLogger<ServerAdoptionService>.Instance,
+            timeProvider, auditLogger);
 
-        return new Fixture(service, discovery, repository, bindings, hosts, catalog);
+        return new Fixture(service, discovery, repository, bindings, hosts, catalog, auditLogger);
     }
 
     private static void StubDiscovery(IServerDiscovery discovery, params DiscoveredServer[] servers) =>
@@ -233,6 +237,49 @@ public class ServerAdoptionServiceTests
         (await fixture.Repository.ListAsync()).Should().BeEmpty();
     }
 
+    // ── Audit trail ──────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task AdoptAsync_WithAnActor_RecordsAServerAdoptedAuditEntry()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered());
+
+        await fixture.Service.AdoptAsync("container-1", "palworld", "alice");
+
+        var entry = fixture.AuditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be("alice");
+        entry.Action.Should().Be(AuditActions.ServerAdopted);
+        entry.TargetType.Should().Be("server");
+        entry.TargetId.Should().Be("container-1");
+    }
+
+    [Fact]
+    public async Task AdoptAsync_WithNoActorSupplied_RecordsTheSystemMarker()
+    {
+        // AdoptAsync's actor parameter is optional (unlike IUserService/IHostRegistrationService's) so this
+        // large, pre-existing test suite need not thread one through every call — see IServerAdoptionService's
+        // own remarks. A caller that genuinely omits it still gets an attributable audit entry, not a null one.
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered());
+
+        await fixture.Service.AdoptAsync("container-1", "palworld");
+
+        fixture.AuditLogger.Entries.Should().ContainSingle().Which.Actor.Should().Be(AuditActors.System);
+    }
+
+    [Fact]
+    public async Task AdoptAsync_ReAdoptingAnAlreadyAdoptedContainer_RecordsNoSecondAuditEntry()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered());
+        await fixture.Service.AdoptAsync("container-1", "palworld", "alice");
+
+        await fixture.Service.AdoptAsync("container-1", "palworld", "alice");
+
+        fixture.AuditLogger.Entries.Should().ContainSingle();
+    }
+
     // ── ForgetAsync ──────────────────────────────────────────────────────────────────────────────────
 
     [Fact]
@@ -275,6 +322,33 @@ public class ServerAdoptionServiceTests
         var result = await fixture.Service.ForgetAsync(ServerId.New());
 
         result.Outcome.Should().Be(ForgetOutcome.NotFound);
+    }
+
+    [Fact]
+    public async Task ForgetAsync_WithAnActor_RecordsAServerForgottenAuditEntry()
+    {
+        var fixture = CreateFixture();
+        StubDiscovery(fixture.Discovery, BuildDiscovered());
+        var adopted = await fixture.Service.AdoptAsync("container-1", "palworld", "alice");
+        fixture.AuditLogger.Entries.Clear();
+
+        await fixture.Service.ForgetAsync(adopted.ServerId!.Value, "bob");
+
+        var entry = fixture.AuditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be("bob");
+        entry.Action.Should().Be(AuditActions.ServerForgotten);
+        entry.TargetType.Should().Be("server");
+        entry.TargetId.Should().Be(adopted.ServerId!.Value.ToString());
+    }
+
+    [Fact]
+    public async Task ForgetAsync_forgetting_an_unknown_id_records_no_audit_entry()
+    {
+        var fixture = CreateFixture();
+
+        await fixture.Service.ForgetAsync(ServerId.New(), "alice");
+
+        fixture.AuditLogger.Entries.Should().BeEmpty();
     }
 
     // ── ListCandidatesAsync / ListTrackedAsync ──────────────────────────────────────────────────────────

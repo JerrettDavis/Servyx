@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Servyx.Application;
+using Servyx.Application.Auditing;
 using Servyx.Application.Backups;
 using Servyx.Application.Lifecycle;
 using Servyx.Application.Provisioning;
@@ -534,6 +535,16 @@ public static class ServyxCoreCompositionExtensions
         // HostConnectionRegistry — registration order relative to that earlier call does not matter, only
         // that IHostRepository is registered by the time the container is built, which this guarantees.
         builder.Services.AddServyxHostRepository();
+
+        // IAuditEntryRepository / IAuditLogger — durable storage and the pluggable writer behind Servyx's
+        // cross-cutting accountability trail. Registered here, before every write-action service that consumes
+        // it (UserService, HostRegistrationService, ServerAdoptionService all take an IAuditLogger), for the
+        // same reason and with the same unconditional posture as IHostRepository immediately above: this is
+        // Servyx's own database, not a mutating call to any managed host or workload, so it needs no write
+        // grant and must resolve with the provisioning gate closed. AuditLogger is singleton, matching
+        // EfAuditEntryRepository's own lifetime — it holds no state beyond the repository reference.
+        builder.Services.AddServyxAuditEntryRepository();
+        builder.Services.AddSingleton<IAuditLogger, AuditLogger>();
 
         // IUserRepository / IUserService — durable storage and the application-layer surface behind Servyx's
         // own account bookkeeping (Increment 1 added the entity and the store; this increment is what starts

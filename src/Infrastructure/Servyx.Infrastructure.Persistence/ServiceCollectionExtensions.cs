@@ -1,11 +1,13 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Servyx.Domain.Auditing;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions;
 using Servyx.Domain.Hosts;
 using Servyx.Domain.Provisioning;
 using Servyx.Domain.Servers;
 using Servyx.Domain.Users;
+using Servyx.Infrastructure.Persistence.Auditing;
 using Servyx.Infrastructure.Persistence.Configuration;
 using Servyx.Infrastructure.Persistence.Definitions;
 using Servyx.Infrastructure.Persistence.Hosts;
@@ -207,6 +209,25 @@ public static class ServiceCollectionExtensions
         ArgumentNullException.ThrowIfNull(services);
 
         services.AddSingleton<IUserRepository, EfUserRepository>();
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers <see cref="EfAuditEntryRepository"/> as the <see cref="IAuditEntryRepository"/>, backed by the
+    /// <see cref="IDbContextFactory{TContext}"/> <see cref="AddServyxPersistence"/> registers. A sibling of
+    /// <see cref="AddServyxUserRepository"/> for the same reason — this is the durable store behind Servyx's
+    /// own accountability trail, a distinct opt-in decision, not a side effect of asking for a database.
+    /// </summary>
+    /// <remarks>
+    /// Registered singleton, matching <see cref="AddServyxUserRepository"/>. See
+    /// <see cref="EfAuditEntryRepository"/>'s own remarks for why that is safe here.
+    /// </remarks>
+    public static IServiceCollection AddServyxAuditEntryRepository(this IServiceCollection services)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+
+        services.AddSingleton<IAuditEntryRepository, EfAuditEntryRepository>();
 
         return services;
     }
