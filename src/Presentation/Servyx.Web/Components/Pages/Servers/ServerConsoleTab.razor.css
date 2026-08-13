@@ -1,0 +1,32 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-confirm/.svx-deploy-error exactly (same tokens, same shape) —
+   CSS isolation scopes each .razor.css to its own component, so the class names have to be redefined here
+   rather than inherited from that other page's scoped sheet.
+
+   .svx-deploy-applied departs from DeployPage/BackupsPage's bordered box: this element is bound with the
+   same ternary to either "svx-deploy-applied" or "svx-deploy-error" for one console response line
+   (@(_lastResponse.Success ? "svx-deploy-applied" : "svx-deploy-error")), so the two outcomes need to read
+   as the same shape of thing — a plain coloured line — differing only by colour, not by one being boxed
+   and the other not. */
+
+.svx-deploy-confirm {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}
+
+.svx-deploy-applied {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-success-fg);
+}

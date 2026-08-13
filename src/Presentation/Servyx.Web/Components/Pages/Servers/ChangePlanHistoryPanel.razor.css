@@ -110,3 +110,14 @@
     border-radius: 0.3rem;
     margin-top: 0.35rem;
 }
+
+/* Mirrors DeployPage.razor.css's .svx-deploy-error exactly (same tokens, same shape) — CSS isolation scopes
+   each .razor.css to its own component, so the class name has to be redefined here rather than inherited
+   from that other page's scoped sheet. This panel's own markup (above) already used it for
+   plan-history-error/plan-history-failure-reason without a matching rule in this file, so it rendered as
+   plain unstyled text. */
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}

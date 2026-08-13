@@ -1,0 +1,20 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-confirm/.svx-deploy-error exactly (same tokens, same shape) —
+   CSS isolation scopes each .razor.css to its own component, so the class names have to be redefined here
+   rather than inherited from that other page's scoped sheet. */
+
+.svx-deploy-confirm {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}

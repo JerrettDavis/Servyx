@@ -1,0 +1,45 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-stages/.svx-deploy-confirm/.svx-deploy-error exactly (same
+   tokens, same shape) — CSS isolation scopes each .razor.css to its own component, so the class names have
+   to be redefined here rather than inherited from that other page's scoped sheet.
+
+   .svx-deploy-applied instead mirrors WriteModeControl.razor.css's de-emphasised, unboxed treatment: this
+   element renders "Last observed status: <state>", and the state can just as easily be Stopped or Crashed
+   as Running — colouring it green (DeployPage/BackupsPage's bordered success box) would misreport an
+   arbitrary status as a success the way this app's health/state badges never do. */
+
+.svx-deploy-stages {
+    margin: 0;
+    padding-left: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+}
+
+.svx-deploy-stages li p {
+    margin: 0.2rem 0 0;
+    font-size: 0.85rem;
+    color: var(--svx-text-muted);
+}
+
+.svx-deploy-confirm {
+    margin-top: 1rem;
+    padding-top: 0.75rem;
+    border-top: 1px solid var(--svx-border-subtle);
+}
+
+.svx-deploy-confirm p {
+    font-size: 0.85rem;
+    margin-bottom: 0.6rem;
+}
+
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}
+
+.svx-deploy-applied {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-text-muted);
+}
