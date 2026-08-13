@@ -54,7 +54,8 @@ public class ServerQueryServiceTests
         string name = "palworld-server",
         string state = "running",
         string health = "unhealthy",
-        IReadOnlyDictionary<string, string>? env = null) => new(
+        IReadOnlyDictionary<string, string>? env = null,
+        string? hostKey = null) => new(
         ServerId: id,
         Name: name,
         Image: "thijsvanloef/palworld-server-docker:latest",
@@ -71,7 +72,8 @@ public class ServerQueryServiceTests
         CpuLimit: 4.0,
         RestartPolicy: "unless-stopped",
         ComposeLabels: new Dictionary<string, string>(),
-        EnvironmentVariables: env ?? new Dictionary<string, string>());
+        EnvironmentVariables: env ?? new Dictionary<string, string>(),
+        HostKey: hostKey);
 
     /// <summary>
     /// Mirrors <c>definitions/palworld-docker.yaml</c>'s <c>lifecycle.healthSignal</c> block — a real,
@@ -126,6 +128,52 @@ public class ServerQueryServiceTests
         summary.Name.Should().Be("palworld-server");
         summary.Game.Should().Be("Palworld Dedicated Server");
         summary.State.Should().Be(ServerState.Running);
+    }
+
+    /// <summary>
+    /// A local server — discovery reports no <see cref="DiscoveredServer.HostKey"/> for it — must keep
+    /// reporting the composing transport's id as both <see cref="ServerSummary.Host"/> and, honestly, no
+    /// <see cref="ServerSummary.HostKey"/> at all. This is the "don't regress the local case" guard: before
+    /// this change <see cref="ServerSummary.Host"/> was <em>always</em> the transport id, so a local server
+    /// must still see exactly that value, not some other fallback.
+    /// </summary>
+    [Fact]
+    public async Task GetAdoptedServersAsync_reports_the_transport_id_and_a_null_HostKey_for_a_local_server()
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<DiscoveredServer>>([BuildDiscoveredServer(hostKey: null)]));
+        var transport = Substitute.For<ITransport>();
+        transport.TransportId.Returns("docker");
+
+        var sut = CreateService(discovery: discovery, transport: transport);
+
+        var summary = (await sut.GetAdoptedServersAsync()).Single();
+
+        summary.Host.Should().Be("docker");
+        summary.HostKey.Should().BeNull();
+    }
+
+    /// <summary>
+    /// The keystone behaviour this increment introduces: a server discovered on a database-registered/
+    /// configured ssh+docker host must surface that host's own identity — not the process-wide transport id
+    /// every server used to share — as both a display label and, for later host-aware routing, a raw key.
+    /// </summary>
+    [Fact]
+    public async Task GetAdoptedServersAsync_reports_the_discovered_hosts_own_identity_for_a_remote_server()
+    {
+        var discovery = Substitute.For<IServerDiscovery>();
+        discovery.DiscoverAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<IReadOnlyList<DiscoveredServer>>([BuildDiscoveredServer(hostKey: "prod-server-2")]));
+        var transport = Substitute.For<ITransport>();
+        transport.TransportId.Returns("ssh+docker");
+
+        var sut = CreateService(discovery: discovery, transport: transport);
+
+        var summary = (await sut.GetAdoptedServersAsync()).Single();
+
+        summary.Host.Should().Be("prod-server-2");
+        summary.HostKey.Should().Be("prod-server-2");
     }
 
     [Fact]

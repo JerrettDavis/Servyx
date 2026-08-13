@@ -534,13 +534,17 @@ public sealed class ServerQueryService : IServerQueryService
                 ? (ctx.HealthSignal?.Explanation ?? GenericUnhealthyExplanation)
                 : null,
             StartedAt: ctx.Server.StartedAt,
-            // The transport this query service was composed with — "docker" for a local daemon,
-            // "ssh+docker" for a remote host observed over SSH — rather than a literal that was only ever
-            // true for the first of those two.
-            Host: _transport.TransportId,
+            // ctx.Server.HostKey names the specific registered/configured host this server was actually
+            // discovered on (see CompositeServerDiscovery), and is null for a server discovery has no host
+            // notion for at all — the local Docker daemon. Only the null (genuinely local) case falls back
+            // to the composing transport's id ("docker" for a local daemon, "ssh+docker" for a remote host
+            // observed directly over SSH with no host fan-out) — every other server now reports its own
+            // host rather than this process-wide constant.
+            Host: ctx.Server.HostKey ?? _transport.TransportId,
             Ports: ctx.Server.Ports.Select(p => new ServerPort(p.HostPort, p.ContainerPort, p.Protocol)).ToList(),
             BindingStatus: ctx.BindingStatus,
-            AmbiguousCandidateGameIds: ctx.BindingStatus == ServerBindingStatus.Bound ? null : ctx.AmbiguousCandidateGameIds);
+            AmbiguousCandidateGameIds: ctx.BindingStatus == ServerBindingStatus.Bound ? null : ctx.AmbiguousCandidateGameIds,
+            HostKey: ctx.Server.HostKey);
     }
 
     private async Task<ServerDetail> ToDetailAsync(ServerContext ctx, CancellationToken ct)

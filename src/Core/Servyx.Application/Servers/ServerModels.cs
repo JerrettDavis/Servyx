@@ -50,6 +50,20 @@ public enum ServerBindingStatus
 /// The <c>metadata.id</c> of every definition tied for most-specific match, named so an ambiguous server is
 /// diagnosable in the UI. Empty unless <paramref name="BindingStatus"/> is <see cref="ServerBindingStatus.Ambiguous"/>.
 /// </param>
+/// <param name="Host">
+/// A human-readable label for where this server runs — the registered/configured host's own name for a
+/// server discovered on one (see <paramref name="HostKey"/>), or the composing transport's id (e.g.
+/// <c>"docker"</c>, <c>"ssh+docker"</c>) for a genuinely local server discovery has no host notion for.
+/// Display only; never <see langword="null"/>. See <see cref="Servyx.Domain.Discovery.DiscoveredServer.HostKey"/>.
+/// </param>
+/// <param name="HostKey">
+/// The raw discovery-native host identity this server was found on — the same value as
+/// <see cref="Servyx.Domain.Discovery.DiscoveredServer.HostKey"/> — or <see langword="null"/> for a server
+/// discovered on the local Docker daemon (which has no host notion at all). Unlike <paramref name="Host"/>,
+/// this is never a display fallback: it is the key later host-aware routing (console, RCON, metrics,
+/// backups) resolves an actual <see cref="Servyx.Domain.Entities.Host"/> row from, so it must stay exactly
+/// what discovery reported, or null, rather than degrading to some other value when absent.
+/// </param>
 public sealed record ServerSummary(
     string Id,
     string Name,
@@ -61,7 +75,8 @@ public sealed record ServerSummary(
     string Host,
     IReadOnlyList<ServerPort> Ports,
     ServerBindingStatus BindingStatus = ServerBindingStatus.Bound,
-    IReadOnlyList<string>? AmbiguousCandidateGameIds = null);
+    IReadOnlyList<string>? AmbiguousCandidateGameIds = null,
+    string? HostKey = null);
 
 /// <summary>
 /// A single setting value read from a server's live configuration surface.
