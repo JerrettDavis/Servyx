@@ -96,8 +96,15 @@ public class CompositeServerDiscoveryTests
         server.ServerId.Should().Be(PalworldContainerId);
     }
 
+    /// <summary>
+    /// The counterpart to <see cref="One_unreachable_host_does_not_prevent_discovery_from_the_others"/>: a
+    /// partial failure degrades, but a total one is reported. Returning an empty list when nothing answered is
+    /// what let a mis-registered host render as "no containers available to adopt" — the caller cannot tell
+    /// that apart from every host genuinely running nothing, so it shows the empty state instead of the
+    /// degraded one and the operator never learns their host is broken.
+    /// </summary>
     [Fact]
-    public async Task Every_host_failing_yields_an_empty_result_rather_than_throwing()
+    public async Task Every_host_failing_is_reported_rather_than_passed_off_as_an_empty_result()
     {
         var first = CreateUnreachableHost();
         var second = CreateUnreachableHost();
@@ -107,9 +114,11 @@ public class CompositeServerDiscoveryTests
         ]);
         var discovery = new CompositeServerDiscovery(source);
 
-        var results = await discovery.DiscoverAsync(ImageRepository, RequiredMountPath);
+        var act = () => discovery.DiscoverAsync(ImageRepository, RequiredMountPath);
 
-        results.Should().BeEmpty();
+        // The message carries each host's own reason, since that is what the operator needs to act on.
+        var thrown = await act.Should().ThrowAsync<InvalidOperationException>();
+        thrown.And.Message.Should().Contain("first-host").And.Contain("second-host");
     }
 
     /// <summary>

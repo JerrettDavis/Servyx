@@ -60,9 +60,13 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// </remarks>
 public sealed class HostAwareLogStream : ILogStream
 {
+    /// <summary>The per-host budget for one <c>docker container inspect</c> probe leg.</summary>
+    public static readonly TimeSpan DefaultProbeTimeout = TimeSpan.FromSeconds(15);
+
     private readonly IHostConnectionSource _connections;
     private readonly IServerExecutionTargetResolver _resolver;
     private readonly ILogStream? _local;
+    private readonly TimeSpan _probeTimeout;
     private readonly ILogger<HostAwareLogStream>? _logger;
 
     /// <summary>
@@ -79,18 +83,25 @@ public sealed class HostAwareLogStream : ILogStream
     /// for what that does to the local branch.
     /// </param>
     /// <param name="loggerFactory">Optional; used to log (and skip) a host whose probe throws.</param>
+    /// <param name="probeTimeout">Overrides <see cref="DefaultProbeTimeout"/>.</param>
     public HostAwareLogStream(
         IHostConnectionSource connections,
         IServerExecutionTargetResolver resolver,
         ILogStream? local,
-        ILoggerFactory? loggerFactory = null)
+        ILoggerFactory? loggerFactory = null,
+        TimeSpan? probeTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(connections);
         ArgumentNullException.ThrowIfNull(resolver);
+        if (probeTimeout is { } timeout && timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(probeTimeout), timeout, "The probe timeout must be positive.");
+        }
 
         _connections = connections;
         _resolver = resolver;
         _local = local;
+        _probeTimeout = probeTimeout ?? DefaultProbeTimeout;
         _logger = loggerFactory?.CreateLogger<HostAwareLogStream>();
     }
 
@@ -186,10 +197,21 @@ public sealed class HostAwareLogStream : ILogStream
 
     private async Task<(string HostKey, bool Found)> ProbeAsync(HostConnection host, string serverId, CancellationToken ct)
     {
+        using var budget = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        budget.CancelAfter(_probeTimeout);
+
         try
         {
-            var result = await host.ExecutionTarget.ExecuteAsync(DockerCli.Inspect(serverId), ct).ConfigureAwait(false);
+            var result = await host.ExecutionTarget.ExecuteAsync(DockerCli.Inspect(serverId), budget.Token).ConfigureAwait(false);
             return (host.HostKey, result.Succeeded);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            _logger?.LogWarning(
+                "Host '{HostKey}' did not answer the probe for server '{ServerId}' within {Timeout}s; treating "
+                + "it as not found on that host.",
+                host.HostKey, serverId, _probeTimeout.TotalSeconds);
+            return (host.HostKey, false);
         }
         catch (OperationCanceledException)
         {

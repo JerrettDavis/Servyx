@@ -1,4 +1,5 @@
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using Servyx.Domain.Transport;
 
 namespace Servyx.Infrastructure.Ssh.Docker;
@@ -16,15 +17,39 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// </remarks>
 public sealed class LazyConnectingExecutionTarget : IExecutionTarget
 {
+    /// <summary>
+    /// How long a failed connect is replayed to subsequent callers before another is attempted. Long enough
+    /// that a page whose render fans out over an unreachable host pays the connect timeout once rather than
+    /// once per call; short enough that a host coming back becomes usable without a restart.
+    /// </summary>
+    public static readonly TimeSpan DefaultFailureCooldown = TimeSpan.FromSeconds(45);
+
     private readonly Func<CancellationToken, Task<IExecutionTarget>> _connect;
+    private readonly TimeSpan _failureCooldown;
+    private readonly TimeProvider _timeProvider;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private IExecutionTarget? _inner;
+    private Exception? _failure;
+    private DateTimeOffset _retryNotBefore;
 
     /// <summary>Creates a target that opens its inner session via <paramref name="connect"/> on first use.</summary>
-    public LazyConnectingExecutionTarget(Func<CancellationToken, Task<IExecutionTarget>> connect)
+    /// <param name="failureCooldown">Overrides <see cref="DefaultFailureCooldown"/>.</param>
+    /// <param name="timeProvider">Clock used for the cooldown. Defaults to <see cref="TimeProvider.System"/>.</param>
+    public LazyConnectingExecutionTarget(
+        Func<CancellationToken, Task<IExecutionTarget>> connect,
+        TimeSpan? failureCooldown = null,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(connect);
+        if (failureCooldown is { } cooldown && cooldown < TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(failureCooldown), cooldown, "The failure cooldown cannot be negative.");
+        }
+
         _connect = connect;
+        _failureCooldown = failureCooldown ?? DefaultFailureCooldown;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
     /// <inheritdoc />
@@ -77,6 +102,12 @@ public sealed class LazyConnectingExecutionTarget : IExecutionTarget
         }
     }
 
+    /// <summary>
+    /// Opens the inner session once, and — the reason this is not a plain <c>??=</c> — remembers a connect
+    /// that threw for <see cref="_failureCooldown"/> so the next caller is refused immediately instead of
+    /// paying another full connect timeout. Without that, an unreachable host costs every single call the
+    /// transport's connect timeout, which is what turns one bad host into a page that reads as hung.
+    /// </summary>
     private async Task<IExecutionTarget> ResolveAsync(CancellationToken ct)
     {
         if (_inner is not null)
@@ -87,8 +118,34 @@ public sealed class LazyConnectingExecutionTarget : IExecutionTarget
         await _gate.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            _inner ??= await _connect(ct).ConfigureAwait(false);
-            return _inner;
+            if (_inner is not null)
+            {
+                return _inner;
+            }
+
+            if (_failure is not null && _timeProvider.GetUtcNow() < _retryNotBefore)
+            {
+                ExceptionDispatchInfo.Capture(_failure).Throw();
+            }
+
+            try
+            {
+                _inner = await _connect(ct).ConfigureAwait(false);
+                _failure = null;
+                return _inner;
+            }
+            catch (OperationCanceledException)
+            {
+                // The caller gave up, which says nothing about the host — cooling down on it would punish a
+                // reachable host for one abandoned request.
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _failure = ex;
+                _retryNotBefore = _timeProvider.GetUtcNow() + _failureCooldown;
+                throw;
+            }
         }
         finally
         {
