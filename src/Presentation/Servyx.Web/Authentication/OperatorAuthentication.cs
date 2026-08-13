@@ -1,10 +1,15 @@
 namespace Servyx.Web.Authentication;
 
 /// <summary>
-/// The names, routes and log-event identifiers that make up Servyx's single-operator cookie authentication,
-/// kept in one place so the composition root, the endpoints, the UI and the tests cannot drift apart on a
-/// string literal.
+/// The names, routes and log-event identifiers that make up Servyx's cookie authentication, kept in one place
+/// so the composition root, the endpoints, the UI and the tests cannot drift apart on a string literal.
 /// </summary>
+/// <remarks>
+/// The scheme name and cookie mechanics predate multi-user accounts and are unchanged by their arrival — only
+/// <em>who</em> gets authenticated and <em>what claims</em> they receive changed (see
+/// <c>AuthenticationEndpoints.SignInAsync</c>, which now mints the real signed-in username and a
+/// <see cref="System.Security.Claims.ClaimTypes.Role"/> claim instead of one constant identity for everyone).
+/// </remarks>
 public static class OperatorAuthentication
 {
     /// <summary>The one authentication scheme this app defines. There is no second identity provider.</summary>
@@ -25,7 +30,13 @@ public static class OperatorAuthentication
     /// <summary>The logger category every authentication audit event is written under.</summary>
     public const string AuditLogCategory = "Servyx.Web.Authentication.Audit";
 
-    /// <summary>The claim type carrying the operator's display name.</summary>
+    /// <summary>
+    /// The actor label used when a caller's real, signed-in username genuinely cannot be resolved — a bUnit
+    /// render (or any other context) with no cascading <c>AuthenticationState</c> at all. Behind the
+    /// fallback policy this is no longer what an ordinary signed-in caller resolves to (see
+    /// <c>AuthenticationEndpoints.SignInAsync</c>, which mints the real username), but every
+    /// actor-attribution call site keeps this as its last-resort fallback rather than throwing.
+    /// </summary>
     public const string OperatorNameClaimValue = "operator";
 
     /// <summary>

@@ -96,24 +96,34 @@ public sealed record HostConnectionsSettingsSection(
 }
 
 /// <summary>
-/// The state of the single operator credential, and what a rotation of it requires.
+/// What the signed-in caller's own-password rotation panel on <c>/settings</c> needs to render.
 /// </summary>
-/// <param name="Available">Whether this process composed the operator credential store.</param>
+/// <remarks>
+/// Despite the name (kept to avoid churning every call site's identifier), this section is no longer about a
+/// single shared operator credential — it backs a self-service "change your own password" panel over
+/// <c>Servyx.Application.Users.IUserService</c>, one per authenticated account. See
+/// <c>OperatorPasswordSettingsPanel</c>'s own remarks.
+/// </remarks>
+/// <param name="Available">Whether this process composed a user service to change a password through.</param>
 /// <param name="AuthenticationEnabled">Whether this process actually requires a login. A rotation still works when it does not, but changes nothing about who can reach the app.</param>
-/// <param name="PasswordSet">Whether a password has ever been set. Rotation requires one; first-run bootstrap is <c>/login</c>'s job, never this page's.</param>
-/// <param name="MinimumPasswordLength">The shortest new password the store accepts.</param>
+/// <param name="PasswordSet">
+/// Always <see langword="true"/> when <paramref name="Available"/>: reaching this page at all requires an
+/// authenticated account, and every account has a password by construction. Kept as a field (rather than
+/// removed) so the shape here does not need to change if a future account type without one is ever added.
+/// </param>
+/// <param name="MinimumPasswordLength">The shortest new password the service accepts.</param>
 /// <param name="AuthenticationConfigurationKey">The configuration key that turns the login requirement on and off.</param>
 public sealed record OperatorCredentialSettingsSection(
     bool Available,
     bool AuthenticationEnabled,
     bool PasswordSet,
     int MinimumPasswordLength,
-    string AuthenticationConfigurationKey) : SettingsSection(SectionId, "Operator password")
+    string AuthenticationConfigurationKey) : SettingsSection(SectionId, "Your password")
 {
     /// <summary>This section's stable id.</summary>
     public const string SectionId = "operator-credential";
 
-    /// <summary>No operator credential store is composed in this process.</summary>
+    /// <summary>No user service is composed in this process, so no account's password can be changed here.</summary>
     public static OperatorCredentialSettingsSection Unavailable(bool authenticationEnabled, string configurationKey) =>
         new(Available: false, authenticationEnabled, PasswordSet: false, 0, configurationKey);
 }

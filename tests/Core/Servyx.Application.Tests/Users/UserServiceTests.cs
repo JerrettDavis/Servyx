@@ -294,4 +294,78 @@ public class UserServiceTests
         (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeFalse(
             "a deactivated account must authenticate nobody, even with the right password");
     }
+
+    // ── ChangePasswordAsync (self-service) ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task ChangePasswordAsync_WithTheCorrectCurrentPassword_ReplacesTheStoredVerifier()
+    {
+        var (service, repository) = Build();
+        await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+
+        var result = await service.ChangePasswordAsync(
+            "alice", "correct-horse-battery-staple", "a-brand-new-password-1");
+
+        result.Outcome.Should().Be(ChangePasswordOutcome.Changed);
+        (await service.VerifyPasswordAsync("alice", "a-brand-new-password-1")).Should().BeTrue();
+        (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeFalse(
+            "the old password must stop working the moment the new one is stored");
+
+        repository.Rows.Single().PasswordHash.Should().NotContain("a-brand-new-password-1");
+    }
+
+    [Fact]
+    public async Task ChangePasswordAsync_WithTheWrongCurrentPassword_ChangesNothing()
+    {
+        var (service, _) = Build();
+        await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+
+        var result = await service.ChangePasswordAsync("alice", "not-the-password", "a-brand-new-password-1");
+
+        result.Outcome.Should().Be(ChangePasswordOutcome.CurrentPasswordIncorrect);
+        (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeTrue(
+            "a refused rotation must not touch the stored credential");
+    }
+
+    [Fact]
+    public async Task ChangePasswordAsync_ForAnUnknownUsername_ReportsTheSameOutcomeAsAWrongPassword()
+    {
+        // Deliberate: a distinct outcome here would let this member be used to probe which usernames exist.
+        var (service, _) = Build();
+
+        var result = await service.ChangePasswordAsync("nobody", "anything-at-all", "a-brand-new-password-1");
+
+        result.Outcome.Should().Be(ChangePasswordOutcome.CurrentPasswordIncorrect);
+    }
+
+    [Fact]
+    public async Task ChangePasswordAsync_ForADeactivatedAccount_ReportsTheSameOutcomeAsAWrongPassword()
+    {
+        var (service, _) = Build();
+        var created = await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+        await service.SetActiveAsync(created.UserId!.Value, false, Actor);
+
+        var result = await service.ChangePasswordAsync(
+            "alice", "correct-horse-battery-staple", "a-brand-new-password-1");
+
+        result.Outcome.Should().Be(ChangePasswordOutcome.CurrentPasswordIncorrect,
+            "a deactivated account must not be usable to rotate its own password back in, even with the " +
+            "right current one");
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("short")]
+    [InlineData("elevenchars")]
+    public async Task ChangePasswordAsync_WithAWeakNewPassword_IsRefused(string newPassword)
+    {
+        var (service, _) = Build();
+        await service.CreateAsync("alice", "correct-horse-battery-staple", UserRole.Viewer, Actor);
+
+        var result = await service.ChangePasswordAsync("alice", "correct-horse-battery-staple", newPassword);
+
+        result.Outcome.Should().Be(ChangePasswordOutcome.WeakPassword);
+        (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeTrue(
+            "a refused rotation must not touch the stored credential");
+    }
 }

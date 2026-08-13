@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authorization;
@@ -5,6 +6,7 @@ using Microsoft.AspNetCore.Authorization.Infrastructure;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using Servyx.Domain.Entities;
 using Servyx.Web.Authentication;
 using Servyx.Web.Services;
 using Servyx.Composition;
@@ -86,6 +88,66 @@ public class AuthenticationCompositionTests
 
         fallback.Should().BeNull(
             "with the gate closed the app must behave exactly as it did before authentication existed");
+    }
+
+    /// <summary>
+    /// Regression coverage for a real startup failure this composition once had: registering
+    /// <c>IAuthorizationHandler</c> from inside the <c>AddAuthorization(options =&gt; ...)</c> configure
+    /// delegate throws <see cref="InvalidOperationException"/> ("the service collection cannot be modified
+    /// because it is read-only") the first time anything resolves a policy, because that delegate can run
+    /// lazily, after the container is built. Composing here and actually resolving every role policy through
+    /// the real container is what a compile-time-only check of <c>RoleAuthorization.AddServyxRolePolicies</c>
+    /// would not have caught.
+    /// </summary>
+    [Theory]
+    [InlineData(RoleAuthorization.Viewer)]
+    [InlineData(RoleAuthorization.Operator)]
+    [InlineData(RoleAuthorization.Admin)]
+    public async Task EveryRolePolicy_ResolvesFromTheRealContainer_WithoutThrowing(string policyName)
+    {
+        using var provider = Compose(authenticationEnabled: true);
+
+        var policy = await provider
+            .GetRequiredService<IAuthorizationPolicyProvider>()
+            .GetPolicyAsync(policyName);
+
+        policy.Should().NotBeNull();
+        policy!.Requirements.OfType<MinimumRoleRequirement>().Should().ContainSingle();
+    }
+
+    [Fact]
+    public async Task EveryRolePolicy_ResolvesEvenWithTheAuthenticationGateClosed()
+    {
+        // The role policies are inert until a page opts in — see RoleAuthorization's own remarks — so they
+        // must be composed regardless of whether the fallback policy itself is installed.
+        using var provider = Compose(authenticationEnabled: false);
+
+        var policy = await provider
+            .GetRequiredService<IAuthorizationPolicyProvider>()
+            .GetPolicyAsync(RoleAuthorization.Admin);
+
+        policy.Should().NotBeNull();
+    }
+
+    [Theory]
+    [InlineData(RoleAuthorization.Viewer, nameof(UserRole.Viewer), true)]
+    [InlineData(RoleAuthorization.Operator, nameof(UserRole.Viewer), false)]
+    [InlineData(RoleAuthorization.Operator, nameof(UserRole.Operator), true)]
+    [InlineData(RoleAuthorization.Admin, nameof(UserRole.Operator), false)]
+    [InlineData(RoleAuthorization.Admin, nameof(UserRole.Admin), true)]
+    public async Task ARolePolicy_EvaluatesAgainstARealPrincipal_ThroughTheRealAuthorizationService(
+        string policyName, string principalRole, bool expectedSucceeded)
+    {
+        using var provider = Compose(authenticationEnabled: true);
+        var authorization = provider.GetRequiredService<IAuthorizationService>();
+
+        var principal = new ClaimsPrincipal(new ClaimsIdentity(
+            [new Claim(ClaimTypes.Name, "alice"), new Claim(ClaimTypes.Role, principalRole)],
+            OperatorAuthentication.SchemeName));
+
+        var result = await authorization.AuthorizeAsync(principal, policyName);
+
+        result.Succeeded.Should().Be(expectedSucceeded);
     }
 
     [Fact]

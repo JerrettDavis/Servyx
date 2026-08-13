@@ -143,4 +143,29 @@ public sealed class UserService : IUserService
 
         return PasswordHash.Verify(user.PasswordHash, password);
     }
+
+    /// <inheritdoc />
+    public async Task<ChangePasswordResult> ChangePasswordAsync(
+        string username, string currentPassword, string newPassword, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+
+        var user = await _repository.TryGetByUsernameAsync(username.Trim(), ct).ConfigureAwait(false);
+        if (user is null || !user.IsActive || !PasswordHash.Verify(user.PasswordHash, currentPassword))
+        {
+            // Deliberately one outcome for "wrong password", "no such account", and "deactivated account" —
+            // see ChangePasswordOutcome.CurrentPasswordIncorrect's own remarks.
+            return ChangePasswordResult.CurrentPasswordIncorrect;
+        }
+
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < CreateUserResult.MinimumPasswordLength)
+        {
+            return ChangePasswordResult.WeakPassword();
+        }
+
+        await _repository.SetPasswordHashAsync(user.Id, PasswordHash.Create(newPassword), ct).ConfigureAwait(false);
+
+        _logger.LogInformation("Changed the password for user '{Username}'.", user.Username);
+        return ChangePasswordResult.Changed;
+    }
 }

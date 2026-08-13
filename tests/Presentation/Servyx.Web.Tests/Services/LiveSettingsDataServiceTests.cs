@@ -1,10 +1,10 @@
 using Microsoft.Extensions.Logging.Abstractions;
 using Servyx.Application.Hosts;
+using Servyx.Application.Users;
 using Servyx.Composition;
 using Servyx.Domain.Common;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Entities;
-using Servyx.Web.Authentication;
 using Servyx.Web.Models;
 using Servyx.Web.Services;
 using Servyx.Web.Tests.Fakes;
@@ -19,10 +19,26 @@ namespace Servyx.Web.Tests.Services;
 /// Two claims run through this file: every section degrades to <c>Available: false</c> — never an exception —
 /// when its backing collaborator was not composed, and every mutating member is a thin, honest pass-through to
 /// the same collaborator the rest of the app already uses (the retention sweeper, <c>IHostRegistrationService</c>,
-/// <c>OperatorCredentialStore</c>) rather than a second implementation of any of their rules.
+/// <c>Servyx.Application.Users.IUserService</c>) rather than a second implementation of any of their rules.
 /// </remarks>
 public class LiveSettingsDataServiceTests
 {
+    private const string Username = "alice";
+    private const string InitialPassword = "correct-horse-battery-staple";
+
+    private static UserService BuildUserService(out FakeUserRepository repository)
+    {
+        repository = new FakeUserRepository();
+        return new UserService(repository, NullLogger<UserService>.Instance);
+    }
+
+    private static async Task<UserService> BuildUserServiceWithAccountAsync()
+    {
+        var service = BuildUserService(out _);
+        await service.CreateAsync(Username, InitialPassword, UserRole.Operator, "test-setup");
+        return service;
+    }
+
     // ── Availability: nothing composed ───────────────────────────────────────────────────────────
 
     [Fact]
@@ -52,7 +68,7 @@ public class LiveSettingsDataServiceTests
     {
         var service = new LiveSettingsDataService(NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced);
 
-        var result = await service.ChangeOperatorPasswordAsync("anything", "brand-new-password-1");
+        var result = await service.ChangeOperatorPasswordAsync("anyone", "anything", "brand-new-password-1");
 
         result.Outcome.Should().Be(OperatorPasswordChangeOutcome.Unavailable);
     }
@@ -159,95 +175,68 @@ public class LiveSettingsDataServiceTests
         section.FailureDetail.Should().Contain("the host table is gone");
     }
 
-    // ── Operator credential section and rotation ─────────────────────────────────────────────────
+    // ── "Your password" section and rotation ─────────────────────────────────────────────────────
 
     [Fact]
-    public async Task A_fresh_install_reports_no_password_set_so_the_page_never_offers_a_rotation_form()
+    public async Task An_authenticated_caller_always_reports_a_password_as_set()
     {
-        // Rotation requires the current password; bootstrapping the first one is /login's one-time flow. The
-        // section has to say which state the install is in for the page to render the right one of the two.
+        // Reaching this page at all requires an authenticated account, so there is no "not bootstrapped yet"
+        // state to discover here the way there was for the single shared operator password.
+        var userService = await BuildUserServiceWithAccountAsync();
         var service = new LiveSettingsDataService(
-            NullLogger<LiveSettingsDataService>.Instance,
-            AuthenticationGate.Enforced,
-            operatorCredentials: new OperatorCredentialStore(new RecordingSecretStore()));
-
-        var section = (await service.GetSettingsAsync()).Find<OperatorCredentialSettingsSection>()!;
-
-        section.Available.Should().BeTrue();
-        section.PasswordSet.Should().BeFalse();
-    }
-
-    [Fact]
-    public async Task A_rotation_on_an_install_with_no_password_yet_is_indistinguishable_from_a_wrong_one()
-    {
-        // Deliberate: a distinct outcome here would let this form be used to probe whether an install has
-        // been bootstrapped, and TrySetInitialPasswordAsync stays the only way a first password is ever set.
-        var service = new LiveSettingsDataService(
-            NullLogger<LiveSettingsDataService>.Instance,
-            AuthenticationGate.Enforced,
-            operatorCredentials: new OperatorCredentialStore(new RecordingSecretStore()));
-
-        var result = await service.ChangeOperatorPasswordAsync("anything-at-all", "brand-new-password-1");
-
-        result.Outcome.Should().Be(OperatorPasswordChangeOutcome.CurrentPasswordIncorrect);
-    }
-
-
-    [Fact]
-    public async Task The_operator_section_reports_whether_a_password_is_set_and_the_authentication_gates_state()
-    {
-        var secrets = new RecordingSecretStore();
-        var credentials = new OperatorCredentialStore(secrets);
-        await credentials.TrySetInitialPasswordAsync("correct-horse-battery-staple");
-
-        var service = new LiveSettingsDataService(
-            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Disabled, operatorCredentials: credentials);
+            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced, userService: userService);
 
         var section = (await service.GetSettingsAsync()).Find<OperatorCredentialSettingsSection>()!;
 
         section.Available.Should().BeTrue();
         section.PasswordSet.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task The_section_reports_the_authentication_gates_state_and_the_minimum_password_length()
+    {
+        var userService = await BuildUserServiceWithAccountAsync();
+        var service = new LiveSettingsDataService(
+            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Disabled, userService: userService);
+
+        var section = (await service.GetSettingsAsync()).Find<OperatorCredentialSettingsSection>()!;
+
+        section.Available.Should().BeTrue();
         section.AuthenticationEnabled.Should().BeFalse();
-        section.MinimumPasswordLength.Should().Be(OperatorCredentialStore.MinimumPasswordLength);
+        section.MinimumPasswordLength.Should().Be(CreateUserResult.MinimumPasswordLength);
         section.AuthenticationConfigurationKey.Should().Be(AuthenticationGate.ConfigurationKey);
     }
 
     [Fact]
-    public async Task Changing_the_password_delegates_to_the_credential_store_and_verifies_the_current_one()
+    public async Task Changing_the_password_delegates_to_the_user_service_and_verifies_the_current_one()
     {
-        var secrets = new RecordingSecretStore();
-        var credentials = new OperatorCredentialStore(secrets);
-        await credentials.TrySetInitialPasswordAsync("correct-horse-battery-staple");
-
+        var userService = await BuildUserServiceWithAccountAsync();
         var service = new LiveSettingsDataService(
-            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced, operatorCredentials: credentials);
+            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced, userService: userService);
 
-        (await service.ChangeOperatorPasswordAsync("wrong-password", "brand-new-password-1")).Outcome
+        (await service.ChangeOperatorPasswordAsync(Username, "wrong-password", "brand-new-password-1")).Outcome
             .Should().Be(OperatorPasswordChangeOutcome.CurrentPasswordIncorrect);
 
-        (await credentials.VerifyPasswordAsync("correct-horse-battery-staple")).Should().BeTrue(
+        (await userService.VerifyPasswordAsync(Username, InitialPassword)).Should().BeTrue(
             "a refused rotation must not touch the stored credential");
 
-        var changed = await service.ChangeOperatorPasswordAsync("correct-horse-battery-staple", "brand-new-password-1");
+        var changed = await service.ChangeOperatorPasswordAsync(Username, InitialPassword, "brand-new-password-1");
         changed.Outcome.Should().Be(OperatorPasswordChangeOutcome.Changed);
-        (await credentials.VerifyPasswordAsync("brand-new-password-1")).Should().BeTrue();
+        (await userService.VerifyPasswordAsync(Username, "brand-new-password-1")).Should().BeTrue();
     }
 
     [Fact]
     public async Task A_too_short_new_password_is_reported_as_rejected_rather_than_throwing_through_the_page()
     {
-        var secrets = new RecordingSecretStore();
-        var credentials = new OperatorCredentialStore(secrets);
-        await credentials.TrySetInitialPasswordAsync("correct-horse-battery-staple");
-
+        var userService = await BuildUserServiceWithAccountAsync();
         var service = new LiveSettingsDataService(
-            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced, operatorCredentials: credentials);
+            NullLogger<LiveSettingsDataService>.Instance, AuthenticationGate.Enforced, userService: userService);
 
-        var result = await service.ChangeOperatorPasswordAsync("correct-horse-battery-staple", "short");
+        var result = await service.ChangeOperatorPasswordAsync(Username, InitialPassword, "short");
 
         result.Outcome.Should().Be(OperatorPasswordChangeOutcome.NewPasswordRejected);
         result.Detail.Should().NotBeNullOrWhiteSpace();
-        (await credentials.VerifyPasswordAsync("correct-horse-battery-staple")).Should().BeTrue();
+        (await userService.VerifyPasswordAsync(Username, InitialPassword)).Should().BeTrue();
     }
 
     // ── Test doubles ───────────────────────────────────────────────────────────────────────────────

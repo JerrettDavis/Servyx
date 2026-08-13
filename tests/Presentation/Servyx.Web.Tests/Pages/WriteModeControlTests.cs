@@ -119,9 +119,8 @@ public class WriteModeControlTests : BunitContext
 
         control.Find("[data-testid=\"write-mode-current\"]").TextContent.Should().Contain("Preview only");
         control.Find("[data-testid=\"write-mode-attribution\"]").TextContent
-            .Should().Contain("no per-operator accounts",
-                because: "WriteModeChangedBy always holds one value; implying per-user attribution would be a " +
-                    "trap for whoever reads that column in a year");
+            .Should().Contain("the signed-in account that made the change",
+                because: "WriteModeChangedBy now carries the real signed-in username, not one constant identity");
     }
 
     [Fact]

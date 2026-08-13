@@ -93,8 +93,21 @@ public static class AuthenticationServiceCollectionExtensions
                 options.SlidingExpiration = true;
             });
 
+        // The handler backing every Servyx.Role.* policy. Registered directly against the container, NOT from
+        // inside the AddAuthorization configure delegate below — that delegate can run lazily, after the
+        // container has been built and made read-only, and a service registration attempted from inside it
+        // throws at first request rather than at startup. See RoleAuthorization.AddServyxRolePolicies's own
+        // remarks for the failure this sidesteps.
+        services.AddSingleton<IAuthorizationHandler, MinimumRoleAuthorizationHandler>();
+
         services.AddAuthorization(options =>
         {
+            // The role-minimum policies are registered regardless of whether the gate is open. They are inert
+            // until a page opts into one with [Authorize(Policy = ...)] — see RoleAuthorization's own remarks —
+            // so registering them with the gate closed costs nothing and means switching the gate back on
+            // later needs no second registration pass to catch up.
+            options.AddServyxRolePolicies();
+
             if (!gate.Enabled)
             {
                 return;

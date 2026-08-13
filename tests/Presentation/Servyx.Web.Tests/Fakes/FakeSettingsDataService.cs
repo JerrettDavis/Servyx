@@ -20,8 +20,8 @@ public sealed class FakeSettingsDataService : ISettingsDataService
     /// <summary>How many times <see cref="RunRetentionSweepAsync"/> was reached.</summary>
     public int SweepCalls { get; private set; }
 
-    /// <summary>Every <c>(current, new)</c> pair <see cref="ChangeOperatorPasswordAsync"/> was called with, in order.</summary>
-    public List<(string Current, string New)> PasswordChangeCalls { get; } = [];
+    /// <summary>Every <c>(username, current, new)</c> triple <see cref="ChangeOperatorPasswordAsync"/> was called with, in order.</summary>
+    public List<(string Username, string Current, string New)> PasswordChangeCalls { get; } = [];
 
     /// <summary>What <see cref="RunRetentionSweepAsync"/> returns.</summary>
     public RetentionSweepResult SweepResult { get; set; } = new(RetentionSweepOutcome.Swept, 1, 2, 3, null);
@@ -52,9 +52,9 @@ public sealed class FakeSettingsDataService : ISettingsDataService
 
     /// <inheritdoc />
     public Task<OperatorPasswordChangeResult> ChangeOperatorPasswordAsync(
-        string currentPassword, string newPassword, CancellationToken ct = default)
+        string username, string currentPassword, string newPassword, CancellationToken ct = default)
     {
-        PasswordChangeCalls.Add((currentPassword, newPassword));
+        PasswordChangeCalls.Add((username, currentPassword, newPassword));
         return Task.FromResult(PasswordChangeResult);
     }
 }

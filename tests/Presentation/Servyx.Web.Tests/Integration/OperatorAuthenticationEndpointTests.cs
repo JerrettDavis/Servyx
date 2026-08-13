@@ -31,6 +31,7 @@ namespace Servyx.Web.Tests.Integration;
 /// </remarks>
 public sealed class OperatorAuthenticationEndpointTests
 {
+    private const string Username = "admin";
     private const string OperatorPassword = "correct-horse-battery-staple";
     private const string AuthCookieName = "servyx.auth";
 
@@ -40,10 +41,15 @@ public sealed class OperatorAuthenticationEndpointTests
         var port = GetFreeLoopbackPort();
         var serverAddress = $"http://127.0.0.1:{port}";
 
-        // A secrets root nothing else has ever written to, so this install genuinely starts with no operator
-        // password and the first-run path is the real first run rather than a leftover from a previous run.
-        var secretsRoot = Path.Combine(
-            Path.GetTempPath(), "servyx-auth-tests", Guid.NewGuid().ToString("n"), "secrets");
+        // A secrets root AND a database nothing else has ever written to, so this install genuinely starts
+        // with no operator password and no User rows, and the first-run path is the real first run rather
+        // than a leftover from a previous run. The database matters now in a way it did not before accounts
+        // existed: SetupRequired is decided against the Users table, and without an isolated connection
+        // string every run would share the fixed default path under the test binary's own directory.
+        var installRoot = Path.Combine(Path.GetTempPath(), "servyx-auth-tests", Guid.NewGuid().ToString("n"));
+        var secretsRoot = Path.Combine(installRoot, "secrets");
+        var databasePath = Path.Combine(installRoot, "servyx.db");
+        Directory.CreateDirectory(installRoot);
 
         var startInfo = new ProcessStartInfo
         {
@@ -58,6 +64,7 @@ public sealed class OperatorAuthenticationEndpointTests
         startInfo.Environment["Servyx__DataSource"] = "Mock";
         startInfo.Environment["ASPNETCORE_ENVIRONMENT"] = "Development";
         startInfo.Environment["Servyx__Secrets__RootDirectory"] = secretsRoot;
+        startInfo.Environment["Servyx__Persistence__ConnectionString"] = $"Data Source={databasePath}";
 
         // Deliberately NOT setting Servyx__Authentication__Enabled: the default must be "on", and this test
         // exists to prove that a host nobody configured is a host nobody can walk into.
@@ -95,15 +102,16 @@ public sealed class OperatorAuthenticationEndpointTests
 
             var loginPage = await theOperator.GetHtmlAsync("/login");
             loginPage.Should().Contain("data-testid=\"setup-form\"",
-                "a never-bootstrapped install must offer the one-time set-password form");
+                "a never-bootstrapped install must offer the one-time account-creation form");
             loginPage.Should().NotContain("data-testid=\"login-form\"");
 
-            // ── 3. First run sets the password and signs the operator in ─────────────────────────────
+            // ── 3. First run creates the first account (Admin) and signs the caller in ───────────────
             using var bootstrap = await theOperator.PostFormAsync("/login", new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = ExtractAntiforgeryToken(loginPage),
                 ["intent"] = "set-password",
                 [OperatorAuthentication.ReturnUrlParameter] = "/deploy",
+                ["username"] = Username,
                 ["newPassword"] = OperatorPassword,
                 ["confirmPassword"] = OperatorPassword,
             });
@@ -115,26 +123,27 @@ public sealed class OperatorAuthenticationEndpointTests
 
             using var deployAuthenticated = await theOperator.GetAsync("/deploy");
             deployAuthenticated.StatusCode.Should().Be(
-                HttpStatusCode.OK, "the signed-in operator must actually be able to reach /deploy");
+                HttpStatusCode.OK, "the signed-in account must actually be able to reach /deploy");
 
             // ── 4. The first-run flow is not a permanent way in ──────────────────────────────────────
             using var replayer = new Browser(serverAddress);
             var replayerLogin = await replayer.GetHtmlAsync("/login");
 
             replayerLogin.Should().Contain("data-testid=\"login-form\"",
-                "once a password exists, the set-password form must not be offered again");
+                "once an account exists, the account-creation form must not be offered again");
             replayerLogin.Should().NotContain("data-testid=\"setup-form\"");
 
             using var replay = await replayer.PostFormAsync("/login", new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = ExtractAntiforgeryToken(replayerLogin),
                 ["intent"] = "set-password",
+                ["username"] = "someone-else",
                 ["newPassword"] = "some-other-password",
                 ["confirmPassword"] = "some-other-password",
             });
 
             replay.StatusCode.Should().Be(HttpStatusCode.OK, "the replay is refused, not redirected onwards");
-            (await replay.Content.ReadAsStringAsync()).Should().Contain("already been set");
+            (await replay.Content.ReadAsStringAsync()).Should().Contain("already been set up");
             replayer.Cookie(AuthCookieName).Should().BeNullOrEmpty(
                 "replaying the one-time bootstrap must never issue a session");
 
@@ -148,7 +157,8 @@ public sealed class OperatorAuthenticationEndpointTests
             using var guess = await guesser.PostFormAsync("/login", new Dictionary<string, string>
             {
                 ["__RequestVerificationToken"] = ExtractAntiforgeryToken(guesserLogin),
-                ["password"] = "not-the-operator-password",
+                ["username"] = Username,
+                ["password"] = "not-the-right-password",
             });
 
             guess.StatusCode.Should().Be(HttpStatusCode.OK);
@@ -158,7 +168,22 @@ public sealed class OperatorAuthenticationEndpointTests
             using var guesserDeploy = await guesser.GetAsync("/deploy");
             guesserDeploy.StatusCode.Should().Be(HttpStatusCode.Redirect);
 
-            // ── 6. The right password does, and sign-out undoes it ───────────────────────────────────
+            // ── 5b. An unknown username authenticates nobody either, indistinguishably ────────────────
+            using var guesser2 = new Browser(serverAddress);
+            var guesser2Login = await guesser2.GetHtmlAsync("/login");
+
+            using var guess2 = await guesser2.PostFormAsync("/login", new Dictionary<string, string>
+            {
+                ["__RequestVerificationToken"] = ExtractAntiforgeryToken(guesser2Login),
+                ["username"] = "nobody-registered",
+                ["password"] = OperatorPassword,
+            });
+
+            guess2.StatusCode.Should().Be(HttpStatusCode.OK);
+            (await guess2.Content.ReadAsStringAsync()).Should().Contain("was not accepted");
+            guesser2.Cookie(AuthCookieName).Should().BeNullOrEmpty();
+
+            // ── 6. The right username and password do, and sign-out undoes it ────────────────────────
             using var returning = new Browser(serverAddress);
             var signInPage = await returning.GetHtmlAsync("/login?returnUrl=%2Fdeploy");
 
@@ -166,6 +191,7 @@ public sealed class OperatorAuthenticationEndpointTests
             {
                 ["__RequestVerificationToken"] = ExtractAntiforgeryToken(signInPage),
                 [OperatorAuthentication.ReturnUrlParameter] = "/deploy",
+                ["username"] = Username,
                 ["password"] = OperatorPassword,
             });
 

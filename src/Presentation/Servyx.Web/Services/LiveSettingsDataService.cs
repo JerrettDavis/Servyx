@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Servyx.Application.Hosts;
+using Servyx.Application.Users;
 using Servyx.Composition;
-using Servyx.Web.Authentication;
 using Servyx.Web.Models;
 
 namespace Servyx.Web.Services;
@@ -10,7 +10,7 @@ namespace Servyx.Web.Services;
 /// <see cref="ISettingsDataService"/> implementation backed by the real, already-composed collaborators each
 /// section reports on: <see cref="ChangePlanRetentionOptions"/>/<see cref="ChangePlanRetentionService"/> for
 /// retention, <see cref="IHostRegistrationService"/> for the host connections summary — the exact same
-/// service <c>/hosts</c> itself is built on — and <see cref="OperatorCredentialStore"/> for the operator
+/// service <c>/hosts</c> itself is built on — and <see cref="IUserService"/> for the signed-in caller's own
 /// password.
 /// </summary>
 /// <remarks>
@@ -27,13 +27,13 @@ public sealed class LiveSettingsDataService : ISettingsDataService
     private readonly ChangePlanRetentionOptions? _retentionOptions;
     private readonly ChangePlanRetentionService? _retentionService;
     private readonly IHostRegistrationService? _hostRegistration;
-    private readonly OperatorCredentialStore? _operatorCredentials;
+    private readonly IUserService? _userService;
 
     /// <summary>Creates a <see cref="LiveSettingsDataService"/>.</summary>
     /// <param name="logger">Where a section read or a mutating action's unexpected failure is logged.</param>
     /// <param name="authenticationGate">
-    /// Whether this process requires a login at all — reported alongside the operator credential section
-    /// regardless of whether <paramref name="operatorCredentials"/> is composed, since it is always resolved
+    /// Whether this process requires a login at all — reported alongside the "your password" section
+    /// regardless of whether <paramref name="userService"/> is composed, since it is always resolved
     /// (see <see cref="AuthenticationGate"/>'s own fail-closed-default remarks).
     /// </param>
     /// <param name="retentionOptions">
@@ -50,14 +50,17 @@ public sealed class LiveSettingsDataService : ISettingsDataService
     /// The service backing <c>/hosts</c>. This type only ever calls <see cref="IHostRegistrationService.ListAsync"/>
     /// on it — nothing here registers, probes, or deregisters a host; that stays exclusively on the Hosts page.
     /// </param>
-    /// <param name="operatorCredentials">The single operator credential's store.</param>
+    /// <param name="userService">
+    /// The account service the signed-in caller's own password is changed through. Also used, unconditionally,
+    /// by the login pipeline — this is the same singleton, not a second instance.
+    /// </param>
     public LiveSettingsDataService(
         ILogger<LiveSettingsDataService> logger,
         AuthenticationGate authenticationGate,
         ChangePlanRetentionOptions? retentionOptions = null,
         ChangePlanRetentionService? retentionService = null,
         IHostRegistrationService? hostRegistration = null,
-        OperatorCredentialStore? operatorCredentials = null)
+        IUserService? userService = null)
     {
         ArgumentNullException.ThrowIfNull(logger);
         ArgumentNullException.ThrowIfNull(authenticationGate);
@@ -67,7 +70,7 @@ public sealed class LiveSettingsDataService : ISettingsDataService
         _retentionOptions = retentionOptions;
         _retentionService = retentionService;
         _hostRegistration = hostRegistration;
-        _operatorCredentials = operatorCredentials;
+        _userService = userService;
     }
 
     /// <inheritdoc />
@@ -124,28 +127,26 @@ public sealed class LiveSettingsDataService : ISettingsDataService
 
     /// <inheritdoc />
     public async Task<OperatorPasswordChangeResult> ChangeOperatorPasswordAsync(
-        string currentPassword, string newPassword, CancellationToken ct = default)
+        string username, string currentPassword, string newPassword, CancellationToken ct = default)
     {
-        if (_operatorCredentials is null)
+        if (_userService is null)
         {
             return OperatorPasswordChangeResult.Unavailable;
         }
 
         try
         {
-            var changed = await _operatorCredentials
-                .ChangePasswordAsync(currentPassword, newPassword, ct)
+            var result = await _userService
+                .ChangePasswordAsync(username, currentPassword, newPassword, ct)
                 .ConfigureAwait(false);
 
-            return changed ? OperatorPasswordChangeResult.Changed : OperatorPasswordChangeResult.CurrentPasswordIncorrect;
-        }
-        catch (ArgumentException ex)
-        {
-            // OperatorCredentialStore.ChangePasswordAsync validates the NEW password's shape (length) before
-            // it ever checks the current one, and reports that with a thrown ArgumentException rather than a
-            // boolean — see its remarks. Translated to a typed outcome here so this page never needs to catch
-            // an exception itself.
-            return new OperatorPasswordChangeResult(OperatorPasswordChangeOutcome.NewPasswordRejected, ex.Message);
+            return result.Outcome switch
+            {
+                ChangePasswordOutcome.Changed => OperatorPasswordChangeResult.Changed,
+                ChangePasswordOutcome.WeakPassword =>
+                    new OperatorPasswordChangeResult(OperatorPasswordChangeOutcome.NewPasswordRejected, result.Detail),
+                _ => OperatorPasswordChangeResult.CurrentPasswordIncorrect,
+            };
         }
         catch (OperationCanceledException)
         {
@@ -153,7 +154,7 @@ public sealed class LiveSettingsDataService : ISettingsDataService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Operator password rotation failed.");
+            _logger.LogWarning(ex, "Own-password rotation failed.");
             return new OperatorPasswordChangeResult(OperatorPasswordChangeOutcome.Failed, ex.Message);
         }
     }
@@ -206,37 +207,24 @@ public sealed class LiveSettingsDataService : ISettingsDataService
         }
     }
 
-    private async Task<OperatorCredentialSettingsSection> BuildOperatorCredentialSectionAsync(CancellationToken ct)
+    private Task<OperatorCredentialSettingsSection> BuildOperatorCredentialSectionAsync(CancellationToken ct)
     {
-        if (_operatorCredentials is null)
+        _ = ct; // No read is needed: reaching this page at all requires an authenticated account.
+
+        if (_userService is null)
         {
-            return OperatorCredentialSettingsSection.Unavailable(
-                _authenticationGate.Enabled, AuthenticationGate.ConfigurationKey);
+            return Task.FromResult(OperatorCredentialSettingsSection.Unavailable(
+                _authenticationGate.Enabled, AuthenticationGate.ConfigurationKey));
         }
 
-        bool passwordSet;
-        try
-        {
-            passwordSet = await _operatorCredentials.IsPasswordSetAsync(ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            // Fails towards "a password is set", which keeps the rotation form on screen. The other default
-            // would render "no operator password has been set" on a transient secret-store failure, which
-            // reads as an invitation to bootstrap one on an install that already has one.
-            _logger.LogWarning(ex, "Failed to read whether an operator password is set.");
-            passwordSet = true;
-        }
-
-        return new OperatorCredentialSettingsSection(
+        // PasswordSet is always true here — see OperatorCredentialSettingsSection's own remarks: an
+        // authenticated caller already has a password by construction, so there is no "not set yet" state to
+        // discover for a self-service rotation the way there was for the single shared operator password.
+        return Task.FromResult(new OperatorCredentialSettingsSection(
             Available: true,
             _authenticationGate.Enabled,
-            passwordSet,
-            OperatorCredentialStore.MinimumPasswordLength,
-            AuthenticationGate.ConfigurationKey);
+            PasswordSet: true,
+            CreateUserResult.MinimumPasswordLength,
+            AuthenticationGate.ConfigurationKey));
     }
 }

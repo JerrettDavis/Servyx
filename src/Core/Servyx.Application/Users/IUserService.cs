@@ -71,4 +71,19 @@ public interface IUserService
     /// unbootstrapped install.
     /// </summary>
     Task<bool> VerifyPasswordAsync(string username, string? password, CancellationToken ct = default);
+
+    /// <summary>
+    /// Changes <paramref name="username"/>'s own password, but only for a caller that can already produce the
+    /// current one — the self-service counterpart to <see cref="CreateAsync"/>'s admin-issued initial
+    /// password. Returns <see cref="ChangePasswordOutcome.CurrentPasswordIncorrect"/> — writing nothing —
+    /// when <paramref name="currentPassword"/> does not verify, and also when no active account exists under
+    /// <paramref name="username"/>; see <see cref="ChangePasswordOutcome.CurrentPasswordIncorrect"/>'s own
+    /// remarks on why those are deliberately the same outcome.
+    /// </summary>
+    /// <param name="username">The account whose password is being changed.</param>
+    /// <param name="currentPassword">The password in force now. Verified before anything is written.</param>
+    /// <param name="newPassword">The replacement. Hashed before anything is written; never persisted or returned.</param>
+    /// <param name="ct">Cancels the change.</param>
+    Task<ChangePasswordResult> ChangePasswordAsync(
+        string username, string currentPassword, string newPassword, CancellationToken ct = default);
 }

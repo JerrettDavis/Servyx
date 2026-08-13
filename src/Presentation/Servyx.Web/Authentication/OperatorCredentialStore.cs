@@ -138,6 +138,26 @@ public sealed class OperatorCredentialStore
         return OperatorPasswordHash.Verify(OperatorPasswordHash.FromStoredBytes(lease.Value), candidate);
     }
 
+    /// <summary>
+    /// The raw, already-encoded verifier stored at <see cref="PasswordUrn"/>, or <see langword="null"/> if
+    /// none has ever been set. Exists for exactly one caller: the one-time startup migration
+    /// (<c>Servyx.Web.Authentication.UserBootstrapMigration</c>) that seeds a bootstrap <c>Admin</c>
+    /// <c>User</c> row from the pre-multi-user shared operator password, on an install upgrading into it.
+    /// </summary>
+    /// <remarks>
+    /// Returns the verifier <em>as stored</em> — algorithm label, iteration count, salt, derived key — never
+    /// a plaintext password, which this type has never persisted and cannot recover. The format is
+    /// byte-for-byte what <see cref="Servyx.Domain.Secrets.PasswordHash.Create"/> produces (see
+    /// <see cref="OperatorPasswordHash"/>'s own remarks on the two never risking drift), which is exactly what
+    /// lets the migration copy it straight into a <c>User.PasswordHash</c> column without rehashing — a
+    /// verifier the operator's real password already produced continues to verify it there unchanged.
+    /// </remarks>
+    public async Task<string?> TryReadEncodedHashAsync(CancellationToken ct = default)
+    {
+        using var lease = await _secrets.GetAsync(PasswordUrn, ct).ConfigureAwait(false);
+        return lease is null ? null : OperatorPasswordHash.FromStoredBytes(lease.Value);
+    }
+
     private async Task WriteAsync(string password, CancellationToken ct)
     {
         var encoded = OperatorPasswordHash.Create(password);

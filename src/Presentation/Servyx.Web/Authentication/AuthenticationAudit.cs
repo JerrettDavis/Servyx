@@ -61,4 +61,12 @@ public static class AuthenticationAudit
     /// can mutate it.
     /// </summary>
     public static readonly EventId UnauthenticatedWriteAccess = new(6010, nameof(UnauthenticatedWriteAccess));
+
+    /// <summary>
+    /// Startup migrated the pre-multi-user shared operator password into a bootstrap <c>Admin</c> user account,
+    /// on an install that had a legacy operator password but no <c>User</c> rows yet. See
+    /// <c>UserBootstrapMigration</c>.
+    /// </summary>
+    public static readonly EventId LegacyOperatorPasswordMigrated =
+        new(6011, nameof(LegacyOperatorPasswordMigrated));
 }

@@ -145,6 +145,14 @@ StartupSafetyWarnings.LogDangerousCombinations(
 
 await core.MigrateDatabaseAsync(app.Services);
 
+// One-time upgrade path: an install that has a legacy shared operator password but no User rows yet gets a
+// bootstrap Admin account seeded from that same password (byte-for-byte compatible hash — see
+// UserBootstrapMigration's own remarks), so switching the login pipeline over to per-account authentication
+// never locks out an operator who upgrades into it. Runs after the database migration above, since it needs
+// the Users table to exist, and before the app starts listening, since it is not safe to race against a
+// concurrent first sign-in.
+await UserBootstrapMigration.MigrateLegacyOperatorPasswordAsync(app.Services);
+
 // Configure the HTTP request pipeline.
 if (!app.Environment.IsDevelopment())
 {

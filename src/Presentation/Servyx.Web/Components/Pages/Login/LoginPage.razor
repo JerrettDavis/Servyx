@@ -1,4 +1,5 @@
-﻿@using Servyx.Web.Authentication
+﻿@using Servyx.Application.Users
+@using Servyx.Web.Authentication
 @using Servyx.Web.Services
 @inject BrandingOptions Brand
 @*
@@ -127,14 +128,15 @@
             @if (SetupRequired)
             {
                 <p class="svx-login-lede" data-testid="setup-lede">
-                    No operator password has been set on this install yet. Choose one now — it is the only
-                    credential Servyx has, and this first-run form disappears the moment it is set.
+                    No account has been set up on this install yet. Choose a username and password for the
+                    first account now — it is created with the Admin role, and this first-run form disappears
+                    the moment it is created.
                 </p>
             }
             else
             {
                 <p class="svx-login-lede" data-testid="signin-lede">
-                    Enter the operator password to continue.
+                    Enter your username and password to continue.
                 </p>
             }
 
@@ -151,9 +153,14 @@
                     <input type="hidden" name="intent" value="@SetPasswordIntent" />
 
                     <label>
-                        <span>New operator password (at least @OperatorCredentialStore.MinimumPasswordLength characters)</span>
+                        <span>Username</span>
+                        <input type="text" name="username" autocomplete="username" required autofocus
+                               maxlength="200" data-testid="setup-username" />
+                    </label>
+                    <label>
+                        <span>New password (at least @MinimumPasswordLength characters)</span>
                         <input type="password" name="newPassword" autocomplete="new-password"
-                               minlength="@OperatorCredentialStore.MinimumPasswordLength" required
+                               minlength="@MinimumPasswordLength" required
                                data-testid="new-password" />
                     </label>
                     <label>
@@ -162,7 +169,7 @@
                                data-testid="confirm-password" />
                     </label>
 
-                    <button type="submit" data-testid="set-password">Set password and sign in</button>
+                    <button type="submit" data-testid="set-password">Create account and sign in</button>
                 </form>
             }
             else
@@ -172,9 +179,14 @@
                     <input type="hidden" name="@OperatorAuthentication.ReturnUrlParameter" value="@ReturnUrl" />
 
                     <label>
-                        <span>Operator password</span>
+                        <span>Username</span>
+                        <input type="text" name="username" autocomplete="username" required
+                               autofocus data-testid="username" />
+                    </label>
+                    <label>
+                        <span>Password</span>
                         <input type="password" name="password" autocomplete="current-password" required
-                               autofocus data-testid="password" />
+                               data-testid="password" />
                     </label>
 
                     <button type="submit" data-testid="sign-in">Sign in</button>
@@ -190,9 +202,12 @@
     /// <summary>The hidden field value that asks the endpoint to run the one-time bootstrap.</summary>
     public const string SetPasswordIntent = "set-password";
 
+    /// <summary>The shortest password the first-run form accepts, matching <see cref="IUserService.CreateAsync"/>'s own minimum.</summary>
+    private const int MinimumPasswordLength = CreateUserResult.MinimumPasswordLength;
+
     /// <summary>
-    /// Whether this install has never had a password set, in which case the first-run form is offered
-    /// instead of the sign-in form. Decided by the endpoint against the secret store, never by this page.
+    /// Whether this install has no account yet, in which case the first-run form is offered instead of the
+    /// sign-in form. Decided by the endpoint against <see cref="IUserService"/>, never by this page.
     /// </summary>
     [Parameter]
     public bool SetupRequired { get; set; }

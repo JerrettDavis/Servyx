@@ -44,17 +44,21 @@ public interface ISettingsDataService
     Task<RetentionSweepResult> RunRetentionSweepAsync(CancellationToken ct = default);
 
     /// <summary>
-    /// Replaces the operator password, for a caller that can already produce the current one.
+    /// Replaces <paramref name="username"/>'s own password, for a caller that can already produce the current
+    /// one.
     /// </summary>
     /// <remarks>
-    /// A thin pass-through to <c>OperatorCredentialStore.ChangePasswordAsync</c>, which verifies the current
-    /// password against the stored PBKDF2 verifier and writes a freshly derived one through the same
-    /// <c>ISecretStore</c> at the same URN. No hashing, no format, and no storage decision is made here — this
-    /// member exists only so the page never has to hold the credential store itself.
+    /// A thin pass-through to <c>Servyx.Application.Users.IUserService.ChangePasswordAsync</c>, which verifies
+    /// the current password against the stored PBKDF2 verifier and writes a freshly derived one to the same
+    /// <c>User</c> row. No hashing, no format, and no storage decision is made here — this member exists only
+    /// so the page never has to hold the user service itself. Self-service only: this changes the caller's
+    /// <em>own</em> account, identified by <paramref name="username"/>, never an arbitrary other account —
+    /// resetting someone else's password is Increment 4's Users management surface, not this page.
     /// </remarks>
+    /// <param name="username">The signed-in caller's own username — the account being changed.</param>
     /// <param name="currentPassword">The password in force now. Verified before anything is written.</param>
     /// <param name="newPassword">The replacement.</param>
     /// <param name="ct">Cancels the rotation.</param>
     Task<OperatorPasswordChangeResult> ChangeOperatorPasswordAsync(
-        string currentPassword, string newPassword, CancellationToken ct = default);
+        string username, string currentPassword, string newPassword, CancellationToken ct = default);
 }

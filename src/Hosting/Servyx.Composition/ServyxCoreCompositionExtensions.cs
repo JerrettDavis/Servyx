@@ -8,6 +8,7 @@ using Servyx.Application.Backups;
 using Servyx.Application.Lifecycle;
 using Servyx.Application.Provisioning;
 using Servyx.Application.Servers;
+using Servyx.Application.Users;
 using Servyx.Config;
 using Servyx.Definitions;
 using Servyx.Domain.Configuration;
@@ -533,6 +534,17 @@ public static class ServyxCoreCompositionExtensions
         // HostConnectionRegistry — registration order relative to that earlier call does not matter, only
         // that IHostRepository is registered by the time the container is built, which this guarantees.
         builder.Services.AddServyxHostRepository();
+
+        // IUserRepository / IUserService — durable storage and the application-layer surface behind Servyx's
+        // own account bookkeeping (Increment 1 added the entity and the store; this increment is what starts
+        // consuming it). Registered here, unconditionally, for the same reason as IHostRepository immediately
+        // above: this is Servyx's own database, not a mutating call to any managed host, so it needs no write
+        // grant and must resolve with the provisioning gate closed — and, now, so that the login pipeline
+        // itself (which has nothing to do with provisioning) can always resolve it. UserService is singleton,
+        // matching EfUserRepository's own lifetime (see AddServyxUserRepository's remarks): it holds no state
+        // beyond the repository reference, so one instance for the process lifetime is exactly right.
+        builder.Services.AddServyxUserRepository();
+        builder.Services.AddSingleton<IUserService, UserService>();
 
         // Desired-value persistence for the settings tab (Phase 4a). Registered unconditionally, alongside
         // the rest of this block and for the same reason: IServerSettingsService writes ONLY to Servyx's own

@@ -48,8 +48,7 @@
                 @("Never changed — this server has held its adopted default since it was adopted.")
                 <br />
             }
-            Servyx has one shared operator password and no per-operator accounts, so this field records the
-            single operator identity and cannot tell two people apart.
+            This field records the signed-in account that made the change.
         </p>
 
         @if (!_gate.Enabled)
@@ -273,10 +272,11 @@
     }
 
     /// <summary>
-    /// Who the change is attributed to. Reads the signed-in principal when one is cascading, and otherwise
-    /// falls back to the same single operator identity the sign-in endpoint issues. Either way this is one
-    /// constant value in practice — see the copy rendered above, which says so rather than implying that
-    /// <c>WriteModeChangedBy</c> distinguishes between people.
+    /// Who the change is attributed to. Reads the real signed-in username from the cascading
+    /// <c>AuthenticationState</c> — minted by <c>AuthenticationEndpoints.SignInAsync</c> from the account that
+    /// authenticated — and falls back to <see cref="OperatorAuthentication.OperatorNameClaimValue"/> only when
+    /// no <c>AuthenticationState</c> is cascading at all (a bUnit render, or authentication switched off),
+    /// which behind the fallback policy an ordinary signed-in caller no longer is.
     /// </summary>
     private async Task<string> ResolveActorAsync()
     {

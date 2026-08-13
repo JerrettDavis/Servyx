@@ -9,13 +9,13 @@ using Servyx.Web.Tests.Fakes;
 namespace Servyx.Web.Tests.Pages;
 
 /// <summary>
-/// bUnit coverage for the operator password rotation form.
+/// bUnit coverage for the self-service "change your own password" form.
 /// </summary>
 /// <remarks>
-/// The security-relevant claim is what this form will <em>not</em> do: with no password set on the install it
-/// renders an explanation and no form at all, because a control that sets a password without needing the
-/// current one is a way in that requires no credential. Setting the first password stays <c>/login</c>'s
-/// one-time flow, which <c>OperatorCredentialStore.TrySetInitialPasswordAsync</c> refuses to repeat.
+/// This used to rotate the single shared operator password kept outside any account; it now changes the
+/// signed-in caller's own <c>Servyx.Application.Users.IUserService</c>-backed account, resolved through the
+/// same <c>ResolveActorAsync</c> pattern <c>WriteModeControl</c> uses (with no cascading
+/// <c>AuthenticationState</c> in these tests, that resolves to the same last-resort fallback identity).
 /// </remarks>
 public class OperatorPasswordSettingsPanelTests : BunitContext
 {
@@ -23,7 +23,7 @@ public class OperatorPasswordSettingsPanelTests : BunitContext
     private const string Replacement = "a-brand-new-operator-password";
 
     [Fact]
-    public void An_uncomposed_credential_store_is_reported_rather_than_the_panel_vanishing()
+    public void An_uncomposed_user_service_is_reported_rather_than_the_panel_vanishing()
     {
         Arrange();
 
@@ -34,19 +34,7 @@ public class OperatorPasswordSettingsPanelTests : BunitContext
     }
 
     [Fact]
-    public void With_no_password_set_there_is_no_form_at_all_only_an_explanation()
-    {
-        Arrange();
-
-        var cut = RenderPanel(Section(passwordSet: false));
-
-        cut.Find("[data-testid=operator-password-not-set]").Should().NotBeNull();
-        cut.FindAll("input").Should().BeEmpty("a form that sets a password without needing the current one is a way in");
-        cut.FindAll("[data-testid=change-password-button]").Should().BeEmpty();
-    }
-
-    [Fact]
-    public void A_rotation_passes_both_passwords_through_and_reports_success()
+    public void A_rotation_passes_the_actor_and_both_passwords_through_and_reports_success()
     {
         var service = Arrange();
 
@@ -55,7 +43,8 @@ public class OperatorPasswordSettingsPanelTests : BunitContext
         cut.Find("[data-testid=change-password-button]").Click();
 
         service.PasswordChangeCalls.Should().ContainSingle();
-        service.PasswordChangeCalls[0].Should().Be((Current, Replacement));
+        service.PasswordChangeCalls[0].Should().Be(
+            (Servyx.Web.Authentication.OperatorAuthentication.OperatorNameClaimValue, Current, Replacement));
         cut.Find("[data-testid=operator-password-applied]").TextContent.Should().Contain("has been changed");
     }
 
@@ -172,7 +161,6 @@ public class OperatorPasswordSettingsPanelTests : BunitContext
     private IRenderedComponent<OperatorPasswordSettingsPanel> RenderPanel(OperatorCredentialSettingsSection section) =>
         Render<OperatorPasswordSettingsPanel>(parameters => parameters.Add(p => p.Section, section));
 
-    private static OperatorCredentialSettingsSection Section(
-        bool passwordSet = true, bool authenticationEnabled = true) =>
-        new(Available: true, authenticationEnabled, passwordSet, 12, AuthenticationGate.ConfigurationKey);
+    private static OperatorCredentialSettingsSection Section(bool authenticationEnabled = true) =>
+        new(Available: true, authenticationEnabled, PasswordSet: true, 12, AuthenticationGate.ConfigurationKey);
 }
