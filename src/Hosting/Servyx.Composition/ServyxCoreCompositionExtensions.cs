@@ -734,30 +734,45 @@ public static class ServyxCoreCompositionExtensions
             var rconWiring = RconWiringOptions.FromConfiguration(builder.Configuration, provisioningGate);
             builder.Services.AddSingleton(rconWiring);
 
-            if (rconWiring.Any)
+            // Sourced from the single loaded definition's control.channels[id=rcon].commands map — the same
+            // source PalworldDefinitionLoader.TryLoadRconCommands used to parse directly, now read off the
+            // already-typed ControlPlane instead. A missing definition, a missing rcon channel, or a channel
+            // with no commands all degrade to RconCommandCatalog.Empty, exactly like TryLoadRconCommands'
+            // null return: there is still no hardcoded fallback catalogue anywhere in this codebase.
+            //
+            // Computed here regardless of rconWiring.Any — unlike before, a real ServyxRconChannels is worth
+            // registering even when no server names itself under Servyx:Servers:<container>:Rcon:Enabled,
+            // because a server adopted purely through the UI (a database-registered host, no static config at
+            // all) can still get a channel ServyxRconChannels derives for itself at first use — see its own
+            // remarks. Gating this whole block on rconWiring.Any, as it used to, meant a zero-static-config
+            // install (this repo's own appsettings.Development.json is exactly one) registered
+            // ServyxRconChannels.None and could never derive anything, no matter how many hosts were
+            // registered later through the UI.
+            var rconStartupLogger = bootstrapLoggerFactory.CreateLogger("Servyx.Web.Startup");
+
+            var rconChannel = singleDefinition?.Control.Channels
+                .FirstOrDefault(c => string.Equals(c.Id, PlayerListPlan.RconChannelId, StringComparison.Ordinal));
+            List<RconCommand>? rconCommands = rconChannel is not null && rconChannel.Commands.Count > 0
+                ? rconChannel.Commands
+                    .Select(kv => new RconCommand(kv.Key, kv.Value.Template, kv.Value.ReadOnly))
+                    .ToList()
+                : null;
+
+            if (rconCommands is null)
             {
-                var rconStartupLogger = bootstrapLoggerFactory.CreateLogger("Servyx.Web.Startup");
+                rconStartupLogger.LogWarning(
+                    "No usable 'control.channels[id=rcon].commands' block was found in the loaded game "
+                    + "definition(s); no RCON control-command catalogue is available.");
+            }
 
-                // Sourced from the single loaded definition's control.channels[id=rcon].commands map — the same
-                // source PalworldDefinitionLoader.TryLoadRconCommands used to parse directly, now read off the
-                // already-typed ControlPlane instead. A missing definition, a missing rcon channel, or a channel
-                // with no commands all degrade to RconCommandCatalog.Empty, exactly like TryLoadRconCommands'
-                // null return: there is still no hardcoded fallback catalogue anywhere in this codebase.
-                var rconChannel = singleDefinition?.Control.Channels
-                    .FirstOrDefault(c => string.Equals(c.Id, PlayerListPlan.RconChannelId, StringComparison.Ordinal));
-                List<RconCommand>? rconCommands = rconChannel is not null && rconChannel.Commands.Count > 0
-                    ? rconChannel.Commands
-                        .Select(kv => new RconCommand(kv.Key, kv.Value.Template, kv.Value.ReadOnly))
-                        .ToList()
-                    : null;
-
-                if (rconCommands is null)
-                {
-                    rconStartupLogger.LogWarning(
-                        "No usable 'control.channels[id=rcon].commands' block was found in the loaded game "
-                        + "definition(s); no RCON control-command catalogue is available.");
-                }
-
+            // A real instance is worth registering whenever there is a usable catalogue (so a channel can be
+            // derived for an adopted server) OR a static channel is configured at all (rconWiring.Any) — the
+            // latter kept even with an empty catalogue so ServyxRconChannels' own constructor guard still
+            // fires its ArgumentException for that misconfiguration, exactly as before this change: falling
+            // straight to ServyxRconChannels.None here instead would silently swallow an operator's explicit
+            // Rcon:Enabled = true against a game definition with no rcon command catalogue.
+            if (rconCommands is not null || rconWiring.Any)
+            {
                 var rconCatalog = rconCommands is null ? RconCommandCatalog.Empty : new RconCommandCatalog(rconCommands);
 
                 // Resolves which command GetPlayersAsync invokes on the rcon channel, and how to read its reply, from
@@ -776,31 +791,63 @@ public static class ServyxCoreCompositionExtensions
                 }
 
                 builder.Services.AddServyxRcon();
-                builder.Services.AddSingleton(sp => new ServyxRconChannels(
-                    rconWiring,
-                    rconCatalog,
-                    sp.GetRequiredService<IRconClient>(),
-                    sp.GetRequiredService<ISecretStore>(),
-                    sp.GetRequiredService<WritableServers>(),
-                    // RconReachabilityChainFactory.Build composes the definition's declared strategy order —
-                    // direct-tcp, docker-exec-tool, docker-exec-network — omitting docker-exec-tool when no
-                    // ssh+docker host is configured, since there is then no IExecutionTarget to run `docker exec`
-                    // through. sshDockerWiring is the same bootstrap-phase value AddServyxSshDocker() was already
-                    // given above; reused here rather than re-read from configuration.
-                    chainFactory: channel => RconReachabilityChainFactory.Build(
-                        channel,
-                        sp.GetRequiredService<IRconClient>(),
+                builder.Services.AddSingleton(sp =>
+                {
+                    // ISecretStore is NOT something AddServyxCore itself registers — it is wired by whichever
+                    // host composes it (Servyx.Web's Program.cs, via AddServyxOperatorAuthentication, ahead of
+                    // AddServyxCore) and Servyx.Mcp.Stdio deliberately never does (see
+                    // SshDockerServiceCollectionExtensions' remarks on LazyBuiltTransport for the same fact
+                    // documented at the transport layer). Resolved optionally rather than required: with the
+                    // gate open and a usable rcon catalogue but genuinely no secret store anywhere in this
+                    // process, there is no way to resolve a credential for even a statically configured
+                    // channel, so this degrades to ServyxRconChannels.None exactly as a host with no channel
+                    // configured at all does, rather than crashing every future resolution of
+                    // ServyxBackupContextSource/ServyxRconChannels the first time anything touches it.
+                    var secrets = sp.GetService<ISecretStore>();
+                    if (secrets is null)
+                    {
+                        return ServyxRconChannels.None;
+                    }
+
+                    return new ServyxRconChannels(
+                        rconWiring,
                         rconCatalog,
-                        sp.GetRequiredService<ISecretStore>(),
-                        sshDockerWiring.Any ? sshDockerWiring.Hosts[0].ContainerName : null,
-                        sshDockerWiring.Any ? sp.GetRequiredService<IExecutionTarget>() : null,
-                        rconPlayers),
-                    audit: null));
+                        sp.GetRequiredService<IRconClient>(),
+                        secrets,
+                        sp.GetRequiredService<WritableServers>(),
+                        // RconReachabilityChainFactory.Build composes the definition's declared strategy order —
+                        // direct-tcp, docker-exec-tool, docker-exec-network — omitting docker-exec-tool when no
+                        // ssh+docker host is configured, since there is then no IExecutionTarget to run `docker exec`
+                        // through. sshDockerWiring is the same bootstrap-phase value AddServyxSshDocker() was already
+                        // given above; reused here rather than re-read from configuration. This closure only ever
+                        // runs for a STATICALLY configured channel (RconChannel.HostKey null) — ServyxRconChannels
+                        // itself builds the chain for a channel it derived for an adopted server, over that
+                        // server's own host, regardless of sshDockerWiring.Any; see ServyxRconChannels.BuildAsync.
+                        chainFactory: channel => RconReachabilityChainFactory.Build(
+                            channel,
+                            sp.GetRequiredService<IRconClient>(),
+                            rconCatalog,
+                            secrets,
+                            sshDockerWiring.Any ? sshDockerWiring.Hosts[0].ContainerName : null,
+                            sshDockerWiring.Any ? sp.GetRequiredService<IExecutionTarget>() : null,
+                            rconPlayers),
+                        audit: null,
+                        // Unconditional, same reasoning as HostAwareLogStream/HostAwareMetricsSource just above:
+                        // IHostConnectionSource and IServerExecutionTargetResolver both exist regardless of
+                        // sshDockerWiring.Any, because a host can be registered through the UI at any point after
+                        // this DI composition already ran.
+                        hostConnections: sp.GetRequiredService<IHostConnectionSource>(),
+                        executionTargetResolver: sp.GetRequiredService<IServerExecutionTargetResolver>(),
+                        players: rconPlayers);
+                });
             }
             else
             {
                 // Registered on both sides so ServyxBackupContextSource always resolves; None composes no client,
-                // no secret lookup and no session, and every GetSessionAsync call returns null.
+                // no secret lookup and no session, and every GetSessionAsync call returns null. With no usable
+                // catalogue there is nothing a derived channel could ever invoke either, so this is not a
+                // narrower fallback than before — it is the same "nothing configured" outcome, just reached for
+                // a different reason (no catalogue rather than no static channel).
                 builder.Services.AddSingleton(ServyxRconChannels.None);
             }
 

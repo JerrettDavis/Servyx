@@ -8,6 +8,7 @@ using Servyx.Domain.Rcon;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Rcon;
+using Servyx.Infrastructure.Ssh.Docker;
 using Servyx.Web.Services;
 using Servyx.Composition;
 
@@ -188,6 +189,197 @@ public class RconWiringTests
     {
         (await ServyxRconChannels.None.GetSessionAsync(Container)).Should().BeNull();
         (await ServyxRconChannels.None.GetSessionAsync("anything", "anything-else")).Should().BeNull();
+    }
+
+    // ── Deriving a channel for a server adopted purely through a registered/configured ssh+docker host,
+    // with no static Servyx:Servers:<container>:Rcon:* entry at all ──────────────────────────────────────
+
+    /// <summary>
+    /// Answers a matching container's <c>docker inspect</c> probe, the <c>docker-exec-tool</c> strategy's own
+    /// <c>which rcon-cli</c> availability probe, and any <c>rcon-cli</c> invocation run through <c>docker
+    /// exec</c> — everything <see cref="ServyxRconChannels"/>'s derivation path and
+    /// <see cref="DockerExecToolRconReachability"/> need from a registered host's own
+    /// <see cref="IExecutionTarget"/>.
+    /// </summary>
+    private static IExecutionTarget AdoptedHostTarget(string containerId, string reply = "pong")
+    {
+        var target = Substitute.For<IExecutionTarget>();
+        target.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>())
+            .Returns(callInfo =>
+            {
+                var spec = callInfo.Arg<CommandSpec>()!;
+
+                if (spec.Arguments.Contains("inspect"))
+                {
+                    return Task.FromResult(new CommandResult(0, "{}", string.Empty, TimeSpan.Zero));
+                }
+
+                if (spec.Arguments.Contains("which"))
+                {
+                    return Task.FromResult(new CommandResult(0, "/usr/bin/rcon-cli", string.Empty, TimeSpan.Zero));
+                }
+
+                if (spec.Executable == "docker" && spec.Arguments.Contains("exec") && spec.Arguments.Contains(containerId))
+                {
+                    return Task.FromResult(new CommandResult(0, reply, string.Empty, TimeSpan.Zero));
+                }
+
+                throw new InvalidOperationException($"Unexpected command: {spec.Executable} {string.Join(' ', spec.Arguments)}");
+            });
+        return target;
+    }
+
+    /// <summary>Answers every <c>docker inspect</c> probe as "no such container" — a host that does not have this server.</summary>
+    private static IExecutionTarget NoSuchContainerTarget()
+    {
+        var target = Substitute.For<IExecutionTarget>();
+        target.ExecuteAsync(Arg.Any<CommandSpec>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new CommandResult(1, string.Empty, "No such container", TimeSpan.Zero)));
+        return target;
+    }
+
+    private static IHostConnectionSource HostsOf(params (string HostKey, IExecutionTarget Target)[] hosts)
+    {
+        var source = Substitute.For<IHostConnectionSource>();
+        IReadOnlyList<HostConnection> connections = hosts.Select(h => new HostConnection(h.HostKey, h.Target)).ToList();
+        source.GetConnectionsAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult(connections));
+        return source;
+    }
+
+    [Fact]
+    public async Task An_adopted_server_with_no_static_channel_derives_one_over_the_host_it_was_found_on()
+    {
+        const string AdoptedId = "adopted-container";
+        var client = new SourceRconClient();
+        var secrets = new Fakes.RecordingSecretStore();
+        var catalog = Palworld();
+
+        var target = AdoptedHostTarget(AdoptedId);
+        var connections = HostsOf(("prod-1", target));
+
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+        resolver.ResolveAsync(AdoptedId, "prod-1", Arg.Any<CancellationToken>()).Returns(Task.FromResult(target));
+
+        var channels = new ServyxRconChannels(
+            RconWiringOptions.Disabled, // no static Rcon config anywhere — this server was adopted through the UI
+            catalog,
+            client,
+            secrets,
+            new WritableServers([AdoptedId]),
+            hostConnections: connections,
+            executionTargetResolver: resolver,
+            players: PlayerListPlan.None);
+
+        var session = (await channels.GetSessionAsync(AdoptedId)).Should().BeOfType<WriteGuardedRconSession>().Subject;
+
+        var response = await session.InvokeAsync("info", null);
+
+        // Reached the container's own rcon-cli via docker exec over the matched host's execution target —
+        // the only strategy that could have answered "pong" here, since nothing is listening on the
+        // placeholder direct-tcp endpoint this test never stood a listener up on.
+        response.Text.Should().Be("pong");
+        await resolver.Received(1).ResolveAsync(AdoptedId, "prod-1", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task A_statically_configured_channel_is_reached_without_ever_probing_for_an_adopted_host()
+    {
+        var client = new SourceRconClient();
+        var secrets = new Fakes.RecordingSecretStore();
+        var catalog = Palworld();
+
+        var connections = Substitute.For<IHostConnectionSource>();
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+
+        var channels = new ServyxRconChannels(
+            new RconWiringOptions([new RconChannel(Container, new RconEndpoint("127.0.0.1", 25575), PasswordUrn)]),
+            catalog,
+            client,
+            secrets,
+            new WritableServers([Container]),
+            chainFactory: DirectChain(client, catalog, secrets),
+            hostConnections: connections,
+            executionTargetResolver: resolver);
+
+        var session = await channels.GetSessionAsync(Container);
+
+        session.Should().BeOfType<WriteGuardedRconSession>();
+
+        // The static channel already matched, so derivation — and therefore any host probe — never runs:
+        // a local/statically-configured server's existing behaviour is completely unchanged by this feature.
+        await connections.DidNotReceive().GetConnectionsAsync(Arg.Any<CancellationToken>());
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task A_server_id_matched_by_no_registered_host_gets_no_derived_channel()
+    {
+        var connections = HostsOf(("prod-1", NoSuchContainerTarget()));
+        var resolver = Substitute.For<IServerExecutionTargetResolver>();
+
+        var channels = new ServyxRconChannels(
+            RconWiringOptions.Disabled,
+            Palworld(),
+            new SourceRconClient(),
+            new Fakes.RecordingSecretStore(),
+            WritableServers.None,
+            hostConnections: connections,
+            executionTargetResolver: resolver);
+
+        var session = await channels.GetSessionAsync("genuinely-unknown-server");
+
+        session.Should().BeNull();
+        await resolver.DidNotReceive().ResolveAsync(Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Zero_registered_hosts_derives_no_channel_and_probes_nothing()
+    {
+        var channels = new ServyxRconChannels(
+            RconWiringOptions.Disabled,
+            Palworld(),
+            new SourceRconClient(),
+            new Fakes.RecordingSecretStore(),
+            WritableServers.None,
+            hostConnections: HostsOf(),
+            executionTargetResolver: Substitute.For<IServerExecutionTargetResolver>());
+
+        (await channels.GetSessionAsync("anything")).Should().BeNull();
+    }
+
+    [Fact]
+    public async Task A_server_id_that_cannot_address_a_secret_derives_no_channel()
+    {
+        var connections = Substitute.For<IHostConnectionSource>();
+
+        var channels = new ServyxRconChannels(
+            RconWiringOptions.Disabled,
+            Palworld(),
+            new SourceRconClient(),
+            new Fakes.RecordingSecretStore(),
+            WritableServers.None,
+            hostConnections: connections,
+            executionTargetResolver: Substitute.For<IServerExecutionTargetResolver>());
+
+        (await channels.GetSessionAsync("pal world!")).Should().BeNull();
+
+        // Refused before any host was even asked — the same "cannot address a secret, cannot have a channel"
+        // guard RconWiringOptions.FromConfiguration applies to a static entry.
+        await connections.DidNotReceive().GetConnectionsAsync(Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public void Supplying_a_host_connection_source_without_an_execution_target_resolver_is_refused_at_startup()
+    {
+        var act = () => new ServyxRconChannels(
+            RconWiringOptions.Disabled,
+            Palworld(),
+            new SourceRconClient(),
+            new Fakes.RecordingSecretStore(),
+            WritableServers.None,
+            hostConnections: Substitute.For<IHostConnectionSource>());
+
+        act.Should().Throw<ArgumentException>().WithMessage("*execution*");
     }
 
     [Fact]

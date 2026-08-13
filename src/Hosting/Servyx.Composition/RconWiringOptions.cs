@@ -14,7 +14,17 @@ namespace Servyx.Composition;
 /// Where the admin/RCON password lives. A locator only; the value is resolved through
 /// <see cref="ISecretStore"/> at the moment a packet is built and is never held anywhere in between.
 /// </param>
-public sealed record RconChannel(string ServerKey, RconEndpoint Endpoint, SecretUrn PasswordUrn);
+/// <param name="HostKey">
+/// <see langword="null"/> for a channel read from static <c>Servyx:Servers:&lt;container&gt;:Rcon:*</c>
+/// configuration — <see cref="ServyxRconChannels"/> reaches those through its composition-supplied
+/// <c>chainFactory</c>, exactly as before. Non-null for a channel <see cref="ServyxRconChannels"/> derived
+/// itself for a server it found on a registered/configured ssh+docker host with no static Rcon config at
+/// all (an adopted server) — the registered/configured host's own key, the same value
+/// <see cref="Servyx.Infrastructure.Ssh.Docker.IHostConnectionSource"/> hands back. Those channels are
+/// reachable only through <c>docker-exec-tool</c> over that host's <c>IExecutionTarget</c>, never
+/// <c>direct-tcp</c> in practice (the endpoint is a placeholder — see <see cref="ServyxRconChannels"/>).
+/// </param>
+public sealed record RconChannel(string ServerKey, RconEndpoint Endpoint, SecretUrn PasswordUrn, string? HostKey = null);
 
 /// <summary>
 /// The RCON control channels the operator has configured, read from
