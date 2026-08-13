@@ -168,12 +168,13 @@ public class SshDockerWiringTests
 
     /// <summary>
     /// The ITransport half of "nothing configured": AddServyxSshDocker's single-target surfaces
-    /// (ITransport/TargetDescriptor/IExecutionTarget/IMetricsSource) genuinely stay untouched with zero hosts
-    /// declared. IServerDiscovery and ILogStream are NOT among them any more — see
+    /// (ITransport/TargetDescriptor/IExecutionTarget) genuinely stay untouched with zero hosts declared.
+    /// IServerDiscovery, ILogStream, and IMetricsSource are NOT among them any more — see
     /// <see cref="With_no_hosts_configured_and_no_host_ever_registered_discovery_still_resolves_to_local_docker_through_the_wrapper"/>,
     /// <see cref="Registering_a_database_only_host_switches_the_wrapper_to_the_composite_fan_out_without_a_restart"/>,
-    /// and <see cref="Log_stream_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared"/> below for
-    /// how those two now behave in this case.
+    /// <see cref="Log_stream_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared"/>, and
+    /// <see cref="Metrics_source_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared"/> below for
+    /// how those three now behave in this case.
     /// </summary>
     [Fact]
     public void With_no_hosts_configured_the_single_target_docker_registrations_are_left_untouched()
@@ -367,6 +368,44 @@ public class SshDockerWiringTests
 
         provider.GetRequiredService<ILogStream>().Should().BeOfType<HostAwareLogStream>();
     }
+
+    /// <summary>
+    /// Mirrors <see cref="Log_stream_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared"/>:
+    /// <see cref="IMetricsSource"/> is now re-bound unconditionally too, so a zero-<c>Servyx:Hosts</c>,
+    /// zero-database-row install still resolves <see cref="HostAwareMetricsSource"/>, not the bare local
+    /// <c>Servyx.Infrastructure.Docker.DockerMetricsSource</c> <c>AddServyxDocker</c> registered.
+    /// </summary>
+    [Fact]
+    public void Metrics_source_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared()
+    {
+        var services = BaseServices();
+        services.AddServyxDocker();
+
+        var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
+        options.Any.Should().BeFalse();
+        services.AddServyxSshDocker(options, NullLogger.Instance);
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<IMetricsSource>().Should().BeOfType<HostAwareMetricsSource>(
+            "IMetricsSource is now always re-bound, even with zero hosts declared — see HostAwareMetricsSource's own remarks");
+    }
+
+    /// <summary>
+    /// With a statically-declared host, <see cref="IMetricsSource"/> used to be swapped straight to a bare
+    /// <see cref="SshDockerMetricsSource"/> scoped to that one host only — the same single-host gap
+    /// <see cref="Log_stream_resolves_to_the_host_aware_wrapper_with_a_statically_declared_host"/> closed for
+    /// console reads. <see cref="IMetricsSource"/> now resolves to <see cref="HostAwareMetricsSource"/> here
+    /// too, which routes each server to whichever host it actually matches (see that type's own remarks and
+    /// <c>HostAwareMetricsSourceTests</c> for the routing behavior itself).
+    /// </summary>
+    [Fact]
+    public void Metrics_source_resolves_to_the_host_aware_wrapper_with_a_statically_declared_host()
+    {
+        using var provider = ComposedWithHost();
+
+        provider.GetRequiredService<IMetricsSource>().Should().BeOfType<HostAwareMetricsSource>();
+    }
 }
 
 /// <summary>
@@ -517,10 +556,12 @@ public class SshDockerWiringReportingTests
 
     /// <summary>
     /// Configuring more than one host used to log a warning that only <c>Hosts[0]</c> would ever be wired to
-    /// anything. That is no longer true for discovery — <see cref="CompositeServerDiscovery"/> fans out across
-    /// every configured host — so the warning is gone; <see cref="TargetDescriptor"/> (and every other
-    /// Hosts[0]-scoped surface) is still wired from the first host only, which is a real, still-current
-    /// limitation this test keeps pinned.
+    /// anything. That is no longer true for discovery, log streaming, or metrics —
+    /// <see cref="CompositeServerDiscovery"/>, <see cref="HostAwareLogStream"/>, and
+    /// <see cref="HostAwareMetricsSource"/> all fan out across every configured host — so the warning is gone;
+    /// <see cref="TargetDescriptor"/> (and <see cref="ITransport"/>/<see cref="IExecutionTarget"/>, the
+    /// remaining Hosts[0]-scoped surfaces) is still wired from the first host only, which is a real,
+    /// still-current limitation this test keeps pinned.
     /// </summary>
     [Fact]
     public async Task Configuring_more_than_one_host_no_longer_warns_but_still_scopes_TargetDescriptor_to_the_first()
@@ -553,13 +594,16 @@ public class SshDockerWiringReportingTests
 
         var target = provider.GetRequiredService<TargetDescriptor>();
         target.Endpoint.Should().Be(options.Hosts[0].Target.Endpoint,
-            "TargetDescriptor/ITransport/IExecutionTarget/IMetricsSource are still wired only from " +
-            "options.Hosts[0] — this increment scopes multi-host support to discovery and log streaming only");
+            "TargetDescriptor/ITransport/IExecutionTarget are still wired only from options.Hosts[0] — multi-host " +
+            "support is scoped to discovery, log streaming, and metrics only");
 
         provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<CompositeServerDiscovery>(
             "discovery, unlike the single-target surfaces above, is wired to fan out across every configured host");
         provider.GetRequiredService<ILogStream>().Should().BeOfType<HostAwareLogStream>(
             "log streaming, like discovery, is wired to route per-server across every configured host rather " +
             "than staying fixed to options.Hosts[0]");
+        provider.GetRequiredService<IMetricsSource>().Should().BeOfType<HostAwareMetricsSource>(
+            "metrics, like discovery and log streaming, is wired to route per-server across every configured " +
+            "host rather than staying fixed to options.Hosts[0]");
     }
 }

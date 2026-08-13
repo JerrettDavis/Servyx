@@ -19,9 +19,10 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// transport.
 /// </para>
 /// <para>
-/// <strong>Discovery and log-stream machinery — including the <see cref="IServerDiscovery"/>/<see cref="ILogStream"/>
-/// service-type swaps — is unconditional; the rest of the single-host surfaces are not.</strong> Unlike every
-/// other registration in this method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>,
+/// <strong>Discovery, log-stream, and metrics machinery — including the
+/// <see cref="IServerDiscovery"/>/<see cref="ILogStream"/>/<see cref="IMetricsSource"/> service-type swaps —
+/// is unconditional; the remaining single-host surfaces are not.</strong> Unlike every other registration in
+/// this method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>,
 /// <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type), and
 /// <see cref="IServerExecutionTargetResolver"/> are wired regardless of whether <paramref name="options"/>
 /// declares a host, because <see cref="HostConnectionRegistry"/> also
@@ -38,28 +39,30 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// that host was never actually discoverable — see <see cref="HostAwareServerDiscovery"/>'s own remarks for
 /// why plain <see cref="CompositeServerDiscovery"/> is not a safe unconditional replacement (it has no local
 /// Docker fallback of its own, and a plain local-docker-only install is the common case). <see cref="ILogStream"/>
-/// is re-bound the same unconditional way, to <see cref="HostAwareLogStream"/> — see that type's own remarks
-/// for why console reads need per-server routing rather than a single process-wide swap, unlike the metrics/
-/// probe-target surfaces below which remain scoped to <c>options.Hosts[0]</c> for now.
+/// and <see cref="IMetricsSource"/> are each re-bound the same unconditional way, to
+/// <see cref="HostAwareLogStream"/> and <see cref="HostAwareMetricsSource"/> respectively — see those types'
+/// own remarks for why console reads and metrics polling both need per-server routing rather than a single
+/// process-wide swap. The remaining single-target surfaces (<see cref="ITransport"/>,
+/// <see cref="TargetDescriptor"/>, <see cref="IExecutionTarget"/>) stay scoped to <c>options.Hosts[0]</c>.
 /// </para>
 /// <para>
 /// <strong>Everything else stays no-op with nothing configured.</strong> When <paramref name="options"/> has
 /// <see cref="SshDockerWiringOptions.Any"/> <see langword="false"/>, the <see cref="ITransport"/> service-type
-/// registration, <see cref="TargetDescriptor"/>, <see cref="IExecutionTarget"/>, and
-/// <see cref="IMetricsSource"/> registrations below are all skipped — in particular this does not touch
-/// whatever <c>AddServyxDocker</c> already registered for those service types. <see cref="IServerDiscovery"/>
-/// and <see cref="ILogStream"/> are the exceptions — see the previous paragraph.
+/// registration, <see cref="TargetDescriptor"/>, and <see cref="IExecutionTarget"/> registrations below are
+/// all skipped — in particular this does not touch whatever <c>AddServyxDocker</c> already registered for
+/// those service types. <see cref="IServerDiscovery"/>, <see cref="ILogStream"/>, and <see cref="IMetricsSource"/>
+/// are the exceptions — see the previous paragraph.
 /// </para>
 /// </remarks>
 public static class SshDockerServiceCollectionExtensions
 {
     /// <summary>
     /// Registers the ssh+docker transport, write-guarded; unconditionally re-binds
-    /// <see cref="IServerDiscovery"/> and <see cref="ILogStream"/> to something host-aware (see the class
-    /// remarks); and — when <paramref name="options"/> declares a host — additionally replaces the
-    /// single-target observation surface (<see cref="ITransport"/>, <see cref="IMetricsSource"/>) with one
-    /// backed by that remote host instead, plus the <see cref="TargetDescriptor"/> the dashboard's probe
-    /// consumes.
+    /// <see cref="IServerDiscovery"/>, <see cref="ILogStream"/>, and <see cref="IMetricsSource"/> to something
+    /// host-aware (see the class remarks); and — when <paramref name="options"/> declares a host — additionally
+    /// replaces the single-target observation surface (<see cref="ITransport"/>, <see cref="IExecutionTarget"/>)
+    /// with one backed by that remote host instead, plus the <see cref="TargetDescriptor"/> the dashboard's
+    /// probe consumes.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -91,9 +94,9 @@ public static class SshDockerServiceCollectionExtensions
     /// <c>ServyxSshBackupContextSource</c> use.
     /// </para>
     /// <para>
-    /// <strong>Single host, except discovery and log streaming.</strong> <see cref="ITransport"/>/
-    /// <see cref="TargetDescriptor"/>/<see cref="IExecutionTarget"/>/<see cref="IMetricsSource"/> below are all
-    /// wired from <c>options.Hosts[0]</c> only, and only when <see cref="SshDockerWiringOptions.Any"/> is
+    /// <strong>Single host, except discovery, log streaming, and metrics.</strong> <see cref="ITransport"/>/
+    /// <see cref="TargetDescriptor"/>/<see cref="IExecutionTarget"/> below are all wired from
+    /// <c>options.Hosts[0]</c> only, and only when <see cref="SshDockerWiringOptions.Any"/> is
     /// <see langword="true"/>. <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
     /// <see cref="CompositeServerDiscovery"/> are the exception: they are always registered (see this type's
     /// own remarks), and fan out across every entry in <c>options.Hosts</c> plus every enabled
@@ -103,11 +106,12 @@ public static class SshDockerServiceCollectionExtensions
     /// (unconditionally displacing local Docker discovery, exactly as before), or to
     /// <see cref="HostAwareServerDiscovery"/> otherwise, which defers to local Docker discovery until
     /// <see cref="IHostConnectionSource"/> reports a database-registered host and switches over dynamically
-    /// from then on — see <see cref="HostAwareServerDiscovery"/>'s own remarks. <see cref="ILogStream"/> is
-    /// always re-bound too, to <see cref="HostAwareLogStream"/>, which resolves each call's host itself (a
+    /// from then on — see <see cref="HostAwareServerDiscovery"/>'s own remarks. <see cref="ILogStream"/> and
+    /// <see cref="IMetricsSource"/> are always re-bound too, to <see cref="HostAwareLogStream"/> and
+    /// <see cref="HostAwareMetricsSource"/> respectively, each of which resolves the call's host itself (a
     /// per-server probe over <see cref="IHostConnectionSource"/>, not a fixed <c>options.Hosts[0]</c> scope) —
-    /// see that type's own remarks for why console reads need this instead of the single-host swap
-    /// <see cref="IMetricsSource"/> still uses.
+    /// see those types' own remarks for why console reads and metrics polling both need this instead of the
+    /// single-host swap the remaining surfaces above still use.
     /// </para>
     /// <para>
     /// <strong>Not silent about what it did.</strong> When a host is wired, this logs at
@@ -214,6 +218,30 @@ public static class SshDockerServiceCollectionExtensions
                 sp.GetService<ILoggerFactory>());
         });
 
+        // IMetricsSource is unconditionally re-bound too, exactly like ILogStream just above it and for the
+        // same reason: a server discovered on a database-registered host needs its dashboard/sparkline polling
+        // routed to that host's own session, not the single process-wide metrics source this method otherwise
+        // leaves fixed to either local Docker or the one statically-declared host. HostAwareMetricsSource
+        // resolves the right host itself, per call, over the same IHostConnectionSource/
+        // IServerExecutionTargetResolver seams just registered above — see its own remarks. The prior
+        // IMetricsSource registration — whatever AddServyxDocker registered, if it ran first — is captured
+        // here, BEFORE the options.Any branch further down potentially RemoveAll<IMetricsSource>()s it, so
+        // HostAwareMetricsSource's local fallback always reaches the real local Docker metrics source, never a
+        // re-entrant reference to itself.
+        var priorMetricsSourceDescriptor = services.LastOrDefault(d => d.ServiceType == typeof(IMetricsSource));
+        var localMetricsSourceFactory = priorMetricsSourceDescriptor?.ImplementationFactory;
+
+        services.RemoveAll<IMetricsSource>();
+        services.AddSingleton<IMetricsSource>(sp =>
+        {
+            var local = localMetricsSourceFactory is null ? null : (IMetricsSource)localMetricsSourceFactory(sp);
+            return new HostAwareMetricsSource(
+                sp.GetRequiredService<IHostConnectionSource>(),
+                sp.GetRequiredService<IServerExecutionTargetResolver>(),
+                local,
+                sp.GetService<ILoggerFactory>());
+        });
+
         if (options.Any)
         {
             // Statically declared: unconditionally displaces local Docker discovery for the process's whole
@@ -267,9 +295,12 @@ public static class SshDockerServiceCollectionExtensions
         services.AddSingleton<IExecutionTarget>(sp => new LazyConnectingExecutionTarget(
             ct => sp.GetRequiredService<ITransport>().ConnectAsync(sp.GetRequiredService<TargetDescriptor>(), ct)));
 
-        services.RemoveAll<IMetricsSource>();
-        services.AddSingleton<IMetricsSource>(sp =>
-            new SshDockerMetricsSource(sp.GetRequiredService<IExecutionTarget>()));
+        // IMetricsSource is deliberately NOT re-bound again here: it was already unconditionally re-bound to
+        // HostAwareMetricsSource above (alongside ILogStream), which routes each server to whichever host it
+        // actually matches — including this statically-declared one — rather than staying fixed to it alone.
+        // A bare SshDockerMetricsSource scoped to just this host, as this block used to register, would have
+        // silently un-done that routing for the static-host case and revived the single-host limitation
+        // HostAwareMetricsSource exists to close.
 
         return services;
     }

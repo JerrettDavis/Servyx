@@ -48,17 +48,18 @@ public sealed record SshDockerHost(string Name, TargetDescriptor Target, string 
 /// <c>HostAwareServerDiscovery</c>: local Docker discovery for as long as <c>HostConnectionRegistry</c>
 /// reports no host, switching to that same composite fan-out — without a process restart — the moment an
 /// operator registers a host purely through the UI, with no <c>Servyx:Hosts</c> config ever declared.
-/// <see cref="Servyx.Domain.Observability.ILogStream"/> is wired the same host-aware, unconditional way — to
-/// <c>HostAwareLogStream</c>, which resolves the right host for each server's console reads itself (a
+/// <see cref="Servyx.Domain.Observability.ILogStream"/> and <see cref="Servyx.Domain.Observability.IMetricsSource"/>
+/// are wired the same host-aware, unconditional way — to <c>HostAwareLogStream</c> and
+/// <c>HostAwareMetricsSource</c> respectively, each resolving the right host for a given server itself (a
 /// per-server probe over the same live host set, not a fixed slot) — so a server discovered on a second,
-/// third, or purely database-registered host has its console panel routed correctly too, not only its
-/// adoption candidacy. <see cref="Servyx.Domain.Observability.IMetricsSource"/> and the single
+/// third, or purely database-registered host has its console panel AND dashboard/sparkline metrics routed
+/// correctly too, not only its adoption candidacy. The single
 /// <see cref="Servyx.Domain.Transport.IExecutionTarget"/>/<see cref="Servyx.Domain.Transport.TargetDescriptor"/>
-/// the dashboard's probe target consumes remain wired to <see cref="Hosts"/>[0] only, and only when
-/// <see cref="Any"/> is <see langword="true"/> — the composition root still has exactly one slot for those,
-/// the same single-target shape <c>LiveDashboardDataService</c> assumes for its probe target. A server
-/// discovered on a second, third, or purely database-registered host is therefore adoptable and its console
-/// readable, but its live metrics/RCON/backups surfaces resolving against the correct host is later-increment
+/// the dashboard's probe target consumes remains wired to <see cref="Hosts"/>[0] only, and only when
+/// <see cref="Any"/> is <see langword="true"/> — the composition root still has exactly one slot for that, the
+/// same single-target shape <c>LiveDashboardDataService</c> assumes for its probe target. A server discovered
+/// on a second, third, or purely database-registered host is therefore adoptable, its console readable, and
+/// its metrics observable, but its RCON/backups surfaces resolving against the correct host is later-increment
 /// scope, not this one's.
 /// </para>
 /// </remarks>
