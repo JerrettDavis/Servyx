@@ -1,5 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" />
     <PackageReference Include="YamlDotNet" />
     <!-- Not part of any project this project references (Servyx.Infrastructure/.Docker/.Persistence
          reference the DI/logging packages but not Configuration/Hosting Abstractions), and this project's

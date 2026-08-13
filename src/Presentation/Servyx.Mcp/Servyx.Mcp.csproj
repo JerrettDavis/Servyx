@@ -3,6 +3,7 @@
     <!-- ModelContextProtocol (not .Core) brings the hosting/DI extensions the tool attributes need.
          ModelContextProtocol.AspNetCore is deliberately absent: this assembly must stay
          transport-agnostic so a future HTTP host reuses these exact classes unchanged. -->
+    <PackageReference Include="BouncyCastle.Cryptography" />
     <PackageReference Include="ModelContextProtocol" />
   </ItemGroup>
   <ItemGroup>
