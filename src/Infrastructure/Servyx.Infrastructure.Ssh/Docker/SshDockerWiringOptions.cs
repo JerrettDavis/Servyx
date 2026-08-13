@@ -36,18 +36,26 @@ public sealed record SshDockerHost(string Name, TargetDescriptor Target, string 
 /// registration it can replace. A host is reachable the moment it is declared; nothing here can write to it.
 /// </para>
 /// <para>
-/// <strong>Discovery fans out across every configured host — and every enabled database-registered host —
-/// but every other surface stays scoped to <see cref="Hosts"/>[0].</strong> <c>AddServyxSshDocker</c> wires
-/// <see cref="Servyx.Domain.Discovery.IServerDiscovery"/> to <c>CompositeServerDiscovery</c>, backed by
-/// <c>HostConnectionRegistry</c>, which queries every entry in <see cref="Hosts"/> plus every enabled
-/// database-registered <see cref="Servyx.Domain.Entities.Host"/> row concurrently and tags each discovered
-/// workload with the host it came from. <see cref="Servyx.Domain.Observability.ILogStream"/>,
-/// <see cref="Servyx.Domain.Observability.IMetricsSource"/>, and the single
-/// <see cref="Servyx.Domain.Transport.IExecutionTarget"/>/<see cref="Servyx.Domain.Transport.TargetDescriptor"/>
-/// the dashboard's probe target consumes remain wired to <see cref="Hosts"/>[0] only — the composition root
-/// still has exactly one slot for those, the same single-target shape <c>LiveDashboardDataService</c> assumes
-/// for its probe target. A server discovered on a second or third host is therefore adoptable, but its live
-/// logs/metrics/settings surfaces resolving against the correct host is later-increment scope, not this one's.
+/// <strong>Discovery fans out across every configured host — and every enabled database-registered host,
+/// even with <see cref="Any"/> <see langword="false"/> — but every other surface stays scoped to
+/// <see cref="Hosts"/>[0].</strong> When <see cref="Any"/> is <see langword="true"/>, <c>AddServyxSshDocker</c>
+/// wires <see cref="Servyx.Domain.Discovery.IServerDiscovery"/> straight to <c>CompositeServerDiscovery</c>,
+/// backed by <c>HostConnectionRegistry</c>, which queries every entry in <see cref="Hosts"/> plus every
+/// enabled database-registered <see cref="Servyx.Domain.Entities.Host"/> row concurrently and tags each
+/// discovered workload with the host it came from — unconditionally displacing local Docker discovery.
+/// When <see cref="Any"/> is <see langword="false"/> (no <c>Servyx:Hosts</c> entry at all — the common,
+/// default case), <see cref="Servyx.Domain.Discovery.IServerDiscovery"/> is instead wired to
+/// <c>HostAwareServerDiscovery</c>: local Docker discovery for as long as <c>HostConnectionRegistry</c>
+/// reports no host, switching to that same composite fan-out — without a process restart — the moment an
+/// operator registers a host purely through the UI, with no <c>Servyx:Hosts</c> config ever declared. Either
+/// way, <see cref="Servyx.Domain.Observability.ILogStream"/>, <see cref="Servyx.Domain.Observability.IMetricsSource"/>,
+/// and the single <see cref="Servyx.Domain.Transport.IExecutionTarget"/>/<see cref="Servyx.Domain.Transport.TargetDescriptor"/>
+/// the dashboard's probe target consumes remain wired to <see cref="Hosts"/>[0] only, and only when
+/// <see cref="Any"/> is <see langword="true"/> — the composition root still has exactly one slot for those,
+/// the same single-target shape <c>LiveDashboardDataService</c> assumes for its probe target. A server
+/// discovered on a second, third, or purely database-registered host is therefore adoptable, but its live
+/// logs/metrics/settings surfaces resolving against the correct host is later-increment scope, not this
+/// one's.
 /// </para>
 /// </remarks>
 public sealed class SshDockerWiringOptions

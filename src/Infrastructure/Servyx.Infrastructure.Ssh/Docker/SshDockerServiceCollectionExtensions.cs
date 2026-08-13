@@ -19,36 +19,41 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// transport.
 /// </para>
 /// <para>
-/// <strong>Discovery machinery is unconditional; the single-host surfaces are not.</strong> Unlike every
-/// other registration in this method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>,
-/// and <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type) are wired regardless
-/// of whether <paramref name="options"/> declares a host, because <see cref="HostConnectionRegistry"/> also
+/// <strong>Discovery machinery — including the <see cref="IServerDiscovery"/> service-type swap — is
+/// unconditional; the single-host surfaces are not.</strong> Unlike every other registration in this
+/// method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>, and
+/// <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type) are wired regardless of
+/// whether <paramref name="options"/> declares a host, because <see cref="HostConnectionRegistry"/> also
 /// fans out over database-registered hosts (see <see cref="Servyx.Domain.Hosts.IHostRepository"/>), and those
 /// can be registered by an operator through the UI at any point <em>after</em> this DI composition already
-/// ran. Without this unconditional registration, a fresh, zero-config install would have nothing in the
-/// container for that later registration flow to attach to — see <see cref="HostConnectionRegistry"/>'s own
-/// remarks. <see cref="CompositeServerDiscovery"/> is deliberately NOT registered under the
-/// <see cref="IServerDiscovery"/> service type here; that swap — which fully replaces whatever
-/// <c>AddServyxDocker</c> registered for local Docker discovery — still only happens when
-/// <see cref="SshDockerWiringOptions.Any"/> is <see langword="true"/> (below), so a plain local-docker-only
-/// install (the common case) keeps discovering local containers exactly as before. Wiring registered hosts
-/// into that same discovery/adoption path for a zero-config install is later-increment scope.
+/// ran. <see cref="IServerDiscovery"/> itself is now ALSO always re-bound: when <paramref name="options"/>
+/// declares a host, straight to <see cref="CompositeServerDiscovery"/>, exactly as before; when it does not,
+/// to <see cref="HostAwareServerDiscovery"/>, which defers to whatever local discovery
+/// <c>AddServyxDocker</c> registered for as long as <see cref="IHostConnectionSource"/> reports no host, and
+/// switches to the composite fan-out — without a process restart — the moment a host is registered through
+/// the UI. Earlier, this swap for the zero-config case never happened at all: a database-registered host's
+/// containers would persist a row and invalidate <see cref="HostConnectionRegistry"/>'s cache, but
+/// <see cref="IServerDiscovery"/> stayed bound to local Docker discovery for the process's whole lifetime, so
+/// that host was never actually discoverable — see <see cref="HostAwareServerDiscovery"/>'s own remarks for
+/// why plain <see cref="CompositeServerDiscovery"/> is not a safe unconditional replacement (it has no local
+/// Docker fallback of its own, and a plain local-docker-only install is the common case).
 /// </para>
 /// <para>
 /// <strong>Everything else stays no-op with nothing configured.</strong> When <paramref name="options"/> has
 /// <see cref="SshDockerWiringOptions.Any"/> <see langword="false"/>, the <see cref="ITransport"/> service-type
-/// registration, <see cref="TargetDescriptor"/>, <see cref="IExecutionTarget"/>, <see cref="IServerDiscovery"/>,
-/// <see cref="ILogStream"/>, and <see cref="IMetricsSource"/> registrations below are all skipped — in
-/// particular this does not touch whatever <c>AddServyxDocker</c> already registered for those service types.
-/// Only a declared host causes any of that to run.
+/// registration, <see cref="TargetDescriptor"/>, <see cref="IExecutionTarget"/>, <see cref="ILogStream"/>, and
+/// <see cref="IMetricsSource"/> registrations below are all skipped — in particular this does not touch
+/// whatever <c>AddServyxDocker</c> already registered for those service types. <see cref="IServerDiscovery"/>
+/// is the one exception — see the previous paragraph.
 /// </para>
 /// </remarks>
 public static class SshDockerServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the ssh+docker transport, write-guarded, and — when <paramref name="options"/> declares a
-    /// host — replaces the local Docker observation surface (<see cref="ITransport"/>,
-    /// <see cref="IServerDiscovery"/>, <see cref="ILogStream"/>, <see cref="IMetricsSource"/>) with one
+    /// Registers the ssh+docker transport, write-guarded; unconditionally re-binds
+    /// <see cref="IServerDiscovery"/> to something host-aware (see the class remarks); and — when
+    /// <paramref name="options"/> declares a host — additionally replaces the single-target observation
+    /// surface (<see cref="ITransport"/>, <see cref="ILogStream"/>, <see cref="IMetricsSource"/>) with one
     /// backed by that remote host instead, plus the <see cref="TargetDescriptor"/> the dashboard's probe
     /// consumes.
     /// </summary>
@@ -89,9 +94,12 @@ public static class SshDockerServiceCollectionExtensions
     /// <see cref="CompositeServerDiscovery"/> are the exception: they are always registered (see this type's
     /// own remarks), and fan out across every entry in <c>options.Hosts</c> plus every enabled
     /// database-registered <see cref="Servyx.Domain.Entities.Host"/> row — see <see cref="SshDockerWiringOptions"/>'s
-    /// remarks for the full scope line. Whether that fan-out also becomes the process-wide
-    /// <see cref="IServerDiscovery"/> — displacing local Docker discovery — still depends on
-    /// <see cref="SshDockerWiringOptions.Any"/>, exactly as it always has.
+    /// remarks for the full scope line. <see cref="IServerDiscovery"/> is always re-bound too: to the
+    /// composite fan-out directly when <see cref="SshDockerWiringOptions.Any"/> is <see langword="true"/>
+    /// (unconditionally displacing local Docker discovery, exactly as before), or to
+    /// <see cref="HostAwareServerDiscovery"/> otherwise, which defers to local Docker discovery until
+    /// <see cref="IHostConnectionSource"/> reports a database-registered host and switches over dynamically
+    /// from then on — see <see cref="HostAwareServerDiscovery"/>'s own remarks.
     /// </para>
     /// <para>
     /// <strong>Not silent about what it did.</strong> When a host is wired, this logs at
@@ -114,16 +122,17 @@ public static class SshDockerServiceCollectionExtensions
         // container regardless of options.Any, because the registry also fans out across database-registered
         // hosts (IHostRepository), which can gain a row long after this DI composition ran — a later
         // host-registration flow needs something here to attach to even on a zero-config install. This does
-        // NOT register CompositeServerDiscovery under the IServerDiscovery service type — that swap (which
-        // fully displaces local Docker discovery) stays gated behind options.Any below, exactly as before, so
-        // a plain local-docker-only install keeps its existing discovery untouched. BuildSshDockerTransport
-        // constructs a private ssh+docker transport instance for the registry's own use — deliberately NOT the
-        // same instance as the (conditionally registered) global ITransport below, so this registration never
-        // depends on whether that later block ran.
+        // NOT itself register CompositeServerDiscovery under the IServerDiscovery service type — see below,
+        // just past this block, for how (and unconditionally now, via HostAwareServerDiscovery when nothing
+        // is statically declared) that swap actually happens without dropping local Docker discovery for a
+        // plain local-docker-only install. BuildSshDockerTransport constructs a private ssh+docker transport
+        // instance for the registry's own use — deliberately NOT the same instance as the (conditionally
+        // registered) global ITransport below, so this registration never depends on whether that later block
+        // ran.
         services.AddSingleton<HostConnectionRegistry>(sp => new HostConnectionRegistry(
             options,
             sp.GetRequiredService<IHostRepository>(),
-            BuildSshDockerTransport(sp),
+            new LazyBuiltTransport(sp, BuildSshDockerTransport),
             sp.GetRequiredService<ILoggerFactory>().CreateLogger<HostConnectionRegistry>()));
         services.AddSingleton<IHostConnectionSource>(sp => sp.GetRequiredService<HostConnectionRegistry>());
 
@@ -141,6 +150,46 @@ public static class SshDockerServiceCollectionExtensions
 
         services.AddSingleton<CompositeServerDiscovery>(sp =>
             new CompositeServerDiscovery(sp.GetRequiredService<IHostConnectionSource>(), sp.GetService<ILoggerFactory>()));
+
+        // IServerDiscovery is always re-bound from here on, unlike the ITransport/TargetDescriptor/
+        // IExecutionTarget/ILogStream/IMetricsSource surfaces further down (which stay untouched unless a
+        // host is statically declared) — see this method's class-level remarks for why an unconditional swap
+        // straight to CompositeServerDiscovery is not safe (it has no local Docker fallback of its own) and
+        // why HostAwareServerDiscovery exists to cover the zero-config case instead. The prior registration
+        // is captured BEFORE either branch below touches IServerDiscovery, so the zero-config branch can
+        // still hand HostAwareServerDiscovery whatever local discovery AddServyxDocker already registered.
+        var priorDiscoveryDescriptor = services.LastOrDefault(d => d.ServiceType == typeof(IServerDiscovery));
+        var localDiscoveryFactory = priorDiscoveryDescriptor?.ImplementationFactory;
+
+        if (options.Any)
+        {
+            // Statically declared: unconditionally displaces local Docker discovery for the process's whole
+            // lifetime, exactly as this line always has, since before this fix existed.
+            services.RemoveAll<IServerDiscovery>();
+            services.AddSingleton<IServerDiscovery>(sp => sp.GetRequiredService<CompositeServerDiscovery>());
+        }
+        else
+        {
+            // Zero-config: defers to local Docker discovery until a host is registered through the UI, then
+            // switches to the composite fan-out dynamically, without a process restart — see
+            // HostAwareServerDiscovery's own remarks. Deliberately NOT RemoveAll'd: HostAwareServerDiscovery
+            // needs the ORIGINAL registration (captured above) still available as its local fallback, and
+            // this new registration is the LAST one added, so plain (non-enumerable) resolution still
+            // returns it, exactly as a RemoveAll+Add pair would.
+            services.AddSingleton<IServerDiscovery>(sp =>
+            {
+                var composite = sp.GetRequiredService<CompositeServerDiscovery>();
+                if (localDiscoveryFactory is null)
+                {
+                    // Nothing registered a local discovery ahead of this call (AddServyxSshDocker used
+                    // without AddServyxDocker first) — the composite is genuinely the only option.
+                    return composite;
+                }
+
+                var local = (IServerDiscovery)localDiscoveryFactory(sp);
+                return new HostAwareServerDiscovery(sp.GetRequiredService<IHostConnectionSource>(), composite, local);
+            });
+        }
 
         if (!options.Any)
         {
@@ -164,9 +213,6 @@ public static class SshDockerServiceCollectionExtensions
         services.RemoveAll<IExecutionTarget>();
         services.AddSingleton<IExecutionTarget>(sp => new LazyConnectingExecutionTarget(
             ct => sp.GetRequiredService<ITransport>().ConnectAsync(sp.GetRequiredService<TargetDescriptor>(), ct)));
-
-        services.RemoveAll<IServerDiscovery>();
-        services.AddSingleton<IServerDiscovery>(sp => sp.GetRequiredService<CompositeServerDiscovery>());
 
         services.RemoveAll<ILogStream>();
         services.AddSingleton<ILogStream>(sp =>
@@ -194,4 +240,40 @@ public static class SshDockerServiceCollectionExtensions
             ActivatorUtilities.CreateInstance<SshTransport>(sp),
             sp.GetService<ILoggerFactory>()),
         sp.GetRequiredService<IWriteModeResolver>());
+
+    /// <summary>
+    /// Defers invoking <paramref name="factory"/> — for <see cref="HostConnectionRegistry"/>'s own private
+    /// transport, <see cref="BuildSshDockerTransport"/>, which calls
+    /// <see cref="ActivatorUtilities.CreateInstance{T}(IServiceProvider, object[])"/> for a real
+    /// <see cref="SshTransport"/>, requiring <see cref="Servyx.Domain.Secrets.ISecretStore"/> and
+    /// <see cref="IHostKeyVerifier"/> to be registered — until the first real <see cref="ProbeAsync"/> or
+    /// <see cref="ConnectAsync"/> call.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="HostConnectionRegistry"/> is registered unconditionally (see this file's class remarks), and
+    /// <see cref="HostAwareServerDiscovery"/> now always resolves it — merely to ask whether any host exists —
+    /// on every install with no statically-declared host, not only ones that actually have one. Without this
+    /// wrapper, that alone would require <see cref="Servyx.Domain.Secrets.ISecretStore"/>/<see cref="IHostKeyVerifier"/>
+    /// to be registered on EVERY host composing <c>AddServyxSshDocker</c>, including ones that never register
+    /// either — the MCP stdio host (<c>Servyx.Mcp.Stdio</c>) does not, because it authenticates its own
+    /// transport rather than through the operator-password gate that registers secrets in
+    /// <c>Servyx.Web</c>'s <c>Program.cs</c> (see <c>AddServyxOperatorAuthentication</c>). Deferred all the way
+    /// to a real network call means those two services are only ever required at the point an install that
+    /// actually has an ssh+docker host (configured or database-registered) tries to reach it — the same point
+    /// it would already need them for that host to work at all.
+    /// </remarks>
+    private sealed class LazyBuiltTransport(IServiceProvider serviceProvider, Func<IServiceProvider, ITransport> factory) : ITransport
+    {
+        private readonly Lazy<ITransport> _inner = new(() => factory(serviceProvider));
+
+        public string TransportId => _inner.Value.TransportId;
+
+        public TransportCapabilities Capabilities => _inner.Value.Capabilities;
+
+        public Task<TargetHealth> ProbeAsync(TargetDescriptor target, CancellationToken ct = default) =>
+            _inner.Value.ProbeAsync(target, ct);
+
+        public Task<IExecutionTarget> ConnectAsync(TargetDescriptor target, CancellationToken ct = default) =>
+            _inner.Value.ConnectAsync(target, ct);
+    }
 }

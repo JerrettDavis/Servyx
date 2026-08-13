@@ -115,11 +115,35 @@ public class TransportWriteGuardArchitectureTests
         return provider.GetServices<ITransport>().ToList();
     }
 
+    /// <summary>
+    /// <see cref="ITransport"/> implementations that exist purely as a private, delegating wrapper around one
+    /// of the four DI-registered transports named in <see cref="TransportRegistrations"/>, and are therefore
+    /// deliberately excluded from <see cref="Every_transport_implementation_in_the_solution_is_named_here"/>'s
+    /// enumeration and <see cref="Every_transport_registration_hands_out_write_guarded_sessions"/>'s guard
+    /// check: neither applies to a type that is never itself registered under the <see cref="ITransport"/>
+    /// service type, so there is nothing here for either assertion to independently verify.
+    /// </summary>
+    /// <remarks>
+    /// <c>SshDockerServiceCollectionExtensions.LazyBuiltTransport</c> is the one example today: it exists only
+    /// to defer <c>ActivatorUtilities.CreateInstance&lt;SshTransport&gt;</c> — which requires
+    /// <see cref="ISecretStore"/>/<see cref="IHostKeyVerifier"/> to be registered — until the first real
+    /// <c>ProbeAsync</c>/<c>ConnectAsync</c> call, for <c>HostConnectionRegistry</c>'s own unconditionally-
+    /// registered private transport (see that file's remarks). It always wraps whatever
+    /// <c>BuildSshDockerTransport</c> itself builds — a <see cref="WriteGuardedTransport"/>, exactly like
+    /// every other entry here — and is never resolvable under the <see cref="ITransport"/> service type on
+    /// its own, so it adds no unguarded surface for
+    /// <see cref="A_guarded_registration_does_not_publish_the_bare_transport_under_any_service_type"/> to miss
+    /// either.
+    /// </remarks>
+    private static readonly string[] NonRegisteredDelegatingTransports = ["LazyBuiltTransport"];
+
     [Fact]
     public void Every_transport_implementation_in_the_solution_is_named_here()
     {
         // If this fails, a fourth transport exists. Add its registration to TransportRegistrations — at which
-        // point the guard assertion below applies to it too, which is the entire mechanism.
+        // point the guard assertion below applies to it too, which is the entire mechanism. A type added to
+        // NonRegisteredDelegatingTransports instead must genuinely never be registered under ITransport on its
+        // own — see that field's own remarks.
         var implementations = new[]
             {
                 typeof(DockerTransport).Assembly,
@@ -130,6 +154,7 @@ public class TransportWriteGuardArchitectureTests
             .SelectMany(LoadableTypes)
             .Where(type => type is { IsClass: true, IsAbstract: false } && typeof(ITransport).IsAssignableFrom(type))
             .Select(type => type.Name)
+            .Except(NonRegisteredDelegatingTransports)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
 

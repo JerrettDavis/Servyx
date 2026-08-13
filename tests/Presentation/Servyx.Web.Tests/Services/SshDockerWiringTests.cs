@@ -165,14 +165,21 @@ public class SshDockerWiringTests
             .Should().NotContain("Stdin");
     }
 
+    /// <summary>
+    /// The ITransport half of "nothing configured": AddServyxSshDocker's single-target surfaces
+    /// (ITransport/TargetDescriptor/IExecutionTarget/ILogStream/IMetricsSource) genuinely stay untouched with
+    /// zero hosts declared. IServerDiscovery is NOT among them any more — see
+    /// <see cref="With_no_hosts_configured_and_no_host_ever_registered_discovery_still_resolves_to_local_docker_through_the_wrapper"/>
+    /// and <see cref="Registering_a_database_only_host_switches_the_wrapper_to_the_composite_fan_out_without_a_restart"/>
+    /// below for how IServerDiscovery now behaves in this case.
+    /// </summary>
     [Fact]
-    public void With_no_hosts_configured_the_docker_registrations_are_left_untouched()
+    public void With_no_hosts_configured_the_single_target_docker_registrations_are_left_untouched()
     {
         var services = BaseServices();
         services.AddServyxDocker();
 
         var transportRegistrationsBefore = services.Count(d => d.ServiceType == typeof(ITransport));
-        var discoveryRegistrationsBefore = services.Count(d => d.ServiceType == typeof(IServerDiscovery));
 
         var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
         options.Any.Should().BeFalse();
@@ -180,26 +187,56 @@ public class SshDockerWiringTests
         services.AddServyxSshDocker(options, NullLogger.Instance);
 
         services.Count(d => d.ServiceType == typeof(ITransport)).Should().Be(transportRegistrationsBefore);
-        services.Count(d => d.ServiceType == typeof(IServerDiscovery)).Should().Be(discoveryRegistrationsBefore);
 
         using var provider = services.BuildServiceProvider();
-        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<DockerServerDiscovery>();
+        provider.GetRequiredService<ITransport>().Should().NotBeOfType<SshDockerTransport>(
+            "with no host declared, the local Docker ITransport AddServyxDocker registered must still be the one resolved");
     }
 
     /// <summary>
-    /// Increment 4b: <c>AddServyxSshDocker</c> used to no-op entirely whenever
+    /// The fix for the bug this whole file's sibling suite (<see cref="HostAwareServerDiscoveryCompositionTests"/>
+    /// in <c>Servyx.Infrastructure.Ssh.Tests</c>) proves end-to-end: <c>AddServyxSshDocker</c> used to leave
+    /// <see cref="IServerDiscovery"/> bound to plain local Docker discovery for the process's whole lifetime
+    /// whenever <see cref="SshDockerWiringOptions.Any"/> was <see langword="false"/> — even after an operator
+    /// registered a host purely through the UI, which only ever invalidated
+    /// <see cref="HostConnectionRegistry"/>'s cache, a type nothing resolved <see cref="IServerDiscovery"/> to
+    /// any more. <see cref="IServerDiscovery"/> is now unconditionally re-bound to
+    /// <see cref="HostAwareServerDiscovery"/> in this case, which — with zero hosts, configured or
+    /// database-registered — defers to exactly the local Docker discovery instance <c>AddServyxDocker</c>
+    /// registered, so a plain local-docker-only install (the common case) is provably unaffected.
+    /// </summary>
+    [Fact]
+    public void With_no_hosts_configured_and_no_host_ever_registered_discovery_still_resolves_to_local_docker_through_the_wrapper()
+    {
+        var services = BaseServices();
+        services.AddServyxDocker();
+
+        var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
+        options.Any.Should().BeFalse();
+        services.AddServyxSshDocker(options, NullLogger.Instance);
+
+        using var provider = services.BuildServiceProvider();
+
+        var discovery = provider.GetRequiredService<IServerDiscovery>();
+        discovery.Should().BeOfType<HostAwareServerDiscovery>(
+            "IServerDiscovery is now always re-bound, even with zero hosts declared — see this type's own remarks");
+    }
+
+    /// <summary>
+    /// Increment 4b / the fix under test: <c>AddServyxSshDocker</c> used to no-op entirely whenever
     /// <see cref="SshDockerWiringOptions.Any"/> was <see langword="false"/>, so a fresh, zero-config install
     /// never registered <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
     /// <see cref="CompositeServerDiscovery"/> at all — there was nothing in the container for a
     /// database-registered host (added later, through the UI, with no process restart) to be discovered
     /// through. This proves the fix at the DI-composition level: with zero config hosts, those three are still
-    /// resolvable and the registry still reports a database-registered host — while
-    /// <see cref="With_no_hosts_configured_the_docker_registrations_are_left_untouched"/> above proves the
-    /// general-purpose <see cref="IServerDiscovery"/> slot deliberately stays untouched (still local Docker),
-    /// so this fix does not regress a plain local-docker-only install.
+    /// resolvable and the registry still reports a database-registered host, and — the part that used to stay
+    /// broken — <see cref="IServerDiscovery"/> resolves to the host-aware wrapper that will route to that
+    /// composite fan-out the moment it is asked to discover (see <c>HostAwareServerDiscoveryCompositionTests</c>
+    /// in <c>Servyx.Infrastructure.Ssh.Tests</c> for the behavioral proof that it actually does, since a real
+    /// SSH connection is not something this DI-level suite opens).
     /// </summary>
     [Fact]
-    public async Task With_no_hosts_configured_the_host_connection_registry_still_registers_and_sees_a_database_host()
+    public async Task Registering_a_database_only_host_switches_the_wrapper_to_the_composite_fan_out_without_a_restart()
     {
         var dbHost = new Host
         {
@@ -232,10 +269,12 @@ public class SshDockerWiringTests
 
         connections.Should().ContainSingle().Which.HostKey.Should().Be("db-only-host");
 
-        // Resolvable directly (the seam a later host-registration flow attaches to), even though
-        // IServerDiscovery itself is not swapped to it while options.Any is false — see the sibling test above.
+        // Resolvable directly (the seam a later host-registration flow attaches to), and now — unlike before
+        // this fix — the general-purpose IServerDiscovery slot itself is also wired to react to exactly this.
         provider.GetRequiredService<CompositeServerDiscovery>().Should().NotBeNull();
-        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<DockerServerDiscovery>();
+        provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<HostAwareServerDiscovery>(
+            "the database-registered host must be reachable through the SAME IServerDiscovery every other " +
+            "caller (ServerAdoptionService included) resolves, not merely through a side-channel type nothing else uses");
     }
 }
 

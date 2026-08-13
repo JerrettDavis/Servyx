@@ -47,6 +47,13 @@
          hands out. That is a statement about every transport at once, so it can only be asserted in an
          assembly that sees all three — see TransportWriteGuardArchitectureTests. -->
     <ProjectReference Include="..\..\..\src\Infrastructure\Servyx.Infrastructure.Process\Servyx.Infrastructure.Process.csproj" />
+    <!-- ServerAdoptionService lives in Servyx.Application, which this project's own source (Servyx.Infrastructure.Ssh)
+         deliberately does not reference (see that project's own remarks: infrastructure depends on
+         Servyx.Domain only). This test-only reference exists so HostAwareServerDiscoveryCompositionTests can
+         prove the exact "UI/DB-only host registration reaches ServerAdoptionService.ListCandidatesAsync"
+         scenario the zero-config discovery fix targets, the same way the Docker/Process references above
+         exist only to assert cross-project invariants no single source project can see on its own. -->
+    <ProjectReference Include="..\..\..\src\Core\Servyx.Application\Servyx.Application.csproj" />
   </ItemGroup>
 
 </Project>
