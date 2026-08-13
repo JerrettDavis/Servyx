@@ -8,6 +8,7 @@ using Servyx.Domain.Connectors;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Entities;
 using Servyx.Domain.Hosts;
+using Servyx.Domain.Observability;
 using Servyx.Domain.Secrets;
 using Servyx.Domain.Transport;
 using Servyx.Infrastructure.Docker;
@@ -167,11 +168,12 @@ public class SshDockerWiringTests
 
     /// <summary>
     /// The ITransport half of "nothing configured": AddServyxSshDocker's single-target surfaces
-    /// (ITransport/TargetDescriptor/IExecutionTarget/ILogStream/IMetricsSource) genuinely stay untouched with
-    /// zero hosts declared. IServerDiscovery is NOT among them any more — see
-    /// <see cref="With_no_hosts_configured_and_no_host_ever_registered_discovery_still_resolves_to_local_docker_through_the_wrapper"/>
-    /// and <see cref="Registering_a_database_only_host_switches_the_wrapper_to_the_composite_fan_out_without_a_restart"/>
-    /// below for how IServerDiscovery now behaves in this case.
+    /// (ITransport/TargetDescriptor/IExecutionTarget/IMetricsSource) genuinely stay untouched with zero hosts
+    /// declared. IServerDiscovery and ILogStream are NOT among them any more — see
+    /// <see cref="With_no_hosts_configured_and_no_host_ever_registered_discovery_still_resolves_to_local_docker_through_the_wrapper"/>,
+    /// <see cref="Registering_a_database_only_host_switches_the_wrapper_to_the_composite_fan_out_without_a_restart"/>,
+    /// and <see cref="Log_stream_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared"/> below for
+    /// how those two now behave in this case.
     /// </summary>
     [Fact]
     public void With_no_hosts_configured_the_single_target_docker_registrations_are_left_untouched()
@@ -324,6 +326,46 @@ public class SshDockerWiringTests
         provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<HostAwareServerDiscovery>(
             "the database-registered host must be reachable through the SAME IServerDiscovery every other " +
             "caller (ServerAdoptionService included) resolves, not merely through a side-channel type nothing else uses");
+    }
+
+    /// <summary>
+    /// Increment 4 / the fix under test: <see cref="ILogStream"/> is now re-bound unconditionally, exactly
+    /// like <see cref="IServerDiscovery"/> — a zero-<c>Servyx:Hosts</c>, zero-database-row install (the common
+    /// case) must still resolve <see cref="HostAwareLogStream"/>, not the bare local
+    /// <c>Servyx.Infrastructure.Docker.DockerLogStream</c> <c>AddServyxDocker</c> registered, so a host
+    /// registered later through the UI has something host-aware already wired to route its console reads
+    /// through — without a process restart, matching <see cref="IServerDiscovery"/>'s own contract.
+    /// </summary>
+    [Fact]
+    public void Log_stream_resolves_to_the_host_aware_wrapper_even_with_zero_hosts_declared()
+    {
+        var services = BaseServices();
+        services.AddServyxDocker();
+
+        var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
+        options.Any.Should().BeFalse();
+        services.AddServyxSshDocker(options, NullLogger.Instance);
+
+        using var provider = services.BuildServiceProvider();
+
+        provider.GetRequiredService<ILogStream>().Should().BeOfType<HostAwareLogStream>(
+            "ILogStream is now always re-bound, even with zero hosts declared — see HostAwareLogStream's own remarks");
+    }
+
+    /// <summary>
+    /// With a statically-declared host, <see cref="ILogStream"/> used to be swapped straight to a bare
+    /// <see cref="SshDockerLogStream"/> scoped to that one host only — which is exactly the gap this
+    /// increment closes: a server discovered on a SECOND host (static or database-registered) had no route to
+    /// its own console at all. <see cref="ILogStream"/> now resolves to <see cref="HostAwareLogStream"/> here
+    /// too, which routes each server to whichever host it actually matches (see that type's own remarks and
+    /// <c>HostAwareLogStreamTests</c> for the routing behavior itself).
+    /// </summary>
+    [Fact]
+    public void Log_stream_resolves_to_the_host_aware_wrapper_with_a_statically_declared_host()
+    {
+        using var provider = ComposedWithHost();
+
+        provider.GetRequiredService<ILogStream>().Should().BeOfType<HostAwareLogStream>();
     }
 }
 
@@ -511,10 +553,13 @@ public class SshDockerWiringReportingTests
 
         var target = provider.GetRequiredService<TargetDescriptor>();
         target.Endpoint.Should().Be(options.Hosts[0].Target.Endpoint,
-            "TargetDescriptor/ITransport/IExecutionTarget/ILogStream/IMetricsSource are still wired only from " +
-            "options.Hosts[0] — this increment scopes multi-host support to discovery only");
+            "TargetDescriptor/ITransport/IExecutionTarget/IMetricsSource are still wired only from " +
+            "options.Hosts[0] — this increment scopes multi-host support to discovery and log streaming only");
 
         provider.GetRequiredService<IServerDiscovery>().Should().BeOfType<CompositeServerDiscovery>(
-            "discovery, unlike the surfaces above, is wired to fan out across every configured host");
+            "discovery, unlike the single-target surfaces above, is wired to fan out across every configured host");
+        provider.GetRequiredService<ILogStream>().Should().BeOfType<HostAwareLogStream>(
+            "log streaming, like discovery, is wired to route per-server across every configured host rather " +
+            "than staying fixed to options.Hosts[0]");
     }
 }
