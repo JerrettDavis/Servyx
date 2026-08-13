@@ -21,9 +21,10 @@ namespace Servyx.Infrastructure.Ssh.Docker;
 /// <para>
 /// <strong>Discovery machinery — including the <see cref="IServerDiscovery"/> service-type swap — is
 /// unconditional; the single-host surfaces are not.</strong> Unlike every other registration in this
-/// method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>, and
-/// <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type) are wired regardless of
-/// whether <paramref name="options"/> declares a host, because <see cref="HostConnectionRegistry"/> also
+/// method, <see cref="HostConnectionRegistry"/>, <see cref="IHostConnectionSource"/>,
+/// <see cref="CompositeServerDiscovery"/> (registered here as its own concrete type), and
+/// <see cref="IServerExecutionTargetResolver"/> are wired regardless of whether <paramref name="options"/>
+/// declares a host, because <see cref="HostConnectionRegistry"/> also
 /// fans out over database-registered hosts (see <see cref="Servyx.Domain.Hosts.IHostRepository"/>), and those
 /// can be registered by an operator through the UI at any point <em>after</em> this DI composition already
 /// ran. <see cref="IServerDiscovery"/> itself is now ALSO always re-bound: when <paramref name="options"/>
@@ -160,6 +161,26 @@ public static class SshDockerServiceCollectionExtensions
         // still hand HostAwareServerDiscovery whatever local discovery AddServyxDocker already registered.
         var priorDiscoveryDescriptor = services.LastOrDefault(d => d.ServiceType == typeof(IServerDiscovery));
         var localDiscoveryFactory = priorDiscoveryDescriptor?.ImplementationFactory;
+
+        // IServerExecutionTargetResolver — the per-server routing seam later increments (console, metrics,
+        // RCON, backups) resolve a server's actual IExecutionTarget through, instead of each assuming the
+        // single process-wide ITransport/IExecutionTarget this method (conditionally) swaps below. Registered
+        // unconditionally, same reasoning as HostConnectionRegistry/IHostConnectionSource just above: it must
+        // exist even on a zero-config install for a host registered later through the UI to route to. The
+        // prior ITransport registration — whatever AddServyxDocker registered, if it ran first — is captured
+        // here, BEFORE the options.Any branch further down potentially RemoveAll<ITransport>()s it, so the
+        // resolver's local (null host key) branch can still reach it even once the process-wide ITransport
+        // service type itself has been swapped to the single statically-declared ssh+docker host. See
+        // ServerExecutionTargetResolver's own remarks for why re-invoking the captured factory (rather than
+        // resolving ITransport from the container at call time) is both necessary and safe here.
+        var priorTransportDescriptor = services.LastOrDefault(d => d.ServiceType == typeof(ITransport));
+        var localTransportFactory = priorTransportDescriptor?.ImplementationFactory;
+
+        services.AddSingleton<IServerExecutionTargetResolver>(sp =>
+        {
+            var local = localTransportFactory is null ? null : (ITransport)localTransportFactory(sp);
+            return new ServerExecutionTargetResolver(sp.GetRequiredService<IHostConnectionSource>(), local);
+        });
 
         if (options.Any)
         {

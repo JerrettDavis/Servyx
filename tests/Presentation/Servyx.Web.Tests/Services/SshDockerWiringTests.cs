@@ -223,6 +223,55 @@ public class SshDockerWiringTests
     }
 
     /// <summary>
+    /// The per-server execution-target routing seam (<see cref="IServerExecutionTargetResolver"/>) is
+    /// registered unconditionally, same as <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
+    /// <see cref="CompositeServerDiscovery"/> just above it — a zero-config install still needs it resolvable
+    /// so a server discovered later (through a database-registered host, without a process restart) has
+    /// something to route through. Resolving a local (null host key) server here proves it reaches the exact
+    /// local Docker <see cref="ITransport"/> <c>AddServyxDocker</c> registered, not the ssh+docker one — there
+    /// is no statically-declared host in this composition to have swapped it.
+    /// </summary>
+    [Fact]
+    public async Task With_no_hosts_configured_the_execution_target_resolver_is_registered_and_resolves_the_local_transport()
+    {
+        var services = BaseServices();
+        services.AddServyxDocker();
+
+        var options = SshDockerWiringOptions.FromConfiguration(new ConfigurationBuilder().Build(), NullLogger.Instance);
+        options.Any.Should().BeFalse();
+        services.AddServyxSshDocker(options, NullLogger.Instance);
+
+        await using var provider = services.BuildServiceProvider();
+
+        var resolver = provider.GetRequiredService<IServerExecutionTargetResolver>();
+
+        await using var target = await resolver.ResolveAsync("container-123", hostKey: null);
+        target.Should().NotBeNull();
+    }
+
+    /// <summary>
+    /// With a statically-declared host, <c>AddServyxSshDocker</c> swaps the process-wide <see cref="ITransport"/>
+    /// service type to the ssh+docker one — but <see cref="IServerExecutionTargetResolver"/>'s local branch
+    /// must still reach the ORIGINAL local Docker transport <c>AddServyxDocker</c> registered (captured before
+    /// that swap), never the now-current ssh+docker one, since a null host key always means "the local Docker
+    /// daemon" regardless of what else this process has statically configured.
+    /// </summary>
+    [Fact]
+    public async Task With_a_declared_host_the_execution_target_resolvers_local_branch_still_reaches_local_docker_not_ssh_docker()
+    {
+        await using var provider = ComposedWithHost();
+
+        provider.GetRequiredService<ITransport>().Should().BeOfType<WriteGuardedTransport>()
+            .Which.Inner.Should().BeOfType<SshDockerTransport>(
+                "the process-wide ITransport is displaced to ssh+docker once a host is statically declared");
+
+        var resolver = provider.GetRequiredService<IServerExecutionTargetResolver>();
+
+        await using var target = await resolver.ResolveAsync("container-123", hostKey: null);
+        target.Should().NotBeNull();
+    }
+
+    /// <summary>
     /// Increment 4b / the fix under test: <c>AddServyxSshDocker</c> used to no-op entirely whenever
     /// <see cref="SshDockerWiringOptions.Any"/> was <see langword="false"/>, so a fresh, zero-config install
     /// never registered <see cref="HostConnectionRegistry"/>/<see cref="IHostConnectionSource"/>/
