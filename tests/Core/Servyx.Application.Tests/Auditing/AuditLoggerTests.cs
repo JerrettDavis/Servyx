@@ -34,6 +34,17 @@ public class AuditLoggerTests
         public Task<IReadOnlyList<AuditEntry>> ListRecentAsync(int limit, CancellationToken ct = default) =>
             Task.FromResult<IReadOnlyList<AuditEntry>>(
                 Rows.OrderByDescending(r => r.TimestampUtc).Take(limit).ToList());
+
+        public Task<AuditEntryPage> SearchAsync(
+            AuditEntryFilter filter, int pageNumber, int pageSize, CancellationToken ct = default)
+        {
+            // Not exercised by this file's tests — AuditLogger only ever calls AddAsync — but the interface
+            // requires an implementation. Kept minimal rather than duplicating the real filter/sort/page
+            // semantics EfAuditEntryRepository and FakeAuditEntryRepository (Servyx.Web.Tests) both document.
+            var ordered = Rows.OrderByDescending(r => r.TimestampUtc).ToList();
+            var page = ordered.Skip((pageNumber - 1) * pageSize).Take(pageSize).ToList();
+            return Task.FromResult(new AuditEntryPage(page, ordered.Count));
+        }
     }
 
     private sealed class TestTimeProvider(DateTimeOffset now) : TimeProvider

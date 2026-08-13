@@ -1,4 +1,25 @@
 @page "/audit"
+@attribute [Authorize(Policy = RoleAuthorization.Admin)]
+@using System.Globalization
+@using Servyx.Domain.Auditing
+@using Servyx.Domain.Entities
+@using Servyx.Web.Authentication
+@inject IServiceProvider Services
+
+@*
+    The reader UI over Servyx's cross-cutting accountability trail (see AuditEntry's own remarks) — the last
+    stub page (see commit c291373's own remarks, "the reader UI ... is a separate, later increment") to become
+    real. Gated with RoleAuthorization.Admin, the same policy UsersPage carries and for the same reason: who
+    did what to the app's own accounts, hosts, and configuration is admin/accountability data, not something
+    every signed-in Viewer should be able to page through. See UsersPage's own remarks for exactly what that
+    [Authorize] attribute buys (and the redirect-loop bug fixing it for that page uncovered) — this page relies
+    on the identical mechanism, not a second, independently-maintained one.
+
+    Server-side filtered and paged throughout: IAuditEntryRepository.SearchAsync (not ListRecentAsync) is the
+    only read this page issues, because this table is append-only and grows without bound — every user/host/
+    changeplan write action appends a row forever. Loading everything once and filtering/paging in the
+    component would work today and silently become the slowest, heaviest page in this app as the trail grows.
+*@
 
 <SvxPageTitle Section="Audit" />
 
@@ -7,10 +28,252 @@
     <p class="svx-page-description">A record of every change Servyx has made or attempted.</p>
 </div>
 
-<div class="svx-empty-state">
-    <h3>No audit events recorded yet</h3>
-    <p>
-        Milestone 1 is strictly read-only, so there is nothing to audit. The audit log activates once writes
-        are enabled in Milestone 4, and gains a dedicated UI in Milestone 7.
-    </p>
-</div>
+@if (_repository is null)
+{
+    <div class="svx-empty-state" data-testid="audit-unavailable">
+        <h3>The audit trail cannot be read here</h3>
+        <p>This process did not compose an audit entry store, so nothing can be listed.</p>
+    </div>
+}
+else
+{
+    <div class="svx-card" data-testid="audit-filter-section">
+        <h3>Filters</h3>
+
+        <label>
+            <span>Actor</span>
+            <input class="svx-input" type="text" data-testid="filter-actor-input"
+                   value="@_actorFilter" @onchange="e => OnActorChangedAsync(e.Value?.ToString())" />
+        </label>
+
+        <label>
+            <span>Action</span>
+            <select class="svx-select" data-testid="filter-action-select" value="@_actionPrefixFilter"
+                    @onchange="e => OnActionPrefixChangedAsync(e.Value?.ToString())">
+                <option value="">All actions</option>
+                @foreach (var group in ActionGroups)
+                {
+                    <option value="@group.Prefix">@group.Label</option>
+                }
+            </select>
+        </label>
+
+        <label>
+            <span>From</span>
+            <input class="svx-input" type="datetime-local" data-testid="filter-from-input"
+                   value="@FromInputValue" @onchange="e => OnFromChangedAsync(e.Value?.ToString())" />
+        </label>
+
+        <label>
+            <span>To</span>
+            <input class="svx-input" type="datetime-local" data-testid="filter-to-input"
+                   value="@ToInputValue" @onchange="e => OnToChangedAsync(e.Value?.ToString())" />
+        </label>
+
+        <button type="button" class="svx-btn svx-btn-sm" data-testid="clear-filters-button"
+                @onclick="ClearFiltersAsync">
+            Clear filters
+        </button>
+    </div>
+
+    <div class="svx-card" data-testid="audit-list-section">
+        <h3>Entries</h3>
+
+        @if (_loading)
+        {
+            <Skeleton Rows="5" Label="Loading audit entries" />
+        }
+        else if (_entries.Count == 0)
+        {
+            <div class="svx-empty-state" data-testid="audit-empty-state">
+                <h4>No audit entries match these filters</h4>
+                <p>Nothing has been recorded yet, or nothing matches the filters above.</p>
+            </div>
+        }
+        else
+        {
+            <div class="svx-row-grid" role="list" aria-label="Audit entries">
+                <div class="svx-row-grid-header" style="@ColumnStyle" aria-hidden="true">
+                    <span>Timestamp</span>
+                    <span>Actor</span>
+                    <span>Action</span>
+                    <span>Target</span>
+                    <span>Details</span>
+                </div>
+
+                @foreach (var entry in _entries)
+                {
+                    <div class="svx-row-link" role="listitem" data-testid="audit-row"
+                         data-actor="@entry.Actor" data-action="@entry.Action" style="@ColumnStyle">
+                        <span data-col-label="Timestamp">@entry.TimestampUtc.ToLocalTime().ToString("u", CultureInfo.InvariantCulture)</span>
+                        <span data-col-label="Actor">@entry.Actor</span>
+                        <span data-col-label="Action"><code>@entry.Action</code></span>
+                        <span data-col-label="Target">
+                            @if (entry.TargetType is not null)
+                            {
+                                <text>@entry.TargetType: @entry.TargetId</text>
+                            }
+                        </span>
+                        <span data-col-label="Details">@entry.Details</span>
+                    </div>
+                }
+            </div>
+
+            <div class="svx-page-description" data-testid="audit-pagination" style="display:flex; align-items:center; gap: var(--svx-space-3);">
+                <button type="button" class="svx-btn svx-btn-sm" data-testid="prev-page-button"
+                        disabled="@(_pageNumber <= 1)" @onclick="PreviousPageAsync">
+                    Previous
+                </button>
+                <span data-testid="page-indicator">
+                    Page @_pageNumber of @TotalPages (@_totalCount total)
+                </span>
+                <button type="button" class="svx-btn svx-btn-sm" data-testid="next-page-button"
+                        disabled="@(!HasNextPage)" @onclick="NextPageAsync">
+                    Next
+                </button>
+            </div>
+        }
+    </div>
+}
+
+@code {
+    private const string ColumnStyle = "grid-template-columns: 1.4fr 1fr 1.2fr 1.3fr 2fr;";
+
+    /// <summary>Page size for <see cref="IAuditEntryRepository.SearchAsync"/>. This trail grows without
+    /// bound (every user/host/changeplan write action appends), so it is always paged — never rendered whole.</summary>
+    private const int PageSize = 50;
+
+    /// <summary>The action-prefix filter's options, matching the well-known <see cref="AuditActions"/> noun
+    /// groups this codebase currently records (see that type's own remarks for the full, growing list of
+    /// individual actions each prefix covers).</summary>
+    private static readonly (string Prefix, string Label)[] ActionGroups =
+    [
+        ("user.", "User"),
+        ("host.", "Host"),
+        ("server.", "Server"),
+        ("changeplan.", "Change plan"),
+    ];
+
+    private IAuditEntryRepository? _repository;
+    private bool _loading = true;
+
+    private string _actorFilter = string.Empty;
+    private string _actionPrefixFilter = string.Empty;
+    private DateTimeOffset? _fromFilter;
+    private DateTimeOffset? _toFilter;
+
+    private int _pageNumber = 1;
+    private int _totalCount;
+    private List<AuditEntry> _entries = [];
+
+    private int TotalPages => _totalCount == 0 ? 1 : (int)Math.Ceiling(_totalCount / (double)PageSize);
+    private bool HasNextPage => _pageNumber < TotalPages;
+
+    private string FromInputValue => _fromFilter?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) ?? string.Empty;
+    private string ToInputValue => _toFilter?.ToLocalTime().ToString("yyyy-MM-ddTHH:mm", CultureInfo.InvariantCulture) ?? string.Empty;
+
+    /// <summary>
+    /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching every other
+    /// optional-collaborator surface in this app (see UsersPage's identical choice, and its own remarks): a
+    /// host — or a bUnit test — that never composed <see cref="IAuditEntryRepository"/> must still render
+    /// this page, degrading visibly rather than throwing.
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        _repository = Services.GetService(typeof(IAuditEntryRepository)) as IAuditEntryRepository;
+        await ReloadAsync();
+        _loading = false;
+    }
+
+    private async Task ReloadAsync()
+    {
+        if (_repository is null)
+        {
+            return;
+        }
+
+        var filter = new AuditEntryFilter(
+            Actor: string.IsNullOrWhiteSpace(_actorFilter) ? null : _actorFilter.Trim(),
+            ActionPrefix: string.IsNullOrWhiteSpace(_actionPrefixFilter) ? null : _actionPrefixFilter,
+            FromUtc: _fromFilter,
+            ToUtc: _toFilter);
+
+        var page = await _repository.SearchAsync(filter, _pageNumber, PageSize);
+        _entries = page.Entries.ToList();
+        _totalCount = page.TotalCount;
+    }
+
+    private Task OnActorChangedAsync(string? value) => ApplyFilterChangeAsync(() => _actorFilter = value ?? string.Empty);
+
+    private Task OnActionPrefixChangedAsync(string? value) =>
+        ApplyFilterChangeAsync(() => _actionPrefixFilter = value ?? string.Empty);
+
+    private Task OnFromChangedAsync(string? value) => ApplyFilterChangeAsync(() => _fromFilter = ParseLocalDateTime(value));
+
+    private Task OnToChangedAsync(string? value) => ApplyFilterChangeAsync(() => _toFilter = ParseLocalDateTime(value));
+
+    /// <summary>
+    /// Applies one filter change, resets to the first page (a filter change under a stale page number could
+    /// otherwise land past the end of the new, narrower result set and render an empty page that looks like
+    /// "no matches" rather than "wrong page"), and reloads.
+    /// </summary>
+    private async Task ApplyFilterChangeAsync(Action mutate)
+    {
+        mutate();
+        _pageNumber = 1;
+        await ReloadAsync();
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        _actorFilter = string.Empty;
+        _actionPrefixFilter = string.Empty;
+        _fromFilter = null;
+        _toFilter = null;
+        _pageNumber = 1;
+        await ReloadAsync();
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (!HasNextPage)
+        {
+            return;
+        }
+
+        _pageNumber++;
+        await ReloadAsync();
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (_pageNumber <= 1)
+        {
+            return;
+        }
+
+        _pageNumber--;
+        await ReloadAsync();
+    }
+
+    /// <summary>
+    /// Parses an HTML <c>datetime-local</c> input's value (no timezone of its own) as wall-clock time in this
+    /// process's local timezone, then converts to the UTC-comparable <see cref="DateTimeOffset"/>
+    /// <see cref="AuditEntryFilter"/> expects. Returns <see langword="null"/> for a blank or unparseable value
+    /// — an unparseable date must clear the filter, not silently keep the previous one.
+    /// </summary>
+    private static DateTimeOffset? ParseLocalDateTime(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        if (!DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            return null;
+        }
+
+        return new DateTimeOffset(DateTime.SpecifyKind(parsed, DateTimeKind.Unspecified), TimeZoneInfo.Local.GetUtcOffset(parsed));
+    }
+}

@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Servyx.Domain.Auditing;
 using Servyx.Domain.Entities;
 using Servyx.Infrastructure.Persistence.Auditing;
 
@@ -138,6 +139,108 @@ public class EfAuditEntryRepositoryTests
         // on IAuditEntryRepository to exercise here — this test documents that absence rather than a behavior.
         typeof(Servyx.Domain.Auditing.IAuditEntryRepository).GetMethods()
             .Select(m => m.Name)
-            .Should().BeEquivalentTo(["AddAsync", "ListRecentAsync"]);
+            .Should().BeEquivalentTo(["AddAsync", "ListRecentAsync", "SearchAsync"]);
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_no_filter_returns_the_newest_entries_first_and_the_total_count()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        var oldest = NewEntry(timestamp: new DateTimeOffset(2026, 8, 11, 0, 0, 0, TimeSpan.Zero));
+        var newest = NewEntry(timestamp: new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.Zero));
+
+        await repository.AddAsync(oldest);
+        await repository.AddAsync(newest);
+
+        var page = await repository.SearchAsync(AuditEntryFilter.None, pageNumber: 1, pageSize: 50);
+
+        page.TotalCount.Should().Be(2);
+        page.Entries.Select(e => e.Id).Should().ContainInOrder(newest.Id, oldest.Id);
+    }
+
+    [Fact]
+    public async Task SearchAsync_filters_by_exact_actor()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        await repository.AddAsync(NewEntry(actor: "alice"));
+        await repository.AddAsync(NewEntry(actor: "bob"));
+
+        var page = await repository.SearchAsync(new AuditEntryFilter(Actor: "alice"), pageNumber: 1, pageSize: 50);
+
+        page.TotalCount.Should().Be(1);
+        page.Entries.Should().ContainSingle(e => e.Actor == "alice");
+    }
+
+    [Fact]
+    public async Task SearchAsync_filters_by_action_prefix()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        await repository.AddAsync(NewEntry(action: AuditActions.UserCreated));
+        await repository.AddAsync(NewEntry(action: AuditActions.HostRegistered));
+
+        var page = await repository.SearchAsync(
+            new AuditEntryFilter(ActionPrefix: "user."), pageNumber: 1, pageSize: 50);
+
+        page.TotalCount.Should().Be(1);
+        page.Entries.Should().ContainSingle(e => e.Action == AuditActions.UserCreated);
+    }
+
+    [Fact]
+    public async Task SearchAsync_filters_by_an_inclusive_timestamp_range()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        var before = NewEntry(timestamp: new DateTimeOffset(2026, 8, 10, 0, 0, 0, TimeSpan.Zero));
+        var inRange = NewEntry(timestamp: new DateTimeOffset(2026, 8, 12, 0, 0, 0, TimeSpan.Zero));
+        var after = NewEntry(timestamp: new DateTimeOffset(2026, 8, 14, 0, 0, 0, TimeSpan.Zero));
+
+        await repository.AddAsync(before);
+        await repository.AddAsync(inRange);
+        await repository.AddAsync(after);
+
+        var page = await repository.SearchAsync(
+            new AuditEntryFilter(
+                FromUtc: new DateTimeOffset(2026, 8, 11, 0, 0, 0, TimeSpan.Zero),
+                ToUtc: new DateTimeOffset(2026, 8, 13, 0, 0, 0, TimeSpan.Zero)),
+            pageNumber: 1,
+            pageSize: 50);
+
+        page.TotalCount.Should().Be(1);
+        page.Entries.Should().ContainSingle(e => e.Id == inRange.Id);
+    }
+
+    [Fact]
+    public async Task SearchAsync_pages_the_filtered_result_set()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        for (var i = 0; i < 5; i++)
+        {
+            await repository.AddAsync(NewEntry(timestamp: DateTimeOffset.UnixEpoch.AddMinutes(i)));
+        }
+
+        var firstPage = await repository.SearchAsync(AuditEntryFilter.None, pageNumber: 1, pageSize: 2);
+        var secondPage = await repository.SearchAsync(AuditEntryFilter.None, pageNumber: 2, pageSize: 2);
+
+        firstPage.TotalCount.Should().Be(5);
+        firstPage.Entries.Should().HaveCount(2);
+        secondPage.Entries.Should().HaveCount(2);
+        firstPage.Entries.Select(e => e.Id).Should().NotIntersectWith(secondPage.Entries.Select(e => e.Id));
+    }
+
+    [Fact]
+    public async Task SearchAsync_with_no_matches_returns_an_empty_page_and_zero_total()
+    {
+        using var fixture = new SqliteDatabaseFixture();
+        var repository = new EfAuditEntryRepository(new FixtureDbContextFactory(fixture));
+        await repository.AddAsync(NewEntry(actor: "alice"));
+
+        var page = await repository.SearchAsync(new AuditEntryFilter(Actor: "nobody"), pageNumber: 1, pageSize: 50);
+
+        page.TotalCount.Should().Be(0);
+        page.Entries.Should().BeEmpty();
     }
 }

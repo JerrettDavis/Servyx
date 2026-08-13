@@ -23,10 +23,53 @@ public interface IAuditEntryRepository
     Task AddAsync(AuditEntry entry, CancellationToken ct = default);
 
     /// <summary>
-    /// The <paramref name="limit"/> most recent entries, newest first. The read path the future <c>/audit</c>
-    /// reader UI will use — not consumed by anything in this increment, but present now so the store's
-    /// contract is exercised end-to-end by this increment's own tests rather than left as an untested
-    /// write-only surface.
+    /// The <paramref name="limit"/> most recent entries, newest first. Kept alongside <see cref="SearchAsync"/>
+    /// as the simplest possible read (no filter, no paging) — a caller that only ever wants "the last N" does
+    /// not need to reason about page numbers or an unconstrained <see cref="AuditEntryFilter"/>.
     /// </summary>
     Task<IReadOnlyList<AuditEntry>> ListRecentAsync(int limit, CancellationToken ct = default);
+
+    /// <summary>
+    /// One page of entries matching <paramref name="filter"/>, newest first — the read path behind the
+    /// <c>/audit</c> reader UI. <paramref name="pageNumber"/> is 1-based; <paramref name="pageSize"/> must be
+    /// at least 1. This trail is append-only and grows without bound, so this is deliberately a server-side
+    /// filtered, paged query rather than a "fetch everything, filter in the UI" surface — see
+    /// <c>EfAuditEntryRepository.SearchAsync</c>'s own remarks for exactly how much of that filtering an EF
+    /// Core SQLite provider can push down to SQL versus what it still has to do after materializing.
+    /// </summary>
+    Task<AuditEntryPage> SearchAsync(
+        AuditEntryFilter filter, int pageNumber, int pageSize, CancellationToken ct = default);
 }
+
+/// <summary>
+/// Filter criteria for <see cref="IAuditEntryRepository.SearchAsync"/>. Every criterion left
+/// <see langword="null"/> (or, for <see cref="Actor"/>/<see cref="ActionPrefix"/>, blank) is unconstrained.
+/// </summary>
+/// <remarks>
+/// Deliberately narrow — exact actor match and action-prefix match (meaningful because every recorded
+/// <see cref="AuditEntry.Action"/> follows the dotted "noun.verb" convention <see cref="AuditActions"/>
+/// documents, e.g. matching <c>"user."</c> against <c>"user.created"</c>/<c>"user.role_changed"</c>/...) plus
+/// an inclusive UTC timestamp range cover what the <c>/audit</c> reader UI needs, without growing into a
+/// general-purpose query object nothing else in this codebase needs yet.
+/// </remarks>
+/// <param name="Actor">Matches only entries whose <see cref="AuditEntry.Actor"/> equals this value exactly, or unconstrained when <see langword="null"/>/blank.</param>
+/// <param name="ActionPrefix">Matches only entries whose <see cref="AuditEntry.Action"/> starts with this value, or unconstrained when <see langword="null"/>/blank.</param>
+/// <param name="FromUtc">Matches only entries whose <see cref="AuditEntry.TimestampUtc"/> is at or after this instant, or unconstrained when <see langword="null"/>.</param>
+/// <param name="ToUtc">Matches only entries whose <see cref="AuditEntry.TimestampUtc"/> is at or before this instant, or unconstrained when <see langword="null"/>.</param>
+public sealed record AuditEntryFilter(
+    string? Actor = null,
+    string? ActionPrefix = null,
+    DateTimeOffset? FromUtc = null,
+    DateTimeOffset? ToUtc = null)
+{
+    /// <summary>No constraint at all — every entry matches.</summary>
+    public static readonly AuditEntryFilter None = new();
+}
+
+/// <summary>
+/// One page of <see cref="AuditEntry"/> rows matching an <see cref="AuditEntryFilter"/>, newest first, plus
+/// <see cref="TotalCount"/> — the total number of rows matching the filter across every page, not just
+/// <see cref="Entries"/>.Count — so a reader UI can render "page X of Y" or disable "next" without a second
+/// round trip.
+/// </summary>
+public sealed record AuditEntryPage(IReadOnlyList<AuditEntry> Entries, int TotalCount);
