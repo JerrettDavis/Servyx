@@ -77,7 +77,7 @@ public class ServerSettingsTabTests : BunitContext
 
         playersRow.QuerySelector("input")!.GetAttribute("value").Should().Be("32");
         playersRow.QuerySelector("[data-col-label='Authoritative (.env)']")!.TextContent.Trim().Should().Be("32");
-        playersRow.QuerySelector("[data-col-label='Rendered (INI)']")!.TextContent.Trim().Should().Be("16");
+        playersRow.QuerySelector("[data-testid='setting-rendered-value']")!.TextContent.Trim().Should().Be("16");
         playersRow.QuerySelector("[data-col-label='Runtime']")!.TextContent.Trim().Should().Be("16");
 
         var badge = playersRow.QuerySelector(".drift-present");
@@ -96,6 +96,40 @@ public class ServerSettingsTabTests : BunitContext
         var nameRow = cut.Find("div.settings-row[data-setting-key='SERVER_NAME']");
         nameRow.QuerySelector(".drift-none").Should().NotBeNull();
         nameRow.ClassList.Should().NotContain("has-drift");
+    }
+
+    // ── INI-sourced-value warning ────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public void A_setting_pending_regeneration_shows_the_ini_drift_warning_next_to_Rendered()
+    {
+        var cut = Render<ServerSettingsTab>(p => p.Add(x => x.Settings, SampleSettings()));
+
+        // PLAYERS is deliberately drifted with PendingRegeneration=true (Rendered/Runtime=16 while
+        // Desired/Authoritative=32) — the exact condition a restart would silently overwrite in favor of
+        // the .env value, discarding whatever is currently live in the INI.
+        var playersRow = cut.Find("div.settings-row[data-setting-key='PLAYERS']");
+        var renderedCell = playersRow.QuerySelector("[data-col-label='Rendered (INI)']")!;
+
+        var warning = renderedCell.QuerySelector("[data-testid='setting-ini-drift-warning']");
+        warning.Should().NotBeNull();
+        warning!.GetAttribute("title").Should().Contain("not durable");
+        warning.GetAttribute("title").Should().Contain("next restart or recreate");
+    }
+
+    [Fact]
+    public void A_setting_with_no_drift_shows_no_ini_drift_warning()
+    {
+        var cut = Render<ServerSettingsTab>(p => p.Add(x => x.Settings, SampleSettings()));
+
+        // SERVER_NAME and DIFFICULTY both carry DriftKind.None in the mock catalogue, so neither should
+        // ever surface a warning about a value that is about to be silently discarded.
+        foreach (var key in new[] { "SERVER_NAME", "DIFFICULTY" })
+        {
+            var row = cut.Find($"div.settings-row[data-setting-key='{key}']");
+            row.QuerySelector("[data-testid='setting-ini-drift-warning']").Should().BeNull(
+                because: $"{key} has no Authoritative/Rendered drift in the mock catalogue");
+        }
     }
 
     [Fact]

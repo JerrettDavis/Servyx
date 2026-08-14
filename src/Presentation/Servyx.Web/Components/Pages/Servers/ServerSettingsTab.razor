@@ -114,7 +114,16 @@ else
                     </div>
 
                     <div data-col-label="Authoritative (.env)" class="settings-value">@row.Authoritative</div>
-                    <div data-col-label="Rendered (INI)" class="settings-value settings-value-muted">@row.Rendered</div>
+                    <div data-col-label="Rendered (INI)" class="settings-value settings-value-muted">
+                        <span data-testid="setting-rendered-value">@row.Rendered</span>
+                        @if (ShowIniDriftWarning(row))
+                        {
+                            <span class="svx-badge ini-drift-warning" tabindex="0" data-testid="setting-ini-drift-warning"
+                                  title="@IniDriftWarningText">
+                                ⚠ Not durable
+                            </span>
+                        }
+                    </div>
                     <div data-col-label="Runtime" class="settings-value settings-value-muted">@row.Runtime</div>
 
                     <div data-col-label="Drift">
@@ -258,6 +267,27 @@ else
         descriptor.RequiresRecreate ? RequiresRecreateReason : GatedButton.DefaultReason;
 
     private bool IsBusy(string key) => _busy.TryGetValue(key, out var busy) && busy;
+
+    // ── INI-sourced-value warning ────────────────────────────────────────────────────────────────────
+    //
+    // Rendered (INI) is a `derivedFrom: [env]` surface that regenerates from Authoritative on the next
+    // container/process restart — see definitions/palworld-docker.yaml's config.surfaces block. When it
+    // currently disagrees with Authoritative, whatever the container is running with right now will be
+    // discarded and replaced with the .env value the moment that regeneration next happens, whether that
+    // disagreement is Servyx's own not-yet-applied change or an operator's direct edit to the INI file.
+    // SettingState.PendingRegeneration already encodes exactly this — "AuthoritativeVsRendered drift on a
+    // surface whose regeneration.kind is a restart" — and, deliberately, only that: a `manual` regeneration
+    // trigger (ManualRegenerationRequired's territory in ChangePlanPanel) or a game with no derived surface
+    // at all never sets it, so this warning only ever appears where the dual-surface risk genuinely exists.
+
+    private const string IniDriftWarningText =
+        "This value differs from the authoritative .env value shown to the left. If it was edited directly " +
+        "in the container's settings file rather than through Servyx, that edit is not durable: this file " +
+        "regenerates from .env on every restart, so the next restart or recreate will silently discard it in " +
+        "favor of the .env value.";
+
+    private static bool ShowIniDriftWarning(Servyx.Web.Models.SettingRow row) =>
+        row.PendingRegeneration && row.Drift.HasFlag(DriftKind.AuthoritativeVsRendered);
 
     // ── Change plan preview ─────────────────────────────────────────────────────────────────────────
     //

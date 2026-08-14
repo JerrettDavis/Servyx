@@ -200,6 +200,20 @@
 
 .binding-status-notice h3 { margin-top: 0; }
 
+/* ServerSettingsTab's per-row warning for a Rendered (INI) value that has drifted from Authoritative (.env)
+   on a surface that regenerates from .env on restart — SettingState.PendingRegeneration. That drift is not
+   durable: the value shown will be replaced by the .env value the next time the derived surface regenerates,
+   so whatever is currently live there (an in-progress apply, or an out-of-band edit to the file itself) is
+   at risk of being silently discarded. Reuses the warning tokens .binding-status-ambiguous already uses,
+   rather than inventing a new severity. */
+.ini-drift-warning {
+    display: inline-flex;
+    margin-left: 0.4rem;
+    background: var(--svx-warning-bg);
+    border-color: var(--svx-warning-border);
+    color: var(--svx-warning-fg);
+}
+
 /* F3: .svx-cost was never declared — render cost figures with tabular numbers and semibold weight. */
 .svx-cost {
     font-variant-numeric: tabular-nums;
