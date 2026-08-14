@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Servyx.Infrastructure.Persistence;
 
@@ -10,9 +11,11 @@ using Servyx.Infrastructure.Persistence;
 namespace Servyx.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(ServyxDbContext))]
-    partial class ServyxDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260814015840_AddServerStatusSnapshotPlayerCounts")]
+    partial class AddServerStatusSnapshotPlayerCounts
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder.HasAnnotation("ProductVersion", "10.0.10");

@@ -34,6 +34,8 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     private readonly IBackupDashboard? _backupDashboard;
     private readonly ITransport? _transport;
     private readonly IServerExecutionTargetResolver? _executionTargetResolver;
+    private readonly ServerStatusCache? _statusCache;
+    private readonly TimeSpan _staleThreshold;
 
     /// <summary>Creates a <see cref="LiveDashboardDataService"/>.</summary>
     /// <param name="target">
@@ -71,6 +73,19 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     /// <see langword="null"/> when this process never registered one (no ssh+docker host support at all), in
     /// which case an adopted server's saves report <c>UnsupportedTransport</c>.
     /// </param>
+    /// <param name="statusCache">
+    /// The background-refreshed cache <see cref="GetDashboardSummaryAsync"/> and
+    /// <see cref="GetServersWithStatusAsync"/> now read from instead of issuing a live discovery/metrics call
+    /// on every page load — see <c>ServerStatusCache</c>'s own remarks. <see langword="null"/> (its default,
+    /// so every pre-existing construction site — every characterization/degraded-path/backups test in this
+    /// solution — keeps compiling and keeps exercising the original live path unchanged) falls back to the
+    /// live behaviour those two methods have always had, driven by <paramref name="query"/> directly.
+    /// </param>
+    /// <param name="refreshOptions">
+    /// How often the background worker behind <paramref name="statusCache"/> refreshes, used only to compute
+    /// <c>IsStale</c> (a cached read older than twice this interval is considered stale). Optional; falls back
+    /// to <c>ServerStatusRefreshOptions.DefaultRefreshInterval</c> when not supplied.
+    /// </param>
     public LiveDashboardDataService(
         IServerQueryService query,
         ILogger<LiveDashboardDataService> logger,
@@ -78,7 +93,9 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         IBackupDashboard? backupDashboard = null,
         GameDefinitionCatalog? catalog = null,
         ITransport? transport = null,
-        IServerExecutionTargetResolver? executionTargetResolver = null)
+        IServerExecutionTargetResolver? executionTargetResolver = null,
+        ServerStatusCache? statusCache = null,
+        ServerStatusRefreshOptions? refreshOptions = null)
     {
         ArgumentNullException.ThrowIfNull(query);
         ArgumentNullException.ThrowIfNull(logger);
@@ -91,6 +108,8 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         _catalog = catalog;
         _transport = transport;
         _executionTargetResolver = executionTargetResolver;
+        _statusCache = statusCache;
+        _staleThreshold = TimeSpan.FromTicks((refreshOptions?.RefreshInterval ?? ServerStatusRefreshOptions.DefaultRefreshInterval).Ticks * 2);
     }
 
     /// <inheritdoc />
@@ -114,8 +133,19 @@ public sealed class LiveDashboardDataService : IDashboardDataService
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Reads from <see cref="ServerStatusCache"/> when one was supplied to this instance — see the
+    /// constructor's remarks on <c>statusCache</c> — instead of issuing a live discovery/metrics call, so a
+    /// page load never blocks on however long the transport probe takes. Falls back to the original live path
+    /// (below) when no cache was supplied, which is every pre-existing construction site in this solution.
+    /// </remarks>
     public async Task<DashboardSummary> GetDashboardSummaryAsync(CancellationToken ct = default)
     {
+        if (_statusCache is not null)
+        {
+            return await BuildDashboardSummaryFromCacheAsync(ct).ConfigureAwait(false);
+        }
+
         var servers = await GetServersAsync(ct).ConfigureAwait(false);
 
         var cpuPoints = new List<SparklinePoint>();
@@ -145,14 +175,30 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         return new DashboardSummary(
             ServersOnline: servers.Count(s => s.State == ServerState.Running),
             ServersTotal: servers.Count,
-            // Not yet read: requires an authenticated RCON/REST session (M2 scope). null means "not
-            // sampled", never a fabricated 0 — see ServerSummary.PlayersOnline's remarks.
-            TotalPlayers: null,
-            TotalPlayerCapacity: null,
+            // Sourced from each server's own PlayersOnline/PlayersMax — see MapSummary's remarks. This live
+            // (no-cache) path reads them off whatever IServerQueryService.GetAdoptedServersWithStatusAsync
+            // returned, which today never populates them itself (only the background-refreshed cache path
+            // does, via ServerStatusRefreshService's RCON read), so this honestly sums to null rather than
+            // fabricating a count — never a hardcoded null standing in for "not yet implemented".
+            TotalPlayers: SumOrNull(servers.Select(s => s.PlayersOnline)),
+            TotalPlayerCapacity: SumOrNull(servers.Select(s => s.PlayersMax)),
             ForeignBackupsCount: foreignBackupsCount,
             AlertsCount: servers.Count(s => s.Health == ContainerHealth.Unhealthy),
             CpuSparkline: cpuPoints,
             MemorySparkline: memPoints);
+    }
+
+    /// <summary>
+    /// Sums the non-null values of <paramref name="values"/>, or returns <see langword="null"/> when every
+    /// value is null — so "nothing has ever been sampled" stays honestly unknown rather than reporting a
+    /// fabricated aggregate of <c>0</c>. A value that is null for some servers and known for others still
+    /// contributes its known servers' sum, mirroring <see cref="GetAllBackupsWithStatusAsync"/>'s own
+    /// partial-count reasoning.
+    /// </summary>
+    private static int? SumOrNull(IEnumerable<int?> values)
+    {
+        var known = values.Where(v => v is not null).Select(v => v!.Value).ToList();
+        return known.Count == 0 ? null : known.Sum();
     }
 
     /// <inheritdoc />
@@ -160,8 +206,18 @@ public sealed class LiveDashboardDataService : IDashboardDataService
         => (await GetServersWithStatusAsync(ct).ConfigureAwait(false)).Servers;
 
     /// <inheritdoc />
+    /// <remarks>
+    /// Reads from <see cref="ServerStatusCache"/> when one was supplied to this instance, exactly like
+    /// <see cref="GetDashboardSummaryAsync"/> — see that method's and the constructor's remarks. Falls back to
+    /// the original live path (below) when no cache was supplied.
+    /// </remarks>
     public async Task<Servyx.Web.Models.ServerListResult> GetServersWithStatusAsync(CancellationToken ct = default)
     {
+        if (_statusCache is not null)
+        {
+            return BuildServerListFromCache();
+        }
+
         try
         {
             var result = await _query.GetAdoptedServersWithStatusAsync(ct).ConfigureAwait(false);
@@ -179,6 +235,65 @@ public sealed class LiveDashboardDataService : IDashboardDataService
             return new Servyx.Web.Models.ServerListResult([], DiscoveryFailed: true, FailureDetail: ex.Message);
         }
     }
+
+    /// <summary>
+    /// Builds a <see cref="Servyx.Web.Models.ServerListResult"/> straight from <see cref="_statusCache"/>'s
+    /// current contents — no live call, ever. A cache with nothing in it yet (a fresh install, before the
+    /// first background refresh tick completes) degrades to an honestly empty, maximally-stale list rather
+    /// than <c>DiscoveryFailed</c>: nothing was attempted and failed here, there is simply nothing cached yet.
+    /// </summary>
+    private Servyx.Web.Models.ServerListResult BuildServerListFromCache()
+    {
+        var entries = _statusCache!.GetAll();
+        var servers = entries.Select(e => MapSummary(e.Summary)).ToList();
+        var lastUpdatedAt = entries.Count == 0 ? DateTimeOffset.MinValue : entries.Min(e => e.UpdatedAt);
+
+        return new Servyx.Web.Models.ServerListResult(
+            servers, DiscoveryFailed: false, FailureDetail: null, lastUpdatedAt, IsStale(lastUpdatedAt));
+    }
+
+    /// <summary>
+    /// Builds a <see cref="DashboardSummary"/> straight from <see cref="_statusCache"/>'s current contents.
+    /// Backups are the one exception — there is no backup cache (out of scope for this pass), so
+    /// <see cref="GetAllBackupsWithStatusAsync"/> is still called, which in turn calls
+    /// <see cref="GetServersAsync"/> → <see cref="GetServersWithStatusAsync"/>, itself now cache-backed.
+    /// </summary>
+    private async Task<DashboardSummary> BuildDashboardSummaryFromCacheAsync(CancellationToken ct)
+    {
+        var entries = _statusCache!.GetAll();
+        var lastUpdatedAt = entries.Count == 0 ? DateTimeOffset.MinValue : entries.Min(e => e.UpdatedAt);
+
+        var cpuPoints = new List<SparklinePoint>();
+        var memPoints = new List<SparklinePoint>();
+
+        // Only one point-in-time sample is available — see the live path's identical remark below for why a
+        // full history is a background-collection concern this milestone does not attempt.
+        var sampled = entries.FirstOrDefault(e => e.Metrics is not null);
+        if (sampled?.Metrics is { } sample)
+        {
+            cpuPoints.Add(new SparklinePoint(sample.Timestamp, Math.Round(sample.CpuPercent, 1)));
+            memPoints.Add(new SparklinePoint(sample.Timestamp, Math.Round(sample.MemoryBytes / (1024d * 1024), 1)));
+        }
+
+        var backups = await GetAllBackupsWithStatusAsync(ct).ConfigureAwait(false);
+        var foreignBackupsCount = backups.Backups.Count(
+            b => b.Ownership == Servyx.Web.Models.BackupOwnership.Foreign);
+
+        return new DashboardSummary(
+            ServersOnline: entries.Count(e => e.Summary.State == ServerState.Running),
+            ServersTotal: entries.Count,
+            TotalPlayers: SumOrNull(entries.Select(e => e.Summary.PlayersOnline)),
+            TotalPlayerCapacity: SumOrNull(entries.Select(e => e.Summary.PlayersMax)),
+            ForeignBackupsCount: foreignBackupsCount,
+            AlertsCount: entries.Count(e => MapHealth(e.Summary.Health) == ContainerHealth.Unhealthy),
+            CpuSparkline: cpuPoints,
+            MemorySparkline: memPoints,
+            LastUpdatedAt: lastUpdatedAt,
+            IsStale: IsStale(lastUpdatedAt));
+    }
+
+    /// <summary>Whether a cache-sourced read stamped <paramref name="lastUpdatedAt"/> is old enough to warrant the "showing cached data" banner.</summary>
+    private bool IsStale(DateTimeOffset lastUpdatedAt) => DateTimeOffset.UtcNow - lastUpdatedAt > _staleThreshold;
 
     /// <inheritdoc />
     public async Task<Servyx.Web.Models.ServerDetail?> GetServerDetailAsync(string serverId, CancellationToken ct = default)
@@ -586,11 +701,13 @@ public sealed class LiveDashboardDataService : IDashboardDataService
             State: s.State,
             Health: health,
             HealthTooltip: s.HealthDetail ?? DefaultHealthTooltip(health),
-            // Not yet read: requires an authenticated RCON/REST session (M2 scope). The Docker API has no
-            // notion of "players", so null ("not sampled") is honest here — 0 would fabricate an empty
-            // server. See ServerSummary.PlayersOnline's remarks.
-            PlayersOnline: null,
-            PlayersMax: null,
+            // Sourced from the Application-layer ServerSummary — populated by ServerStatusRefreshService's
+            // background RCON read for the cache-backed path (see BuildServerListFromCache/
+            // BuildDashboardSummaryFromCacheAsync), and honestly null for the live (no-cache) path, which
+            // IServerQueryService does not yet populate these from. Never a hardcoded null standing in for
+            // "not yet implemented" — see ServerSummary.PlayersOnline's remarks for what "unsampled" means.
+            PlayersOnline: s.PlayersOnline,
+            PlayersMax: s.PlayersMax,
             Uptime: s.StartedAt is null ? null : DateTimeOffset.UtcNow - s.StartedAt.Value,
             Host: s.Host,
             Ports: s.Ports.Select(p => new PortBinding(p.ContainerPort, p.Protocol, PurposeFor(p.ContainerPort), p.Published)).ToList(),

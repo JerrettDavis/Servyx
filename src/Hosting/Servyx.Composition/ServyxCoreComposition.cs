@@ -268,6 +268,13 @@ public sealed class ServyxCoreComposition
             // and a failure inside Prime is logged and swallowed by the cache itself (see WriteGrantCache),
             // leaving every server read-only until a later read succeeds.
             services.GetService<WriteGrantCache>()?.Prime();
+
+            // Load each adopted server's last-known status/resource sample the same way, immediately after —
+            // so the first page load after a restart shows the last real read instead of an empty cache while
+            // ServerStatusRefreshService's first background tick is still in flight. Same failure posture:
+            // Prime swallows and logs its own failure (see ServerStatusCache), leaving the cache to start
+            // empty rather than stopping startup.
+            services.GetService<ServerStatusCache>()?.Prime();
         }
         catch (OperationCanceledException)
         {

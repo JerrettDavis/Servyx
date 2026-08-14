@@ -31,7 +31,24 @@ public sealed record DockerConnectionInfo(ConnectionStatus Status, string Transp
 /// itself failed — the Web-layer mirror of <c>Servyx.Application.Servers.ServerListResult</c>. See that
 /// type's remarks for why this distinction has to survive all the way to the UI.
 /// </summary>
-public sealed record ServerListResult(IReadOnlyList<ServerSummary> Servers, bool DiscoveryFailed, string? FailureDetail);
+/// <param name="LastUpdatedAt">
+/// When the underlying data was last actually read — the oldest <c>ServerStatusCache</c> entry's refresh
+/// timestamp when <see cref="Servers"/> came from the cache, or <see cref="DateTimeOffset.MinValue"/> for a
+/// live (non-cached) read, which is never stale by construction. Trailing-optional so every pre-existing
+/// construction site (the mock/stub data services, and the live path before caching existed) keeps compiling
+/// unchanged.
+/// </param>
+/// <param name="IsStale">
+/// <see langword="true"/> when <see cref="Servers"/> came from the cache and its data is older than the
+/// background refresh worker's own staleness threshold — see <c>Home.razor</c>/<c>ServersList.razor</c>'s
+/// "showing cached data" banner. Always <see langword="false"/> for a live (non-cached) read.
+/// </param>
+public sealed record ServerListResult(
+    IReadOnlyList<ServerSummary> Servers,
+    bool DiscoveryFailed,
+    string? FailureDetail,
+    DateTimeOffset LastUpdatedAt = default,
+    bool IsStale = false);
 
 /// <summary>
 /// Container health as reported by Docker's own HEALTHCHECK. Deliberately a separate signal from
@@ -108,6 +125,8 @@ public sealed record SparklinePoint(DateTimeOffset Timestamp, double Value);
 /// been sampled (see <see cref="ServerSummary.PlayersOnline"/>). Never fabricated as <c>0</c>.
 /// </param>
 /// <param name="TotalPlayerCapacity">Aggregate capacity paired with <paramref name="TotalPlayers"/>; <see langword="null"/> for the same reason.</param>
+/// <param name="LastUpdatedAt">See <see cref="ServerListResult.LastUpdatedAt"/>'s identical remarks, applied to this summary's own underlying read.</param>
+/// <param name="IsStale">See <see cref="ServerListResult.IsStale"/>'s identical remarks.</param>
 public sealed record DashboardSummary(
     int ServersOnline,
     int ServersTotal,
@@ -116,7 +135,9 @@ public sealed record DashboardSummary(
     int ForeignBackupsCount,
     int AlertsCount,
     IReadOnlyList<SparklinePoint> CpuSparkline,
-    IReadOnlyList<SparklinePoint> MemorySparkline);
+    IReadOnlyList<SparklinePoint> MemorySparkline,
+    DateTimeOffset LastUpdatedAt = default,
+    bool IsStale = false);
 
 /// <summary>One row of the four-column settings table, mirroring <c>Servyx.Domain.Configuration.SettingState</c>.</summary>
 public sealed record SettingRow(

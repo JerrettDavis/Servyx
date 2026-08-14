@@ -17,6 +17,7 @@ using Servyx.Domain.Definitions;
 using Servyx.Domain.Definitions.Model;
 using Servyx.Domain.Discovery;
 using Servyx.Domain.Lifecycle;
+using Servyx.Domain.Observability;
 using Servyx.Infrastructure.Docker.Backups;
 using Servyx.Infrastructure.Process;
 using Servyx.Domain.Provisioning;
@@ -526,6 +527,46 @@ public static class ServyxCoreCompositionExtensions
         builder.Services.AddServyxPersistence(persistenceConnectionString);
         builder.Services.AddServyxServerDefinitionBindingStore();
         builder.Services.AddServyxServerRepository();
+
+        // ── Server status cache + background refresh ────────────────────────────────────────────────────
+        //
+        // Blazor Server's Home/ServersList pages used to call live discovery/metrics on every page load,
+        // blocking the HTTP response for however long the transport probe took (see ServerStatusCache's own
+        // remarks). ServerStatusCache is the in-memory read side LiveDashboardDataService now serves from
+        // instead; ServerStatusRefreshService is the one writer, ticking on
+        // ServerStatusRefreshOptions.RefreshInterval and refreshing every adopted server's status+metrics
+        // entirely off the request path. Registered unconditionally, like the persistence block immediately
+        // above — this is a read surface, exactly like AddServyxDocker()'s registrations near the top of this
+        // method, and needs no write grant.
+        //
+        // Closes over adoptionCriteria/criteriaSet — the same locals AddServyxApplication was called with
+        // above, in the useSingleCriteriaMode branch — rather than resolving either back out of DI, since
+        // exactly one of the two is ever non-null/non-empty and both are already in scope here.
+        //
+        // Cache priming (loading the last-known snapshot from the database) happens in
+        // ServyxCoreComposition.MigrateDatabaseAsync, immediately after WriteGrantCache.Prime() — see that
+        // method's remarks — so the very first page load after a restart shows the last real read rather than
+        // an empty cache.
+        builder.Services.AddSingleton(sp => new ServerStatusCache(
+            sp.GetRequiredService<IDbContextFactory<ServyxDbContext>>(),
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<ServerStatusCache>()));
+
+        var serverStatusRefresh = ServerStatusRefreshOptions.FromConfiguration(builder.Configuration);
+        builder.Services.AddSingleton(serverStatusRefresh);
+        builder.Services.AddSingleton<ServerStatusRefreshService>(sp => new ServerStatusRefreshService(
+            serverStatusRefresh,
+            sp.GetRequiredService<IServerDiscovery>(),
+            sp.GetRequiredService<IMetricsSource>(),
+            sp.GetRequiredService<ServerStatusCache>(),
+            sp.GetRequiredService<IDbContextFactory<ServyxDbContext>>(),
+            sp.GetRequiredService<ILogger<ServerStatusRefreshService>>(),
+            useSingleCriteriaMode ? adoptionCriteria : null,
+            useSingleCriteriaMode ? null : criteriaSet,
+            sp.GetService<TargetDescriptor>(),
+            sp.GetService<TimeProvider>(),
+            sp.GetService<ServyxRconChannels>(),
+            settingGroups));
+        builder.Services.AddHostedService(sp => sp.GetRequiredService<ServerStatusRefreshService>());
 
         // IHostRepository — durable storage behind Servyx's own host-registration bookkeeping (Increment 1).
         // Registered here, unconditionally, for the same reason as IServerRepository immediately above: this

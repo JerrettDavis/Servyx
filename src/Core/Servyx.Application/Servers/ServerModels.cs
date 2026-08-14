@@ -64,6 +64,19 @@ public enum ServerBindingStatus
 /// backups) resolves an actual <see cref="Servyx.Domain.Entities.Host"/> row from, so it must stay exactly
 /// what discovery reported, or null, rather than degrading to some other value when absent.
 /// </param>
+/// <param name="PlayersOnline">
+/// The most recently observed connected-player count, or <see langword="null"/> when it was not read — no
+/// control channel is configured for this server, the game definition declares no <c>control.players</c>
+/// source, or the last read attempt failed. Never a fabricated <c>0</c>: the Docker API itself has no
+/// notion of "players", so this can only ever come from a genuine control-channel read (RCON, REST, or
+/// query), and an unread value must stay honestly unknown rather than presenting an empty server.
+/// </param>
+/// <param name="PlayersMax">
+/// The server's configured player capacity, or <see langword="null"/> when it was not observed. Sourced
+/// from the server's own configuration (e.g. an authoritative environment variable the definition's
+/// settings catalogue binds a "max players" setting to), never fabricated from a control-channel reply
+/// that carries no such figure.
+/// </param>
 public sealed record ServerSummary(
     string Id,
     string Name,
@@ -76,7 +89,9 @@ public sealed record ServerSummary(
     IReadOnlyList<ServerPort> Ports,
     ServerBindingStatus BindingStatus = ServerBindingStatus.Bound,
     IReadOnlyList<string>? AmbiguousCandidateGameIds = null,
-    string? HostKey = null);
+    string? HostKey = null,
+    int? PlayersOnline = null,
+    int? PlayersMax = null);
 
 /// <summary>
 /// A single setting value read from a server's live configuration surface.

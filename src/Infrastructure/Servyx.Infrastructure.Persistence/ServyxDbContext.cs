@@ -71,6 +71,14 @@ public sealed class ServyxDbContext : DbContext
     public DbSet<ServerSettingValue> ServerSettingValues => Set<ServerSettingValue>();
 
     /// <summary>
+    /// Each adopted server's last-known status and resource sample, written by the background refresh
+    /// worker and read back at startup to prime the in-memory <c>ServerStatusCache</c> (in
+    /// <c>Servyx.Composition</c>) before the first live refresh tick completes. See
+    /// <see cref="ServerStatusSnapshot"/>'s own remarks.
+    /// </summary>
+    public DbSet<ServerStatusSnapshot> ServerStatusSnapshots => Set<ServerStatusSnapshot>();
+
+    /// <summary>
     /// Previewed configuration change plans, from preview through apply/revert. Persistence only — see
     /// <see cref="ChangePlanRecord"/>'s own remarks; no <c>IPlanExecutor</c> is wired to this table yet.
     /// </summary>
