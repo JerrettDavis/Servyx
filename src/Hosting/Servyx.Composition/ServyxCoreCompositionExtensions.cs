@@ -454,6 +454,16 @@ public static class ServyxCoreCompositionExtensions
         builder.Services.AddSingleton<IServerPlanCatalogSource>(
             new ServyxServerPlanCatalogSource(singleDefinition, singleDefinitionVersion));
         builder.Services.AddServyxChangePlanStore();
+
+        // Answers "is the workload running?" for the MIRRORED half of a dual-write plan, which needs a
+        // running container because it is finalized by a rename issued through exec. Over IServerDiscovery,
+        // NOT IServerQueryService, for the same singleton re-entrancy deadlock documented above — see
+        // DiscoveryMirrorTargetRunStateSource's own remarks. Without this registration every mirrored action
+        // blocks with a reason and every authoritative write is unaffected, which is the fail-closed
+        // direction rather than a silent no-op.
+        builder.Services.AddSingleton<IMirrorTargetRunStateSource>(sp =>
+            new DiscoveryMirrorTargetRunStateSource(sp.GetRequiredService<IServerDiscovery>(), adoptionCriteria));
+
         builder.Services.AddSingleton<IPlanExecutor>(sp => new PlanExecutor(
             sp.GetRequiredService<IServerConfigSessionSource>(),
             sp.GetRequiredService<IServerPlanCatalogSource>(),
@@ -466,7 +476,8 @@ public static class ServyxCoreCompositionExtensions
             sp.GetService<TimeProvider>(),
             sp.GetService<ILogger<PlanExecutor>>(),
             actor: null,
-            sp.GetRequiredService<IServerRepository>()));
+            sp.GetRequiredService<IServerRepository>(),
+            sp.GetRequiredService<IMirrorTargetRunStateSource>()));
 
         var changePlanRetention = ChangePlanRetentionOptions.FromConfiguration(builder.Configuration);
         builder.Services.AddSingleton(changePlanRetention);

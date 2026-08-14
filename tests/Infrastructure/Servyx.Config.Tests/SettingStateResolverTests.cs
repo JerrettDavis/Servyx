@@ -462,6 +462,10 @@ public class SettingStateResolverTests
         public Task<SaveDesiredValueResult> SaveDesiredValueAsync(
             ServerId serverId, string key, string? value, string actor, CancellationToken ct = default) =>
             throw new InvalidOperationException("Reading setting state must never write a desired value.");
+
+        public Task<SaveDesiredValueResult> SetMirrorToDerivedAsync(
+            ServerId serverId, string key, bool? mirrorToDerived, string actor, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Reading setting state must never write a mirror override.");
     }
 
     private sealed class FakeFiles(Dictionary<string, string> content)

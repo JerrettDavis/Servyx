@@ -25,6 +25,7 @@ public sealed partial class GameDefinitionYamlParser
     private static readonly IReadOnlySet<string> SurfaceKeys = new HashSet<string>(StringComparer.Ordinal)
     {
         "id", "role", "format", "codec", "codecPath", "locator", "managedSubtree", "mergePolicy", "derivedFrom", "regeneration",
+        "mirrorWrites",
     };
     private static readonly IReadOnlySet<string> LocatorKeys = new HashSet<string>(StringComparer.Ordinal) { "kind", "path", "channel", "query" };
     private static readonly IReadOnlySet<string> RegenerationKeys = new HashSet<string>(StringComparer.Ordinal) { "kind", "description" };
@@ -223,7 +224,7 @@ public sealed partial class GameDefinitionYamlParser
                 state.SurfacesById[surface.Id] = list;
             }
 
-            list.Add((id, surface.Format));
+            list.Add((id, surface.Format, surface.Role, surface.MirrorWrites));
         }
 
         // Queued rather than checked here: the value it must be measured against is the total of the
@@ -588,12 +589,31 @@ public sealed partial class GameDefinitionYamlParser
             }
         }
 
+        // The surface half of the mirrored-write opt-in. Only a 'derived' surface may declare it: an
+        // 'authoritative' one is already written through the ordinary path and a second, differently-gated
+        // route to the same file would be a duplicate write nobody reviewed, while a 'runtime' surface is
+        // observed over a control channel and has no file to write at all. Refused as an Error rather than
+        // ignored, because a silently-dropped opt-in reads to its author as an opt-in that took effect.
+        var mirrorWrites = OptionalBool(map, "mirrorWrites", issues, "A 'config.surfaces' entry") ?? false;
+        if (mirrorWrites && role is not null && role != SurfaceRole.Derived)
+        {
+            map.TryGet("mirrorWrites", out var mirrorNode);
+            issues.Error(
+                $"Surface '{id}' declares 'mirrorWrites: true' but has 'role: {role.Value}'; only a 'derived' "
+                + "surface may accept mirrored writes. An authoritative surface is already written directly, "
+                + "and a runtime surface is not a file.",
+                mirrorNode ?? map);
+        }
+
         if (id is null || role is null || format is null || locator is null)
         {
             return null;
         }
 
-        return new DeclaredConfigSurface(id, role.Value, format.Value, codec, codecPath, locator, managedSubtree, mergePolicy, derivedFrom, regeneration);
+        return new DeclaredConfigSurface(id, role.Value, format.Value, codec, codecPath, locator, managedSubtree, mergePolicy, derivedFrom, regeneration)
+        {
+            MirrorWrites = mirrorWrites && role.Value == SurfaceRole.Derived,
+        };
     }
 
     private static SurfaceLocator? ParseHostFileLocator(YamlMappingNode locatorMap, ParseIssues issues, ParseState state)

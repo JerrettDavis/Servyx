@@ -100,4 +100,45 @@ public sealed record ConfigSurface(
 {
     /// <summary>True only when <see cref="Role"/> is <see cref="SurfaceRole.Authoritative"/>.</summary>
     public bool ServyxMayWrite => Role == SurfaceRole.Authoritative;
+
+    /// <summary>
+    /// Whether the governing definition declared this surface as accepting mirrored writes — a verbatim
+    /// copy of <see cref="Servyx.Domain.Definitions.Model.DeclaredConfigSurface.MirrorWrites"/>, carried
+    /// through resolution so a planner can tell "the definition never offered this" apart from "the
+    /// definition offered it and this session cannot do it".
+    /// </summary>
+    /// <remarks>
+    /// Declared, not permitted. On its own this says nothing about whether a mirror write could actually be
+    /// performed — see <see cref="MirrorWritable"/>, which is the answer to that question.
+    /// </remarks>
+    public bool MirrorWritesDeclared { get; init; }
+
+    /// <summary>
+    /// Whether a mirrored write to this surface is actually performable on the session it resolved against:
+    /// the surface is <see cref="SurfaceRole.Derived"/>, the definition declared
+    /// <see cref="MirrorWritesDeclared"/>, and the session's transport advertises
+    /// <see cref="TransportCapabilities.FileWrite"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Set only by <see cref="ISurfaceResolver"/>, and false for everything it did not deliberately
+    /// allow.</strong> A <see cref="ConfigSurface"/> built directly — in a drift test, or anywhere identity
+    /// and role are all that matter — has this false, exactly as it has a null <see cref="Path"/>. The
+    /// honest default for "was never bound to a session" is "no mirror write is performable".
+    /// </para>
+    /// <para>
+    /// <strong>Kept out of <see cref="RequiredCapabilities"/> on purpose.</strong> Folding
+    /// <see cref="TransportCapabilities.FileWrite"/> into a derived surface's requirements would make that
+    /// surface fail to resolve at all on a read-only session — and a surface that does not resolve is one
+    /// Servyx cannot READ either, which would break the drift detection that is the whole reason a derived
+    /// surface is bound in the first place. Reading stays unconditional; only the mirror action is gated.
+    /// </para>
+    /// <para>
+    /// This is <em>not</em> a second spelling of <see cref="ServyxMayWrite"/> and the two are never
+    /// interchangeable. <see cref="ServyxMayWrite"/> answers "is this a genuine source of intent Servyx
+    /// owns" and is still false here; this answers the much narrower "may a declared, opted-in mirror copy
+    /// be spliced into this generated file between regenerations".
+    /// </para>
+    /// </remarks>
+    public bool MirrorWritable { get; init; }
 }

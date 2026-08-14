@@ -113,6 +113,41 @@ public sealed class Server
     /// <summary>When <see cref="WriteMode"/> was last changed, if it has ever been changed.</summary>
     public DateTimeOffset? WriteModeChangedAt { get; set; }
 
+    /// <summary>
+    /// This server's default answer to "when a setting is written to its authoritative surface, should the
+    /// change ALSO be mirrored onto the derived in-container copy the workload regenerates?"
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Opt-in, and seeded false.</strong> Not <c>required</c>, and defaulting to <see langword="false"/>
+    /// rather than <see langword="true"/>, for the same reason <see cref="WriteMode"/> starts read-only: a
+    /// mirrored write puts bytes into a file the workload owns, and an operator who has not asked for that
+    /// has not consented to it. Every server adopted before this column existed reads as false, which is the
+    /// correct posture for all of them.
+    /// </para>
+    /// <para>
+    /// <strong>A default, not an authorisation.</strong> Turning this on grants nothing by itself: the
+    /// governing definition must declare the individual setting mirror-eligible, the surface must declare it
+    /// accepts mirrored writes, the setting must not be sensitive, the transport must be able to write into
+    /// the container, and the container must be running. This flag only decides what an eligible setting
+    /// does when its own row expresses no opinion — see
+    /// <c>ServerSettingValue.MirrorToDerived</c> for the per-row override that can point either way.
+    /// </para>
+    /// <para>
+    /// Attribution mirrors <see cref="WriteModeChangedBy"/>/<see cref="WriteModeChangedAt"/> exactly,
+    /// including its honesty caveat: Servyx has one shared operator password and no per-operator accounts,
+    /// so "who" is a constant in practice — recorded anyway so a future identity system does not need a
+    /// schema change to become meaningful.
+    /// </para>
+    /// </remarks>
+    public bool MirrorDerivedSurfaces { get; set; }
+
+    /// <summary>Who last changed <see cref="MirrorDerivedSurfaces"/>, if it has ever been changed.</summary>
+    public string? MirrorDerivedSurfacesChangedBy { get; set; }
+
+    /// <summary>When <see cref="MirrorDerivedSurfaces"/> was last changed, if it has ever been changed.</summary>
+    public DateTimeOffset? MirrorDerivedSurfacesChangedAt { get; set; }
+
     /// <summary>When this server record was created.</summary>
     public required DateTimeOffset CreatedAt { get; set; }
 }

@@ -88,6 +88,25 @@ public sealed class GrantInvalidatingServerRepository : IServerRepository
     }
 
     /// <inheritdoc />
+    public async Task<Server?> SetMirrorDerivedSurfacesAsync(
+        ServerId id,
+        bool mirrorDerivedSurfaces,
+        string changedBy,
+        DateTimeOffset changedAt,
+        CancellationToken ct = default)
+    {
+        // Invalidates too, even though this flag is not itself a write grant and WriteGrantCache does not
+        // read it. "Which mutations happen to be safe to skip" is the exact reasoning that produced the
+        // removal gap this decorator exists to close — every mutating member invalidates, without exception.
+        var updated = await _inner
+            .SetMirrorDerivedSurfacesAsync(id, mirrorDerivedSurfaces, changedBy, changedAt, ct)
+            .ConfigureAwait(false);
+
+        _grants.Invalidate();
+        return updated;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> RemoveAsync(ServerId id, CancellationToken ct = default)
     {
         var removed = await _inner.RemoveAsync(id, ct).ConfigureAwait(false);

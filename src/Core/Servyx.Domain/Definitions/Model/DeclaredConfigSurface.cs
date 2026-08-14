@@ -98,4 +98,37 @@ public sealed record DeclaredConfigSurface(
     string? ManagedSubtree,
     MergePolicy MergePolicy,
     IReadOnlyList<string> DerivedFrom,
-    RegenerationTrigger? Regeneration);
+    RegenerationTrigger? Regeneration)
+{
+    /// <summary>
+    /// Whether this <see cref="SurfaceRole.Derived"/> surface permits individually-declared settings to
+    /// have their authoritative write <em>mirrored</em> onto it, so the change reaches the running workload
+    /// without waiting for the surface to regenerate.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This does not change the surface's role, and the role is still the truth.</strong>
+    /// <see cref="Role"/> stays <see cref="SurfaceRole.Derived"/>: the workload really does own this file
+    /// and really will rewrite it, a mirrored value really is discarded at the next regeneration, and
+    /// <see cref="Servyx.Domain.Configuration.ConfigSurface.ServyxMayWrite"/> stays false for it. What this
+    /// flag adds is a narrow, declared, reviewable exception: <em>the definition author states that this
+    /// particular generated file tolerates an out-of-band edit between regenerations</em>. It is deliberately
+    /// not a relaxation of <see cref="SurfaceRole"/> semantics, because relaxing those would silently apply
+    /// to every derived surface of every definition rather than to the one that was reviewed.
+    /// </para>
+    /// <para>
+    /// <strong>Necessary but not sufficient.</strong> A surface declaring this mirrors nothing on its own —
+    /// each individual setting must also declare <see cref="SettingBinding.MirrorWrite"/> on its binding to
+    /// this surface, the server (or the individual row) must have the mirror toggle on, and a sensitive
+    /// setting is excluded regardless. The parser rejects the flag on a non-derived surface: an
+    /// <see cref="SurfaceRole.Authoritative"/> surface is already written through the ordinary path, and a
+    /// <see cref="SurfaceRole.Runtime"/> surface has no file to write at all.
+    /// </para>
+    /// <para>
+    /// An init-only property with a default rather than an eleventh positional parameter, matching
+    /// <see cref="SettingBinding.MirrorWrite"/>'s own reasoning: every existing construction keeps compiling
+    /// and keeps meaning "not mirrored".
+    /// </para>
+    /// </remarks>
+    public bool MirrorWrites { get; init; }
+}

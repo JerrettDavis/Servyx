@@ -69,10 +69,14 @@ public sealed class EfServerSettingsService : IServerSettingsService
 
         var values = rows.ToDictionary(
             row => row.Key,
-            row => new DesiredSettingValue(row.Key, row.Value, row.UpdatedBy, row.UpdatedAt),
+            row => new DesiredSettingValue(row.Key, row.Value, row.UpdatedBy, row.UpdatedAt, row.MirrorToDerived),
             StringComparer.Ordinal);
 
-        return new ServerSettingsSnapshot(server.Id, values);
+        // The per-server default travels with the per-row overrides, out of the same read, because that is
+        // what makes them resolvable together: an override is meaningless without the default it overrides,
+        // and IPlanExecutor.PreviewAsync reads both off this one snapshot rather than growing a parameter or
+        // a second dependency for the server row it would otherwise have to fetch itself.
+        return new ServerSettingsSnapshot(server.Id, values, server.MirrorDerivedSurfaces);
     }
 
     /// <inheritdoc />
@@ -127,6 +131,50 @@ public sealed class EfServerSettingsService : IServerSettingsService
 
         return new SaveDesiredValueResult(
             SaveDesiredValueOutcome.Recorded,
-            new DesiredSettingValue(key, normalizedValue, actor, now));
+            new DesiredSettingValue(key, normalizedValue, actor, now, existing.MirrorToDerived));
+    }
+
+    /// <inheritdoc />
+    public async Task<SaveDesiredValueResult> SetMirrorToDerivedAsync(
+        ServerId serverId, string key, bool? mirrorToDerived, string actor, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(key);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        var serverExists = await context.Servers.AsNoTracking()
+            .AnyAsync(row => row.Id == serverId, ct).ConfigureAwait(false);
+
+        if (!serverExists)
+        {
+            return new SaveDesiredValueResult(SaveDesiredValueOutcome.ServerNotFound, null);
+        }
+
+        var existing = await context.ServerSettingValues
+            .SingleOrDefaultAsync(row => row.ServerId == serverId && row.Key == key, ct).ConfigureAwait(false);
+
+        if (existing is null)
+        {
+            // No row to hang the override off, and one is deliberately not invented — see
+            // SaveDesiredValueOutcome.NoDesiredValueRecorded's own remarks.
+            return new SaveDesiredValueResult(SaveDesiredValueOutcome.NoDesiredValueRecorded, null);
+        }
+
+        var now = _time.GetUtcNow();
+
+        existing.MirrorToDerived = mirrorToDerived;
+
+        // Attribution moves with the change, matching this table's one-writer-of-record convention: the row
+        // records who touched it last, and setting the override IS touching it. Value is deliberately not
+        // rewritten — this method changes the preference, never the operator's recorded intent.
+        existing.UpdatedBy = actor;
+        existing.UpdatedAt = now;
+
+        await context.SaveChangesAsync(ct).ConfigureAwait(false);
+
+        return new SaveDesiredValueResult(
+            SaveDesiredValueOutcome.Recorded,
+            new DesiredSettingValue(key, existing.Value, actor, now, mirrorToDerived));
     }
 }

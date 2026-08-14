@@ -11,7 +11,32 @@ namespace Servyx.Domain.Configuration;
 /// </param>
 /// <param name="UpdatedBy">Who recorded it. See <see cref="Servyx.Domain.Entities.ServerSettingValue.UpdatedBy"/>'s remarks — one constant value in practice.</param>
 /// <param name="UpdatedAt">When it was recorded.</param>
-public sealed record DesiredSettingValue(string Key, string Value, string UpdatedBy, DateTimeOffset UpdatedAt);
+/// <param name="MirrorToDerived">
+/// This row's own answer to "should this setting's write also be mirrored onto the eligible derived
+/// surface?", or <see langword="null"/> to inherit <see cref="ServerSettingsSnapshot.MirrorDerivedSurfaces"/>.
+/// Three-valued on purpose — see <see cref="Servyx.Domain.Entities.ServerSettingValue.MirrorToDerived"/>.
+/// Trailing with a default so every existing four-argument construction keeps compiling and keeps meaning
+/// "inherit the server default".
+/// </param>
+public sealed record DesiredSettingValue(
+    string Key,
+    string Value,
+    string UpdatedBy,
+    DateTimeOffset UpdatedAt,
+    bool? MirrorToDerived = null)
+{
+    /// <summary>
+    /// Whether this setting's write should be mirrored, given <paramref name="serverDefault"/> — the row's
+    /// own override when it has one, the server default otherwise.
+    /// </summary>
+    /// <remarks>
+    /// The single place inheritance is resolved, so "null means inherit" cannot be spelled two subtly
+    /// different ways by two callers. Note both directions really are supported and both matter: an override
+    /// of <see langword="false"/> suppresses mirroring on a server that has it on by default, and an
+    /// override of <see langword="true"/> enables it for one row on a server that has it off.
+    /// </remarks>
+    public bool MirrorsToDerived(bool serverDefault) => MirrorToDerived ?? serverDefault;
+}
 
 /// <summary>
 /// Every desired value currently recorded for a tracked server, plus the resolved <see cref="ServerId"/> a
@@ -25,7 +50,17 @@ public sealed record DesiredSettingValue(string Key, string Value, string Update
 /// </remarks>
 /// <param name="ServerId">The tracked server's own row id.</param>
 /// <param name="Values">Every desired value recorded for it, keyed by setting key.</param>
-public sealed record ServerSettingsSnapshot(ServerId ServerId, IReadOnlyDictionary<string, DesiredSettingValue> Values);
+/// <param name="MirrorDerivedSurfaces">
+/// This server's default answer to "should an eligible setting's write also be mirrored onto the derived
+/// surface?" — <see cref="Servyx.Domain.Entities.Server.MirrorDerivedSurfaces"/>, carried here so
+/// <see cref="IPlanExecutor.PreviewAsync"/> can read it off the snapshot it already loads rather than
+/// growing a parameter for it. Defaults to <see langword="false"/>, which is both the seeded database
+/// default and the honest answer for a caller that constructs a snapshot without one: mirroring is opt-in.
+/// </param>
+public sealed record ServerSettingsSnapshot(
+    ServerId ServerId,
+    IReadOnlyDictionary<string, DesiredSettingValue> Values,
+    bool MirrorDerivedSurfaces = false);
 
 /// <summary>
 /// Whether a <see cref="IServerSettingsService.SaveDesiredValueAsync"/> call recorded a value, or why not.
@@ -43,6 +78,19 @@ public enum SaveDesiredValueOutcome
 
     /// <summary>No <c>Server</c> row matches the supplied <see cref="ServerId"/>, so there was nothing to record against.</summary>
     ServerNotFound,
+
+    /// <summary>
+    /// The server is tracked, but no desired value is recorded for the key — so there is no row whose
+    /// mirror override could be set. Only ever returned by
+    /// <see cref="IServerSettingsService.SetMirrorToDerivedAsync"/>.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not silently creating an empty-valued row to hang the flag off. A mirror override says
+    /// "when this setting is written, also write the derived copy"; with no desired value there is nothing to
+    /// write, so the row would record a preference about an event that cannot happen and would then be
+    /// indistinguishable from an operator who had genuinely blanked the field.
+    /// </remarks>
+    NoDesiredValueRecorded,
 }
 
 /// <summary>The result of attempting to record a desired setting value.</summary>
@@ -103,4 +151,27 @@ public interface IServerSettingsService
     /// </summary>
     Task<SaveDesiredValueResult> SaveDesiredValueAsync(
         ServerId serverId, string key, string? value, string actor, CancellationToken ct = default);
+
+    /// <summary>
+    /// Records this row's own answer to "mirror this setting's write onto the eligible derived surface?" —
+    /// <see langword="true"/> to force it on, <see langword="false"/> to force it off, or
+    /// <see langword="null"/> to go back to inheriting the server default
+    /// (<see cref="ServerSettingsSnapshot.MirrorDerivedSurfaces"/>).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Separate from <see cref="SaveDesiredValueAsync"/> rather than a parameter on it.</strong>
+    /// Folding it in would mean every ordinary value edit silently rewrites the override too — an operator
+    /// who set a per-row override and later corrected a typo in the value would have their override reset
+    /// with nothing saying so. The two are independent facts about the row and are recorded independently.
+    /// </para>
+    /// <para>
+    /// <strong>This grants nothing.</strong> Turning the flag on for a setting the governing definition
+    /// never declared mirror-eligible, or for a sensitive one, changes nothing at all: eligibility is a
+    /// definition fact checked at plan time (see <c>SettingDescriptor.MirroredBindings</c>), and this table
+    /// only records an operator preference that eligibility is then consulted against.
+    /// </para>
+    /// </remarks>
+    Task<SaveDesiredValueResult> SetMirrorToDerivedAsync(
+        ServerId serverId, string key, bool? mirrorToDerived, string actor, CancellationToken ct = default);
 }

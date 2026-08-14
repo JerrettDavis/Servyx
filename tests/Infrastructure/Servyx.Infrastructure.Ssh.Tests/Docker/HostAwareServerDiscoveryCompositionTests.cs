@@ -120,6 +120,10 @@ public class HostAwareServerDiscoveryCompositionTests
             ServerId id, ServerWriteMode mode, string changedBy, DateTimeOffset changedAt, CancellationToken ct = default) =>
             throw new NotSupportedException("Not needed by this suite.");
 
+        public Task<Server?> SetMirrorDerivedSurfacesAsync(
+            ServerId id, bool mirrorDerivedSurfaces, string changedBy, DateTimeOffset changedAt, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not needed by this suite.");
+
         public Task<bool> RemoveAsync(ServerId id, CancellationToken ct = default) =>
             throw new NotSupportedException("Not needed by this suite.");
     }

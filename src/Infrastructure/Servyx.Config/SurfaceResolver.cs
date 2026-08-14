@@ -293,7 +293,9 @@ public sealed class SurfaceResolver : ISurfaceResolver
         }
 
         // FileWrite is added strictly from ServyxMayWrite, which is computed from Role. A Derived or Runtime
-        // surface therefore cannot acquire a write requirement here no matter what else is true of it.
+        // surface therefore cannot acquire a write requirement here no matter what else is true of it —
+        // including a declared mirror opt-in, which is deliberately NOT folded into this arithmetic; see
+        // mirrorWritable below.
         var mayWrite = surface.Role == SurfaceRole.Authoritative;
         var required = TransportCapabilities.FileRead
             | (mayWrite ? TransportCapabilities.FileWrite : TransportCapabilities.None)
@@ -339,6 +341,29 @@ public sealed class SurfaceResolver : ISurfaceResolver
                 + "TargetPath on this session is relative to."));
         }
 
+        // THE MIRROR-WRITE GATE. Reported as a fact about this resolution, never as a requirement of it, and
+        // opened only where all three of the following are simultaneously true:
+        //
+        //   1. the definition declared 'mirrorWrites: true' on THIS surface — the narrow, reviewable
+        //      exception, not a role relaxation (see DeclaredConfigSurface.MirrorWrites);
+        //   2. the surface really is Derived — an Authoritative one is already writable through the ordinary
+        //      path and must not acquire a second one, and a Runtime one has no file at all; and
+        //   3. the session actually advertises FileWrite.
+        //
+        // Rule 3 is what makes an SSH-connected host degrade honestly rather than silently: an exec-only
+        // channel reports false here and a planner blocks the mirror action with a reason, instead of
+        // planning a write that would fail confusingly at apply time. In practice a container-scoped surface
+        // on an SSH session has already been refused above (a host-scoped file channel cannot serve a
+        // container path), so this is the second of two independent refusals, not the only one.
+        //
+        // Note what is deliberately NOT checked here: whether any SETTING opts in, whether the operator's
+        // per-server or per-row toggle is on, and whether the setting is sensitive. Those are per-setting
+        // facts a per-surface resolver cannot see, and they are enforced where they are visible — a
+        // surface reporting true here still mirrors nothing on its own.
+        var mirrorWritable = surface.MirrorWrites
+            && surface.Role == SurfaceRole.Derived
+            && context.Capabilities.HasFlag(TransportCapabilities.FileWrite);
+
         return (
             new ConfigSurface(
                 surface.Id,
@@ -350,7 +375,11 @@ public sealed class SurfaceResolver : ISurfaceResolver
                 containerScoped,
                 required,
                 surface.CodecPath,
-                surface.MergePolicy),
+                surface.MergePolicy)
+            {
+                MirrorWritesDeclared = surface.MirrorWrites,
+                MirrorWritable = mirrorWritable,
+            },
             null);
     }
 

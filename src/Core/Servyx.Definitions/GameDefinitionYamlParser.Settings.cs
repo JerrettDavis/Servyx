@@ -14,7 +14,7 @@ public sealed partial class GameDefinitionYamlParser
     };
     private static readonly IReadOnlySet<string> SettingBindingKeys = new HashSet<string>(StringComparer.Ordinal)
     {
-        "surface", "direction", "key", "member", "unquote", "pointer", "strategy", "sensitive",
+        "surface", "direction", "key", "member", "unquote", "pointer", "strategy", "sensitive", "mirrorWrite",
     };
 
     /// <summary>
@@ -121,6 +121,21 @@ public sealed partial class GameDefinitionYamlParser
             }
         }
 
+        // The descriptor-level half of the sensitivity exclusion. ValidateMirrorWriteBinding already refuses a
+        // binding that is itself marked 'sensitive: true', but a setting can be sensitive without any single
+        // binding saying so — 'type: secret' makes the whole descriptor secret (see SettingDescriptor.IsSecret),
+        // and Palworld's join password is exactly that shape. Checked here, where the type and the bindings are
+        // both in hand, so an author is told at parse time rather than discovering at plan time that the flag
+        // is being ignored.
+        if (type == SettingType.Secret && bindings.Any(b => b.MirrorWrite))
+        {
+            issues.Error(
+                $"Setting '{key}' has type 'secret' and declares a binding with 'mirrorWrite: true'. A secret "
+                + "is never mirrored onto a derived surface: that would place a second copy of it in a file "
+                + "the workload rewrites at will, which the authoritative write already covers without.",
+                map);
+        }
+
         if (key is null || label is null || type is null)
         {
             return null;
@@ -169,11 +184,17 @@ public sealed partial class GameDefinitionYamlParser
         var surfaceId = RequireString(map, "surface", issues, "A 'bindings' entry");
         var direction = ParseBindingDirection(map, issues);
         var sensitive = OptionalBool(map, "sensitive", issues, "A 'bindings' entry") ?? false;
+        var mirrorWrite = OptionalBool(map, "mirrorWrite", issues, "A 'bindings' entry") ?? false;
 
         if (surfaceId is not null)
         {
             map.TryGet("surface", out var surfaceNode);
             ValidateSettingSurfaceReference(surfaceId, surfaceNode, map, issues, state);
+        }
+
+        if (mirrorWrite && surfaceId is not null && direction is not null)
+        {
+            ValidateMirrorWriteBinding(surfaceId, direction.Value, sensitive, map, issues, state);
         }
 
         var hasKey = map.TryGet("key", out var keyNode);
@@ -198,7 +219,9 @@ public sealed partial class GameDefinitionYamlParser
         {
             var keyValue = AsString(keyNode, issues, "A 'bindings' entry's 'key'");
             ValidateBindingSurfaceFormat(surfaceId, KeyAddressableFormats, "key", map, issues, state);
-            return keyValue is null ? null : new SettingBinding.ByKey(surfaceId, direction.Value, sensitive, keyValue);
+            return keyValue is null
+                ? null
+                : new SettingBinding.ByKey(surfaceId, direction.Value, sensitive, keyValue) { MirrorWrite = mirrorWrite };
         }
 
         if (hasMember)
@@ -206,13 +229,97 @@ public sealed partial class GameDefinitionYamlParser
             var memberValue = AsString(memberNode, issues, "A 'bindings' entry's 'member'");
             var unquote = OptionalBool(map, "unquote", issues, "A 'bindings' entry") ?? false;
             ValidateBindingSurfaceFormat(surfaceId, MemberAddressableFormats, "member", map, issues, state);
-            return memberValue is null ? null : new SettingBinding.ByMember(surfaceId, direction.Value, sensitive, memberValue, unquote);
+            return memberValue is null
+                ? null
+                : new SettingBinding.ByMember(surfaceId, direction.Value, sensitive, memberValue, unquote) { MirrorWrite = mirrorWrite };
         }
 
         var pointerValue = AsString(pointerNode, issues, "A 'bindings' entry's 'pointer'");
         var strategy = OptionalString(map, "strategy", issues, "A 'bindings' entry");
         ValidateBindingSurfaceFormat(surfaceId, null, "pointer", map, issues, state);
-        return pointerValue is null ? null : new SettingBinding.ByPointer(surfaceId, direction.Value, sensitive, pointerValue, strategy);
+        return pointerValue is null
+            ? null
+            : new SettingBinding.ByPointer(surfaceId, direction.Value, sensitive, pointerValue, strategy) { MirrorWrite = mirrorWrite };
+    }
+
+    /// <summary>
+    /// The binding half of the two-key mirrored-write opt-in: a <c>mirrorWrite: true</c> binding must be a
+    /// <c>read</c> binding, must target a surface that itself declares <c>mirrorWrites: true</c>, and must
+    /// not be marked <c>sensitive</c>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Every one of these is an Error rather than a silent drop. A flag whose author believes it took effect
+    /// and which quietly did nothing is worse than no flag: the operator's UI would offer a mirror toggle
+    /// that never mirrors, with nothing anywhere saying why.
+    /// </para>
+    /// <para>
+    /// The <c>sensitive</c> refusal is the security-relevant one, and it is only half of the enforcement —
+    /// the other half is <see cref="SettingDescriptor.MirroredBindings"/>, which returns nothing for a
+    /// secret-typed setting whatever its bindings declare. This check catches the per-binding spelling at
+    /// authoring time; that property catches the whole descriptor at plan time, including a setting whose
+    /// <c>type: secret</c> makes it sensitive without any binding saying so. Neither is sufficient alone.
+    /// </para>
+    /// </remarks>
+    private static void ValidateMirrorWriteBinding(
+        string surfaceId,
+        BindingDirection direction,
+        bool sensitive,
+        YamlMappingNode map,
+        ParseIssues issues,
+        ParseState state)
+    {
+        map.TryGet("mirrorWrite", out var mirrorNode);
+        var node = mirrorNode ?? map;
+
+        if (direction != BindingDirection.Read)
+        {
+            issues.Error(
+                $"A 'bindings' entry declares 'mirrorWrite: true' with 'direction: {direction}'; a mirrored "
+                + "write applies only to a 'read' binding on a derived surface. A 'write' binding already "
+                + "writes its surface directly.",
+                node);
+        }
+
+        if (sensitive)
+        {
+            issues.Error(
+                $"A 'bindings' entry on surface '{surfaceId}' declares both 'sensitive: true' and "
+                + "'mirrorWrite: true'. A sensitive value is never mirrored: doing so would write a second "
+                + "copy of a secret onto a file the workload rewrites at will, for no benefit the "
+                + "authoritative write does not already provide.",
+                node);
+        }
+
+        if (!state.SurfacesById.TryGetValue(surfaceId, out var declarations))
+        {
+            // The surface reference itself is already reported by ValidateSettingSurfaceReference; saying so
+            // twice would just be noise.
+            return;
+        }
+
+        // "At least one" rather than "every one", because a surface id is shared across deployment PROFILES
+        // while a settings binding is not scoped to any of them (see the class remarks). Palworld is the
+        // shipped example: 'palworldsettings' is a derived, mirror-accepting surface under the docker profile
+        // and the AUTHORITATIVE surface under native-steamcmd, where mirroring is meaningless rather than
+        // wrong. Requiring every declaration to opt in would make the flag unusable on exactly the kind of
+        // definition it exists for. What must not pass is a binding that opts in against a surface no profile
+        // anywhere accepts mirrored writes on — that one really is a flag that can never do anything.
+        if (declarations.Any(d => d.MirrorWrites))
+        {
+            return;
+        }
+
+        var declaredAs = string.Join(
+            ", ",
+            declarations.Select(d => $"'{d.DeploymentId}' (role: {d.Role})"));
+
+        issues.Error(
+            $"A 'bindings' entry declares 'mirrorWrite: true' against surface '{surfaceId}', which no "
+            + $"deployment declares with 'mirrorWrites: true' — it is declared by {declaredAs}. Both halves "
+            + "are required: the surface must declare that it accepts mirrored writes, and each individual "
+            + "setting must opt in.",
+            node);
     }
 
     /// <summary>
@@ -269,7 +376,7 @@ public sealed partial class GameDefinitionYamlParser
             return;
         }
 
-        foreach (var (deploymentId, format) in declarations)
+        foreach (var (deploymentId, format, _, _) in declarations)
         {
             var ok = allowedFormats is { } set
                 ? set.Contains(format)

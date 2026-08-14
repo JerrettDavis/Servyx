@@ -73,6 +73,19 @@ public sealed class ServerConfiguration : IEntityTypeConfiguration<Server>
         builder.Property(server => server.WriteModeChangedBy)
             .HasMaxLength(200);
 
+        // Seeded false by an explicit default rather than left to the CLR default alone: the migration adds
+        // this column to a table that already has rows, and every one of those servers must read as "not
+        // mirroring" — mirroring is opt-in, and a backfill of true would silently enable derived-surface
+        // writes on servers whose operators never asked for them.
+        builder.Property(server => server.MirrorDerivedSurfaces)
+            .IsRequired()
+            .HasDefaultValue(false);
+
+        // Attribution columns mirror WriteModeChangedBy/At exactly, bound included — same kind of fact, same
+        // shape, so a query that reports one can report the other without special-casing.
+        builder.Property(server => server.MirrorDerivedSurfacesChangedBy)
+            .HasMaxLength(200);
+
         builder.HasIndex(server => server.HostId);
         builder.HasIndex(server => server.GameDefinitionId);
     }

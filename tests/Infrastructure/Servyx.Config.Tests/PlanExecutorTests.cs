@@ -757,6 +757,489 @@ public class PlanExecutorTests
             .Which.Message.Should().Contain("tracks no server");
     }
 
+    // ── Mirrored writes (dual-write to the derived surface) ────────────────────────────────────────────
+
+    private const string MirrorEnv = """
+        SERVER_NAME=Authoritative Name
+        ADMIN_PASSWORD=hunter2
+        DIFFICULTY=None
+        """;
+
+    private const string MirrorIni = """
+        [/Script/Pal.PalGameWorldSettings]
+        OptionSettings=(Difficulty=None,ServerName="Rendered Name",AdminPassword="hunter2")
+        """;
+
+    [Fact]
+    public async Task PreviewAsync_WithTheServerDefaultOn_PlansASecondActionOnTheDerivedSurface()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Blocked.Should().BeEmpty();
+        plan.Actions.Select(a => a.SurfaceId).Should().Equal("env", "palworldsettings");
+        plan.Feasibility.Should().Be(PlanFeasibility.FullyAchievable);
+
+        // Same plan, so the derived write inherits the pre-flight sweep, the per-action WAL, the read-back
+        // verification and the revert set — none of which needed a new phase to say so.
+        harness.Store.Plan.Should().NotBeNull();
+        harness.Store.Actions.Select(a => a.SurfaceId).Should().Equal("env", "palworldsettings");
+        harness.Store.Actions.Should().OnlyContain(a => a.Reversible);
+    }
+
+    [Fact]
+    public async Task PreviewAsync_TheMirroredAction_DeclaresTheFileWriteItActuallyNeeds()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // The surface's own RequiredCapabilities deliberately omits FileWrite (a derived surface must stay
+        // readable on a read-only session). The ACTION states what the action needs, so a stored plan is not
+        // quietly less demanding than the write it describes.
+        var mirrored = plan.Actions.Single(a => a.SurfaceId == "palworldsettings");
+        mirrored.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite).Should().BeTrue();
+        mirrored.RequiredCapabilities.HasFlag(TransportCapabilities.ContainerScopedFiles).Should().BeTrue();
+
+        harness.Store.Actions
+            .Single(a => a.SurfaceId == "palworldsettings")
+            .RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithTheServerDefaultOff_PlansOnlyTheAuthoritativeWrite_AndBlocksNothing()
+    {
+        var harness = Mirroring(serverDefault: false);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+
+        // Not blocked: nothing is obstructing a mirror the operator switched off. Reporting it would fill the
+        // form with refusals describing the configuration working as configured, and would drag every plan
+        // down to PartiallyAchievable.
+        plan.Blocked.Should().BeEmpty();
+        plan.Feasibility.Should().Be(PlanFeasibility.FullyAchievable);
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithAPerRowOverrideOn_MirrorsEvenThoughTheServerDefaultIsOff()
+    {
+        var harness = Mirroring(
+            serverDefault: false,
+            overrides: new Dictionary<string, bool?>(StringComparer.Ordinal) { ["DIFFICULTY"] = true });
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Select(a => a.SurfaceId).Should().Equal("env", "palworldsettings");
+        plan.Blocked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithAPerRowOverrideOff_SuppressesTheMirrorEvenThoughTheServerDefaultIsOn()
+    {
+        var harness = Mirroring(
+            serverDefault: true,
+            overrides: new Dictionary<string, bool?>(StringComparer.Ordinal) { ["DIFFICULTY"] = false });
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // The whole reason the column is nullable: "explicitly off" has to keep suppressing after the server
+        // default is turned on, and a plain bool could not tell it from "never expressed an opinion".
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithANullOverride_InheritsTheServerDefault()
+    {
+        var harness = Mirroring(
+            serverDefault: true,
+            overrides: new Dictionary<string, bool?>(StringComparer.Ordinal) { ["DIFFICULTY"] = null });
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Select(a => a.SurfaceId).Should().Equal("env", "palworldsettings");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_ForASensitiveSetting_NeverMirrors_EvenWithTheBindingDeclaredAndTheToggleOn()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("ADMIN_PASSWORD", "correct horse"));
+
+        // The binding in this fixture DOES carry mirrorWrite. Eligibility is computed from the descriptor —
+        // see SettingDescriptor.MirroredBindings — so a secret is excluded before any toggle is consulted,
+        // and no amount of operator configuration puts a second copy of a password on disk.
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_ForASettingWhoseReadBindingDeclaresNoMirror_PlansNoDerivedAction()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("SERVER_NAME", "A New Name"));
+
+        // SERVER_NAME reads the same mirror-accepting surface and is not sensitive. It is simply not opted
+        // in, which is the point: eligibility is declared per setting, never inferred from the surface.
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WhenTheSurfaceDoesNotDeclareMirrorWrites_BlocksTheMirrorAndStillPlansTheEnvWrite()
+    {
+        var harness = Mirroring(serverDefault: true, surfaceDeclaresMirror: false);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+
+        var blocked = plan.Blocked.Should().ContainSingle().Which;
+        blocked.SettingKey.Should().Be("DIFFICULTY");
+        blocked.SurfaceId.Should().Be("palworldsettings");
+        blocked.Reason.Should().Contain("mirrorWrites");
+        blocked.RemediationHint.Should().NotBeEmpty();
+
+        // The authoritative half still happened, so the plan is partially achievable rather than blocked.
+        plan.Feasibility.Should().Be(PlanFeasibility.PartiallyAchievable);
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WhenTheSessionCannotWriteInsideTheContainer_BlocksTheMirrorWithTheTransportReason()
+    {
+        // A file channel that reads inside the container but cannot write it. The drift read still works —
+        // the surface resolves — and only the mirrored write is withdrawn.
+        var harness = Mirroring(
+            serverDefault: true,
+            dataSessionCapabilities: TransportCapabilities.FileRead | TransportCapabilities.ContainerScopedFiles);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+
+        var blocked = plan.Blocked.Should().ContainSingle().Which;
+        blocked.SurfaceId.Should().Be("palworldsettings");
+        blocked.Reason.Should().Contain("FileWrite");
+        blocked.RemediationHint.Should().Contain("inside the container");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_OverAHostScopedFileChannel_BlocksTheMirrorHonestly_RatherThanSilentlyDroppingIt()
+    {
+        // The ssh+docker shape this phase deliberately does not build support for: exec is
+        // container-addressed but the file channel is the SSH host's own. The container-scoped surface does
+        // not resolve at all, and the operator is told so — not left staring at a missing action.
+        var harness = Mirroring(
+            serverDefault: true,
+            dataSessionCapabilities: TransportCapabilities.FileRead | TransportCapabilities.FileWrite);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+
+        var blocked = plan.Blocked.Should().ContainSingle().Which;
+        blocked.SurfaceId.Should().Be("palworldsettings");
+        blocked.Reason.Should().Contain("ContainerScopedFiles");
+        blocked.RemediationHint.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WhenTheAuthoritativeWriteIsBlocked_DoesNotMirrorAlone()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("ORPHANED", "Hard"));
+
+        // A derived-only write survives exactly until the next regeneration and then silently reverts — the
+        // precise failure SurfaceRole.Derived exists to prevent, reached from the other direction.
+        plan.Actions.Should().BeEmpty();
+        plan.Feasibility.Should().Be(PlanFeasibility.Blocked);
+
+        plan.Blocked.Should().HaveCount(2);
+        plan.Blocked.Should().Contain(b => b.SurfaceId == "env");
+
+        var mirror = plan.Blocked.Single(b => b.SurfaceId == "palworldsettings");
+        mirror.Reason.Should().Contain("authoritative write did not get planned");
+        mirror.RemediationHint.Should().NotBeEmpty();
+    }
+
+    [Theory]
+    [InlineData("exited")]
+    [InlineData("created")]
+    [InlineData("restarting")]
+    public async Task PreviewAsync_WhenTheContainerIsNotRunning_BlocksTheMirrorAtPreview_NotAtApply(string state)
+    {
+        var harness = Mirroring(serverDefault: true, runState: new StubRunState(false, state));
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // A mirrored write is finalized by a rename issued inside the container. Discovering that at apply
+        // time means an operator approved a two-action diff and watched the second half die on a rename.
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+
+        var blocked = plan.Blocked.Should().ContainSingle().Which;
+        blocked.SurfaceId.Should().Be("palworldsettings");
+        blocked.Reason.Should().Contain("not running");
+        blocked.Reason.Should().Contain(state);
+        blocked.RemediationHint.Should().Contain("Start the server");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WhenTheRunStateCannotBeDetermined_BlocksTheMirror_RatherThanAssumingItIsUp()
+    {
+        var harness = Mirroring(serverDefault: true, runState: new StubRunState(null));
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().ContainSingle().Which.Reason.Should().Contain("could not be determined");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithNoRunStateSourceRegistered_BlocksTheMirror_AndLeavesTheEnvWriteAlone()
+    {
+        var harness = Mirroring(serverDefault: true, omitRunStateSource: true);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // Fail-closed: an unwired composition loses the optional half of the feature and keeps all of the
+        // authoritative one.
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().ContainSingle().Which.Reason.Should().Contain("cannot tell whether");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WhenTheRunStateSourceThrows_BlocksTheMirror_RatherThanTakingThePreviewDown()
+    {
+        var harness = Mirroring(serverDefault: true, runState: new ThrowingRunState());
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Should().ContainSingle().Which.SurfaceId.Should().Be("env");
+        plan.Blocked.Should().ContainSingle().Which.Reason.Should().Contain("could not be determined");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithNothingToMirror_NeverAsksForTheRunStateAtAll()
+    {
+        var probe = new StubRunState(true, "running");
+        var harness = Mirroring(serverDefault: false, runState: probe);
+
+        await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // One round trip per settings-page load, for a feature nobody switched on, is a cost worth not
+        // paying — and the probe is the only thing in preview that talks to anything outside Servyx's own
+        // storage besides the surface reads themselves.
+        probe.Calls.Should().Be(0);
+    }
+
+    [Fact]
+    public async Task PreviewAsync_WithSeveralMirroredSettings_AsksForTheRunStateExactlyOnce()
+    {
+        var probe = new StubRunState(true, "running");
+        var harness = Mirroring(serverDefault: true, runState: probe);
+
+        await harness.PreviewAsync(("DIFFICULTY", "Hard"), ("ORPHANED", "Casual"));
+
+        // One fact about one workload, resolved once for the whole preview — not once per mirrored setting,
+        // which would multiply a round trip by the size of the operator's form.
+        probe.Calls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task PreviewAsync_OrdersTheAuthoritativeActionFirst_EvenWhenTheDerivedSurfaceSortsBefore()
+    {
+        // The regression this pins: "env" happens to sort before "palworldsettings", so the correct order
+        // falls out of alphabetical ordering for the shipped definition and would go on doing so until a
+        // definition named its derived surface something earlier. Here it is named 'a-settings' deliberately.
+        var harness = new Harness(
+            files: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                [".env"] = MirrorEnv,
+                ["compose.yaml"] = Compose,
+                ["Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"] = MirrorIni,
+            },
+            surfaces: ReorderedSurfaces(),
+            settings: ReorderedSettings(),
+            mirrorDerivedSurfaces: true);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        plan.Actions.Select(a => a.SurfaceId).Should().Equal("z-env", "a-settings");
+
+        // Ordinals are what ApplyAsync walks, so the persisted order is the one that actually decides which
+        // write goes first. If only one of the two can land it must be the durable one.
+        harness.Store.Actions.OrderBy(a => a.Ordinal).Select(a => a.SurfaceId)
+            .Should().Equal("z-env", "a-settings");
+    }
+
+    [Fact]
+    public async Task PreviewAsync_TheMirroredDiff_MasksSecretsOnTheDerivedSurfaceToo()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        var plan = await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // The INI's OptionSettings blob holds AdminPassword on the same line the mirrored member lives on.
+        // Masking is driven by the whole catalogue's sensitive bindings, not by what this plan writes, so the
+        // mirrored diff inherits it with no special casing.
+        var mirrored = plan.Actions.Single(a => a.SurfaceId == "palworldsettings");
+        mirrored.UnifiedDiff.Should().NotContain("hunter2");
+        harness.Store.Actions.Single(a => a.SurfaceId == "palworldsettings")
+            .ContainsSecrets.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task PreviewAsync_PlanningAMirroredWrite_StillTouchesNoGameServer()
+    {
+        var harness = Mirroring(serverDefault: true);
+
+        await harness.PreviewAsync(("DIFFICULTY", "Hard"));
+
+        // The structural property the whole type rests on. Adding a second write action must not have added
+        // a write.
+        harness.Mutations.Should().BeEmpty();
+    }
+
+    /// <summary>Builds a harness over the mirror fixtures, with the mirror-eligible settings catalogue.</summary>
+    private static Harness Mirroring(
+        bool serverDefault,
+        IReadOnlyDictionary<string, bool?>? overrides = null,
+        bool surfaceDeclaresMirror = true,
+        IMirrorTargetRunStateSource? runState = null,
+        bool omitRunStateSource = false,
+        TransportCapabilities? dataSessionCapabilities = null) => new(
+        files: new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [".env"] = MirrorEnv,
+            ["compose.yaml"] = Compose,
+            ["Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"] = MirrorIni,
+        },
+        surfaces: MirrorSurfaces(surfaceDeclaresMirror),
+        settings: MirrorSettings(),
+        mirrorDerivedSurfaces: serverDefault,
+        mirrorOverrides: overrides,
+        runState: runState,
+        omitRunStateSource: omitRunStateSource,
+        dataSessionCapabilities: dataSessionCapabilities);
+
+    /// <summary>The shipped surface set, with the INI opted in to mirrored writes (or deliberately not).</summary>
+    private static IReadOnlyList<DeclaredConfigSurface> MirrorSurfaces(bool mirrorWrites) =>
+    [
+        .. Surfaces(MergePolicy.PreserveUnknown, SurfaceRole.Derived)
+            .Select(s => s.Id == "palworldsettings" ? s with { MirrorWrites = mirrorWrites } : s),
+    ];
+
+    /// <summary>
+    /// Three settings covering the three eligibility answers: opted in, sensitive-so-never, and simply not
+    /// declared.
+    /// </summary>
+    private static IReadOnlyList<SettingDescriptor> MirrorSettings() =>
+    [
+        Describe(
+            "DIFFICULTY",
+            SettingType.Enum,
+            [
+                new SettingBinding.ByKey("env", BindingDirection.Write, false, "DIFFICULTY"),
+                new SettingBinding.ByMember("palworldsettings", BindingDirection.Read, false, "Difficulty", false)
+                {
+                    MirrorWrite = true,
+                },
+            ]),
+
+        // Declares the flag AND is sensitive. The definition parser refuses this combination; the descriptor
+        // refuses it again, which is what this fixture exists to exercise.
+        Describe(
+            "ADMIN_PASSWORD",
+            SettingType.Secret,
+            [
+                new SettingBinding.ByKey("env", BindingDirection.Write, false, "ADMIN_PASSWORD"),
+                new SettingBinding.ByMember("palworldsettings", BindingDirection.Read, true, "AdminPassword", false)
+                {
+                    MirrorWrite = true,
+                },
+            ]),
+
+        Describe(
+            "SERVER_NAME",
+            SettingType.String,
+            [
+                new SettingBinding.ByKey("env", BindingDirection.Write, false, "SERVER_NAME"),
+                new SettingBinding.ByMember("palworldsettings", BindingDirection.Read, false, "ServerName", true),
+            ]),
+
+        // Opted in to mirroring, but its authoritative key is absent from the .env fixture, so the env write
+        // blocks. The mirror must not go ahead alone.
+        Describe(
+            "ORPHANED",
+            SettingType.Enum,
+            [
+                new SettingBinding.ByKey("env", BindingDirection.Write, false, "NOT_PRESENT"),
+                new SettingBinding.ByMember("palworldsettings", BindingDirection.Read, false, "Difficulty", false)
+                {
+                    MirrorWrite = true,
+                },
+            ]),
+    ];
+
+    /// <summary>The same two surfaces, renamed so the derived one sorts FIRST alphabetically.</summary>
+    private static IReadOnlyList<DeclaredConfigSurface> ReorderedSurfaces() =>
+    [
+        new(
+            "z-env",
+            SurfaceRole.Authoritative,
+            SurfaceFormat.Dotenv,
+            Codec: null,
+            CodecPath: null,
+            new SurfaceLocator.HostFile("${COMPOSE_DIR}/.env"),
+            ManagedSubtree: null,
+            MergePolicy.PreserveUnknown,
+            DerivedFrom: [],
+            Regeneration: null),
+        new(
+            "a-settings",
+            SurfaceRole.Derived,
+            SurfaceFormat.Ini,
+            Codec: "unreal-option-settings",
+            CodecPath: """["/Script/Pal.PalGameWorldSettings"].OptionSettings""",
+            new SurfaceLocator.HostFile("${DATA_DIR}/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini"),
+            ManagedSubtree: null,
+            MergePolicy.PreserveUnknown,
+            DerivedFrom: ["z-env"],
+            new RegenerationTrigger(
+                RegenerationKind.ContainerRestart,
+                "Regenerated from .env by the image entrypoint on every start."))
+        {
+            MirrorWrites = true,
+        },
+    ];
+
+    private static IReadOnlyList<SettingDescriptor> ReorderedSettings() =>
+    [
+        Describe(
+            "DIFFICULTY",
+            SettingType.Enum,
+            [
+                new SettingBinding.ByKey("z-env", BindingDirection.Write, false, "DIFFICULTY"),
+                new SettingBinding.ByMember("a-settings", BindingDirection.Read, false, "Difficulty", false)
+                {
+                    MirrorWrite = true,
+                },
+            ]),
+    ];
+
+    /// <summary>A run-state source that fails the way a daemon that is down does.</summary>
+    private sealed class ThrowingRunState : IMirrorTargetRunStateSource
+    {
+        public Task<MirrorTargetRunState?> GetAsync(string serverId, CancellationToken ct = default) =>
+            throw new InvalidOperationException("The Docker daemon is not reachable.");
+    }
+
     // ── Harness ────────────────────────────────────────────────────────────────────────────────────────
 
     private sealed class Harness
@@ -776,7 +1259,12 @@ public class PlanExecutorTests
             IChangePlanStore? store = null,
             IServerSettingsService? serverSettings = null,
             TimeProvider? time = null,
-            bool tracked = true)
+            bool tracked = true,
+            bool mirrorDerivedSurfaces = false,
+            IReadOnlyDictionary<string, bool?>? mirrorOverrides = null,
+            IMirrorTargetRunStateSource? runState = null,
+            bool omitRunStateSource = false,
+            TransportCapabilities? dataSessionCapabilities = null)
         {
             // Content is held as BYTES, not strings, so a test can pin a BOM, a CRLF terminator or an
             // outright invalid encoding — none of which survives being modelled as a string.
@@ -806,9 +1294,10 @@ public class PlanExecutorTests
             var contexts = new MappedContexts
             {
                 [_data] = new SurfaceResolutionContext(
-                    TransportCapabilities.FileRead
-                        | TransportCapabilities.FileWrite
-                        | TransportCapabilities.ContainerScopedFiles,
+                    dataSessionCapabilities
+                        ?? (TransportCapabilities.FileRead
+                            | TransportCapabilities.FileWrite
+                            | TransportCapabilities.ContainerScopedFiles),
                     SessionRoot: DataDirectory,
                     DataDirectory: DataDirectory,
                     ComposeDirectory: null,
@@ -835,6 +1324,11 @@ public class PlanExecutorTests
 
             Store = store as RecordingStore ?? new RecordingStore();
 
+            // Ready by default so a mirror test says what it is actually about; a test that cares about the
+            // run-state gate supplies its own, and omitRunStateSource covers the "nothing wired up at all"
+            // composition.
+            RunState = omitRunStateSource ? null : runState ?? new StubRunState(true, "running");
+
             Executor = new PlanExecutor(
                 new StubSessions(new ServerConfigSessions(
                     [
@@ -844,17 +1338,23 @@ public class PlanExecutorTests
                     declared)),
                 new StubCatalog(new ServerPlanCatalog("palworld", "sha256:test", catalogue)),
                 new SurfaceResolver(contexts, adapters),
-                serverSettings ?? new StubServerSettings(tracked),
+                serverSettings ?? new StubServerSettings(tracked, mirrorDerivedSurfaces, mirrorOverrides),
                 new ConfigMerger(codecs),
                 store ?? Store,
                 adapters,
                 codecs,
-                time);
+                time,
+                logger: null,
+                actor: null,
+                servers: null,
+                mirrorRunState: RunState);
         }
 
         public PlanExecutor Executor { get; }
 
         public RecordingStore Store { get; }
+
+        public IMirrorTargetRunStateSource? RunState { get; }
 
         public IReadOnlyList<string> Mutations => [.. _data.Mutations, .. _compose.Mutations];
 
@@ -1050,18 +1550,49 @@ public class PlanExecutorTests
             Task.FromResult(_byTarget.TryGetValue(target, out var context) ? context : null);
     }
 
-    private sealed class StubServerSettings(bool tracked) : IServerSettingsService
+    private sealed class StubServerSettings(
+        bool tracked,
+        bool mirrorDerivedSurfaces = false,
+        IReadOnlyDictionary<string, bool?>? overrides = null) : IServerSettingsService
     {
         public static readonly ServerId Id = ServerId.New();
 
-        public Task<ServerSettingsSnapshot?> LoadAsync(string containerId, CancellationToken ct = default) =>
-            Task.FromResult<ServerSettingsSnapshot?>(tracked
-                ? new ServerSettingsSnapshot(Id, new Dictionary<string, DesiredSettingValue>(StringComparer.Ordinal))
-                : null);
+        public Task<ServerSettingsSnapshot?> LoadAsync(string containerId, CancellationToken ct = default)
+        {
+            if (!tracked)
+            {
+                return Task.FromResult<ServerSettingsSnapshot?>(null);
+            }
+
+            var values = (overrides ?? new Dictionary<string, bool?>(StringComparer.Ordinal)).ToDictionary(
+                pair => pair.Key,
+                pair => new DesiredSettingValue(
+                    pair.Key, "recorded", "operator", DateTimeOffset.UnixEpoch, pair.Value),
+                StringComparer.Ordinal);
+
+            return Task.FromResult<ServerSettingsSnapshot?>(
+                new ServerSettingsSnapshot(Id, values, mirrorDerivedSurfaces));
+        }
 
         public Task<SaveDesiredValueResult> SaveDesiredValueAsync(
             ServerId serverId, string key, string? value, string actor, CancellationToken ct = default) =>
             throw new InvalidOperationException("Previewing a plan must never record a desired value.");
+
+        public Task<SaveDesiredValueResult> SetMirrorToDerivedAsync(
+            ServerId serverId, string key, bool? mirrorToDerived, string actor, CancellationToken ct = default) =>
+            throw new InvalidOperationException("Previewing a plan must never record a mirror override.");
+    }
+
+    /// <summary>A run-state source that answers whatever the test set it to, and records that it was asked.</summary>
+    private sealed class StubRunState(bool? running, string? state = null) : IMirrorTargetRunStateSource
+    {
+        public int Calls { get; private set; }
+
+        public Task<MirrorTargetRunState?> GetAsync(string serverId, CancellationToken ct = default)
+        {
+            Calls++;
+            return Task.FromResult(running is { } value ? new MirrorTargetRunState(value, state) : null);
+        }
     }
 
     private sealed class RecordingStore : IChangePlanStore

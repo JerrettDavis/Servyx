@@ -43,6 +43,13 @@ public sealed class ServerSettingValueConfiguration : IEntityTypeConfiguration<S
         builder.Property(row => row.UpdatedAt)
             .IsRequired();
 
+        // Deliberately NOT .IsRequired() and deliberately without a default: null is a real, load-bearing
+        // third state here ("inherit the server default"), not a missing value — see
+        // ServerSettingValue.MirrorToDerived's own remarks. Giving it a database default of false would
+        // collapse "never expressed an opinion" into "explicitly turned off" for every existing row, and
+        // those two must keep behaving differently when the server default later changes.
+        builder.Property(row => row.MirrorToDerived);
+
         // No separate index on ServerId: it is the leading column of the composite primary key above, so
         // IServerSettingsService.LoadAsync's "every row for this server" query already uses that index — a
         // second one would duplicate it for no benefit.

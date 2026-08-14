@@ -109,6 +109,152 @@ public class SurfaceResolverTests
         surface.ContainerScoped.Should().BeTrue();
     }
 
+    // ── Mirrored writes: the declared, per-surface exception to "never write a derived surface" ─────────
+
+    [Fact]
+    public async Task ResolveAsync_DerivedSurfaceDeclaringMirrorWrites_IsMirrorWritable_ButStillNotServyxMayWrite()
+    {
+        var resolver = Build(new SurfaceResolutionContext(
+            DockerCapabilities,
+            SessionRoot: "/palworld",
+            DataDirectory: "/palworld",
+            ComposeDirectory: null,
+            DataDirectoryIsContainerScoped: true));
+
+        var result = await resolver.ResolveAsync(
+            "pal-1",
+            new NoIoExecutionTarget(),
+            [Mirrorable("palworldsettings")]);
+
+        var surface = result.Resolved.Should().ContainSingle().Which;
+
+        // The role is still the truth, and ServyxMayWrite still means what it always meant. Only the
+        // narrower, separately-named question answers differently.
+        surface.Role.Should().Be(SurfaceRole.Derived);
+        surface.ServyxMayWrite.Should().BeFalse();
+        surface.MirrorWritesDeclared.Should().BeTrue();
+        surface.MirrorWritable.Should().BeTrue();
+
+        // RequiredCapabilities is DELIBERATELY unchanged. Folding FileWrite in here would make this surface
+        // fail to resolve on a read-only session — and a surface that does not resolve is one Servyx cannot
+        // READ, which would break the drift detection that is the only reason a derived surface is bound.
+        surface.RequiredCapabilities.Should().Be(
+            TransportCapabilities.FileRead | TransportCapabilities.ContainerScopedFiles);
+        surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_DerivedSurfaceWithoutTheDeclaration_IsNeverMirrorWritable()
+    {
+        var resolver = Build(new SurfaceResolutionContext(
+            DockerCapabilities,
+            SessionRoot: "/palworld",
+            DataDirectory: "/palworld",
+            ComposeDirectory: null,
+            DataDirectoryIsContainerScoped: true));
+
+        var result = await resolver.ResolveAsync(
+            "pal-1",
+            new NoIoExecutionTarget(),
+            [Surface(
+                "palworldsettings",
+                SurfaceRole.Derived,
+                SurfaceFormat.Ini,
+                "${DATA_DIR}/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini")]);
+
+        // A perfectly writable Docker session. Mirroring is opt-in per surface, so a session's capability
+        // alone can never produce one.
+        var surface = result.Resolved.Should().ContainSingle().Which;
+        surface.MirrorWritesDeclared.Should().BeFalse();
+        surface.MirrorWritable.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MirrorDeclaringSurfaceOnASessionThatCannotWrite_StillResolvesForReading_ButIsNotMirrorWritable()
+    {
+        // The honest degradation. A file channel that can read inside the container but not write it keeps
+        // serving drift detection; only the mirrored write is withdrawn, and a planner turns that into a
+        // named refusal rather than a silently missing action.
+        var resolver = Build(new SurfaceResolutionContext(
+            TransportCapabilities.FileRead | TransportCapabilities.ContainerScopedFiles,
+            SessionRoot: "/palworld",
+            DataDirectory: "/palworld",
+            ComposeDirectory: null,
+            DataDirectoryIsContainerScoped: true));
+
+        var result = await resolver.ResolveAsync(
+            "pal-1",
+            new NoIoExecutionTarget(),
+            [Mirrorable("palworldsettings")]);
+
+        result.Unresolvable.Should().BeEmpty();
+
+        var surface = result.Resolved.Should().ContainSingle().Which;
+        surface.MirrorWritesDeclared.Should().BeTrue();
+        surface.MirrorWritable.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_MirrorDeclaringSurfaceOverSshDocker_DoesNotResolveAtAll()
+    {
+        // The SSH case, which this phase deliberately does not build support for. The refusal is the
+        // pre-existing container-scoped one and it fires before mirroring is even considered: an SFTP file
+        // channel rooted on the SSH host would not fail on this path, it would succeed against the wrong
+        // filesystem. Nothing about the mirror declaration weakens that.
+        var resolver = Build(new SurfaceResolutionContext(
+            SshDockerCapabilities,
+            SessionRoot: "/",
+            DataDirectory: "/palworld",
+            ComposeDirectory: "/opt/servyx/pal",
+            DataDirectoryIsContainerScoped: true));
+
+        var result = await resolver.ResolveAsync(
+            "pal-1",
+            new NoIoExecutionTarget(),
+            [Mirrorable("palworldsettings")]);
+
+        result.Resolved.Should().BeEmpty();
+        result.Unresolvable.Should().ContainSingle().Which.Reason.Should().Contain("ContainerScopedFiles");
+    }
+
+    [Fact]
+    public async Task ResolveAsync_AnAuthoritativeSurfaceThatSomehowDeclaresMirrorWrites_IsNotMirrorWritable()
+    {
+        // The parser refuses this combination outright, so it should never reach the resolver. The resolver
+        // checks the role anyway: an authoritative surface is already writable through the ordinary path, and
+        // a second, differently-gated route to the same file is not something to acquire by accident.
+        var resolver = Build(HostSession("/opt/servyx/pal", "/palworld"));
+
+        var result = await resolver.ResolveAsync(
+            "pal-1",
+            new NoIoExecutionTarget(),
+            [Surface("env", SurfaceRole.Authoritative, SurfaceFormat.Dotenv, "${COMPOSE_DIR}/.env")
+                with { MirrorWrites = true }]);
+
+        var surface = result.Resolved.Should().ContainSingle().Which;
+        surface.ServyxMayWrite.Should().BeTrue();
+        surface.MirrorWritable.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ResolveAsync_ASurfaceBuiltDirectlyRatherThanResolved_IsNotMirrorWritable()
+    {
+        // The same honesty ConfigSurface.Path already has: "never bound to a session" must not read as
+        // "a mirrored write is performable". Only ISurfaceResolver ever sets this.
+        var unbound = new ConfigSurface(
+            "palworldsettings",
+            SurfaceRole.Derived,
+            new SurfaceLocator.HostFile("${DATA_DIR}/x.ini"),
+            "ini",
+            CodecId: null);
+
+        unbound.Path.Should().BeNull();
+        unbound.MirrorWritable.Should().BeFalse();
+        unbound.MirrorWritesDeclared.Should().BeFalse();
+
+        await Task.CompletedTask;
+    }
+
     [Fact]
     public async Task ResolveAsync_AuthoritativeSurface_RequiresBothFileReadAndFileWrite()
     {
@@ -587,6 +733,21 @@ public class SurfaceResolverTests
             MergePolicy.PreserveUnknown,
             DerivedFrom: [],
             Regeneration: null);
+
+    /// <summary>
+    /// Palworld's <c>palworldsettings</c> as its docker profile now declares it: derived, and opted in to
+    /// mirrored writes.
+    /// </summary>
+    private static DeclaredConfigSurface Mirrorable(string id) =>
+        Surface(
+            id,
+            SurfaceRole.Derived,
+            SurfaceFormat.Ini,
+            "${DATA_DIR}/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini",
+            "unreal-option-settings",
+            """["/Script/Pal.PalGameWorldSettings"].OptionSettings""")
+        with
+        { MirrorWrites = true };
 
     private sealed class FixedContextSource(SurfaceResolutionContext context) : ISurfaceResolutionContextSource
     {

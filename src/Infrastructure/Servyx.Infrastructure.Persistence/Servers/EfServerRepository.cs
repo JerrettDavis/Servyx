@@ -85,6 +85,35 @@ public sealed class EfServerRepository : IServerRepository
     }
 
     /// <inheritdoc />
+    public async Task<Server?> SetMirrorDerivedSurfacesAsync(
+        ServerId id,
+        bool mirrorDerivedSurfaces,
+        string changedBy,
+        DateTimeOffset changedAt,
+        CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(changedBy);
+
+        await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);
+
+        // Tracked, and the flag written together with its attribution in one SaveChanges, for exactly the
+        // reasons SetWriteModeAsync above documents — this is the same kind of operator-recorded posture and
+        // must not be able to land without a record of who recorded it.
+        var existing = await context.Servers.SingleOrDefaultAsync(row => row.Id == id, ct).ConfigureAwait(false);
+        if (existing is null)
+        {
+            return null;
+        }
+
+        existing.MirrorDerivedSurfaces = mirrorDerivedSurfaces;
+        existing.MirrorDerivedSurfacesChangedBy = changedBy;
+        existing.MirrorDerivedSurfacesChangedAt = changedAt;
+
+        await context.SaveChangesAsync(ct).ConfigureAwait(false);
+        return existing;
+    }
+
+    /// <inheritdoc />
     public async Task<bool> RemoveAsync(ServerId id, CancellationToken ct = default)
     {
         await using var context = await _contextFactory.CreateDbContextAsync(ct).ConfigureAwait(false);

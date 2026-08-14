@@ -54,6 +54,25 @@ public class ServerSettingsTabTests : BunitContext
             _values[key] = recorded;
             return Task.FromResult(new SaveDesiredValueResult(SaveDesiredValueOutcome.Recorded, recorded));
         }
+
+        public Task<SaveDesiredValueResult> SetMirrorToDerivedAsync(
+            Servyx.Domain.Common.ServerId serverId, string key, bool? mirrorToDerived, string actor, CancellationToken ct = default)
+        {
+            if (serverId != _serverId)
+            {
+                return Task.FromResult(new SaveDesiredValueResult(SaveDesiredValueOutcome.ServerNotFound, null));
+            }
+
+            if (!_values.TryGetValue(key, out var existing))
+            {
+                return Task.FromResult(
+                    new SaveDesiredValueResult(SaveDesiredValueOutcome.NoDesiredValueRecorded, null));
+            }
+
+            var recorded = existing with { MirrorToDerived = mirrorToDerived, UpdatedBy = actor };
+            _values[key] = recorded;
+            return Task.FromResult(new SaveDesiredValueResult(SaveDesiredValueOutcome.Recorded, recorded));
+        }
     }
 
     private static readonly SettingConstraints NoConstraints =

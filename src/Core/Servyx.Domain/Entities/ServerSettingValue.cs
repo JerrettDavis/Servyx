@@ -48,4 +48,33 @@ public sealed class ServerSettingValue
 
     /// <summary>When this value was last recorded.</summary>
     public required DateTimeOffset UpdatedAt { get; set; }
+
+    /// <summary>
+    /// This row's own override of <see cref="Server.MirrorDerivedSurfaces"/>, or <see langword="null"/> to
+    /// inherit it.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Three-valued deliberately, and nullable is the important third state.</strong> A plain
+    /// <see cref="bool"/> could not tell "the operator has never expressed an opinion about this setting"
+    /// apart from "the operator turned mirroring off for this setting", and those must not be conflated: the
+    /// first has to follow the server default wherever it later moves, and the second has to keep
+    /// suppressing the mirror even after the server default is turned on. Both directions of override are
+    /// real and both are supported — <see langword="false"/> on a mirror-on server, and
+    /// <see langword="true"/> on a mirror-off one.
+    /// </para>
+    /// <para>
+    /// <strong>Not required, so every existing row means "inherit".</strong> Rows written before this column
+    /// existed carry <see langword="null"/> and therefore follow the server default, which is itself seeded
+    /// off — the same fail-closed direction the write grant takes.
+    /// </para>
+    /// <para>
+    /// <strong>A preference, not a permission.</strong> Setting this to <see langword="true"/> for a setting
+    /// the governing definition never declared mirror-eligible, or for a sensitive one, changes nothing:
+    /// eligibility is decided from the definition at plan time (see
+    /// <c>SettingDescriptor.MirroredBindings</c>), and this column is only consulted once a setting has
+    /// already cleared it.
+    /// </para>
+    /// </remarks>
+    public bool? MirrorToDerived { get; set; }
 }

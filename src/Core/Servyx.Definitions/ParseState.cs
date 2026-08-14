@@ -1,3 +1,4 @@
+using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions.Model;
 using YamlDotNet.RepresentationModel;
 
@@ -24,8 +25,18 @@ internal sealed class ParseState(ParseIssues issues)
 
     public ParseIssues Issues { get; } = issues;
 
-    /// <summary>Every surface id declared by any deployment profile, and the format(s) it was declared with.</summary>
-    public Dictionary<string, List<(string DeploymentId, SurfaceFormat Format)>> SurfacesById { get; } = new(StringComparer.Ordinal);
+    /// <summary>
+    /// Every surface id declared by any deployment profile, and the format, role and mirror-write posture it
+    /// was declared with in each.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="SurfaceRole"/> and <c>MirrorWrites</c> joined the format here so a <c>settings</c> binding
+    /// declaring <c>mirrorWrite: true</c> can be checked against the surface it names — <c>deployments</c> is
+    /// walked before <c>settings</c>, so by the time a binding is parsed the surface's own declaration is
+    /// already recorded and the check needs no deferral.
+    /// </remarks>
+    public Dictionary<string, List<(string DeploymentId, SurfaceFormat Format, SurfaceRole Role, bool MirrorWrites)>> SurfacesById { get; }
+        = new(StringComparer.Ordinal);
 
     /// <summary>Populated once the <c>settings</c> block is parsed; empty (not null) beforehand.</summary>
     public HashSet<string> SettingKeys { get; } = new(StringComparer.Ordinal);

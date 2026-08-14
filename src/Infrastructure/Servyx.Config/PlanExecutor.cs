@@ -111,6 +111,7 @@ public sealed class PlanExecutor : IPlanExecutor
     private readonly ILogger<PlanExecutor>? _logger;
     private readonly string _actor;
     private readonly IServerRepository? _servers;
+    private readonly IMirrorTargetRunStateSource? _mirrorRunState;
 
     /// <summary>Creates the previewer.</summary>
     /// <param name="sessions">Supplies the server's live read sessions and its declared surface set.</param>
@@ -141,6 +142,14 @@ public sealed class PlanExecutor : IPlanExecutor
     /// database and cannot route back into the settings pipeline. Optional only so preview-only compositions
     /// and preview-only tests need not supply one; <see cref="ApplyAsync"/> refuses loudly without it.
     /// </param>
+    /// <param name="mirrorRunState">
+    /// Answers whether the workload behind a container-scoped surface is running, which a MIRRORED write
+    /// needs and an ordinary authoritative one does not — see <see cref="IMirrorTargetRunStateSource"/> for
+    /// why that question is asked at preview rather than discovered at apply. Optional, and its absence is
+    /// fail-closed rather than permissive: a composition that supplies none blocks every mirrored action
+    /// with a reason instead of planning a write nothing has confirmed can land. Every non-mirrored plan is
+    /// unaffected, which is why it is optional at all.
+    /// </param>
     public PlanExecutor(
         IServerConfigSessionSource sessions,
         IServerPlanCatalogSource catalogs,
@@ -153,7 +162,8 @@ public sealed class PlanExecutor : IPlanExecutor
         TimeProvider? time = null,
         ILogger<PlanExecutor>? logger = null,
         string? actor = null,
-        IServerRepository? servers = null)
+        IServerRepository? servers = null,
+        IMirrorTargetRunStateSource? mirrorRunState = null)
     {
         ArgumentNullException.ThrowIfNull(sessions);
         ArgumentNullException.ThrowIfNull(catalogs);
@@ -176,6 +186,7 @@ public sealed class PlanExecutor : IPlanExecutor
         _logger = logger;
         _actor = string.IsNullOrWhiteSpace(actor) ? DefaultActor : actor;
         _servers = servers;
+        _mirrorRunState = mirrorRunState;
     }
 
     /// <inheritdoc />
@@ -216,6 +227,14 @@ public sealed class PlanExecutor : IPlanExecutor
         var edits = new Dictionary<string, List<PlannedEdit>>(StringComparer.Ordinal);
         var recreateReasons = new List<Consequence>();
 
+        // Resolved once per preview rather than once per mirrored binding: it is a single fact about a single
+        // workload, and asking the transport for it per setting would multiply one round trip by the size of
+        // the operator's form. Skipped entirely — no probe, no cost — when nothing in this preview is even a
+        // candidate for mirroring, which is every plan on every definition that declares no mirror bindings.
+        var mirrorReadiness = HasMirrorCandidate(desiredValues, settings, snapshot)
+            ? await DescribeMirrorReadinessAsync(serverId, ct).ConfigureAwait(false)
+            : null;
+
         // Ordered so a plan's action list, and therefore its persisted ordinals, are deterministic for the
         // same input regardless of the caller's dictionary enumeration order.
         foreach (var key in desiredValues.Keys.OrderBy(k => k, StringComparer.Ordinal))
@@ -249,7 +268,7 @@ public sealed class PlanExecutor : IPlanExecutor
             var planned = false;
             foreach (var binding in writeBindings)
             {
-                var outcome = await PlanBindingAsync(context, setting, binding, desiredValues[key], ct)
+                var outcome = await PlanBindingAsync(context, setting, binding, desiredValues[key], mirror: null, ct)
                     .ConfigureAwait(false);
 
                 if (outcome.Blocked is { } refusal)
@@ -268,6 +287,65 @@ public sealed class PlanExecutor : IPlanExecutor
                 planned = true;
             }
 
+            // THE MIRRORED HALF. Deliberately a second PlannedAction inside THIS plan rather than a second
+            // plan or a new plan phase: it then inherits — without a line of new machinery — the same
+            // pre-flight drift sweep, the same per-action write-ahead log, the same read-back verification,
+            // the same revert set, and the same PartiallyApplied outcome if it fails after the authoritative
+            // write already landed. That last one is the agreed semantics and it is deliberately NOT an
+            // auto-revert of the env write: the operator asked for that value, it is correct where it landed,
+            // and undoing it to "tidy up" would discard a change they wanted because a best-effort copy of it
+            // did not.
+            //
+            // Walked after every write binding, so nothing here can be reached by a setting whose
+            // authoritative write was itself blocked without the operator seeing both refusals.
+            if (MirrorRequested(snapshot, key) && setting.MirroredBindings.Count > 0)
+            {
+                // A mirror is a COPY of the authoritative write, so it is only ever planned alongside one.
+                // Writing the derived copy on its own would put a value on the server that survives exactly
+                // until the next regeneration and then silently reverts — the precise failure mode
+                // SurfaceRole.Derived exists to prevent, arrived at from the other direction. Refused rather
+                // than skipped: the operator is already seeing the authoritative refusal, and a mirror that
+                // quietly did not happen alongside it reads as one that did.
+                if (!planned)
+                {
+                    foreach (var binding in setting.MirroredBindings)
+                    {
+                        blocked.Add(new BlockedChange(
+                            key,
+                            binding.SurfaceId,
+                            $"Setting '{key}' was not mirrored to surface '{binding.SurfaceId}' because its "
+                            + "authoritative write did not get planned. A mirrored value that no "
+                            + "authoritative surface also carries is discarded the next time the workload "
+                            + "regenerates the file, leaving the server quietly back where it started.",
+                            "Resolve the authoritative write's own refusal above; the mirror follows it "
+                            + "automatically once that succeeds."));
+                    }
+
+                    continue;
+                }
+
+                foreach (var binding in setting.MirroredBindings)
+                {
+                    var outcome = await PlanBindingAsync(
+                            context, setting, binding, desiredValues[key], mirrorReadiness, ct)
+                        .ConfigureAwait(false);
+
+                    if (outcome.Blocked is { } refusal)
+                    {
+                        blocked.Add(refusal);
+                        continue;
+                    }
+
+                    if (!edits.TryGetValue(binding.SurfaceId, out var list))
+                    {
+                        list = [];
+                        edits[binding.SurfaceId] = list;
+                    }
+
+                    list.Add(outcome.Edit!);
+                }
+            }
+
             if (planned && setting.RequiresRecreate)
             {
                 recreateReasons.Add(new Consequence(
@@ -281,7 +359,20 @@ public sealed class PlanExecutor : IPlanExecutor
         var actionRows = new List<ChangePlanActionRecord>();
         var planId = ChangePlanId.New();
 
-        foreach (var surfaceId in edits.Keys.OrderBy(k => k, StringComparer.Ordinal))
+        // ORDERING IS DECLARED, NOT INCIDENTAL. Authoritative surfaces are rendered — and therefore assigned
+        // ordinals, and therefore applied — strictly before mirrored derived ones. It happens that "env" sorts
+        // before "palworldsettings" alphabetically, which is exactly why this is written out: relying on that
+        // would make the ordering an accident of two surface names, and it would silently invert for a
+        // definition whose derived surface happened to be called "a-settings". The order matters because the
+        // authoritative write is the one that survives a regeneration; if only one of the two can land, it must
+        // be that one, and a plan that applies the throwaway copy first would leave the durable value behind
+        // on failure.
+        var ordered = edits.Keys
+            .OrderBy(id => context.Bound.TryGetValue(id, out var bound)
+                && bound.Surface.Role == SurfaceRole.Authoritative ? 0 : 1)
+            .ThenBy(id => id, StringComparer.Ordinal);
+
+        foreach (var surfaceId in ordered)
         {
             ct.ThrowIfCancellationRequested();
             Render(context, planId, surfaceId, edits[surfaceId], actions, actionRows, blocked);
@@ -1397,7 +1488,13 @@ public sealed class PlanExecutor : IPlanExecutor
                 continue;
             }
 
-            if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite))
+            // MirrorWritable is an alternative, not a loosening: a derived surface deliberately does not carry
+            // FileWrite in its RequiredCapabilities (see ConfigSurface.MirrorWritable), so a mirrored action
+            // would otherwise be permanently unrevertible — the one state a plan must never be left in, since
+            // it is the action most likely to need undoing. It is still true here that the session can write
+            // the file: MirrorWritable is only ever set when the transport advertises FileWrite.
+            if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite)
+                && !surface.Surface.MirrorWritable)
             {
                 refusals.Add(
                     $"{named} resolved without TransportCapabilities.FileWrite, so the session it is "
@@ -1990,12 +2087,204 @@ public sealed class PlanExecutor : IPlanExecutor
         };
     }
 
-    /// <summary>Turns one write binding into either a pending edit or a named refusal.</summary>
+    // ── Mirrored writes ────────────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Whether the operator has asked for <paramref name="key"/>'s write to be mirrored: the row's own
+    /// override when it has one, this server's default otherwise.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Read off the snapshot <see cref="PreviewAsync"/> already loads, which is the whole reason
+    /// <see cref="IPlanExecutor.PreviewAsync"/> needs no extra parameter for any of this. A key with no
+    /// recorded row at all — an operator previewing a value they have typed but not yet saved — inherits the
+    /// server default, which is the same answer it would get the moment they did save it.
+    /// </para>
+    /// <para>
+    /// <strong>A false here is silence, not a <see cref="BlockedChange"/>.</strong> Nothing is obstructing a
+    /// mirror the operator switched off; reporting it as blocked would fill a settings form with refusals
+    /// describing the configuration working as configured, and would drag every plan's
+    /// <see cref="ConfigChangePlan.Feasibility"/> down to <see cref="PlanFeasibility.PartiallyAchievable"/>
+    /// for no reason. This matches how a desired value already equal to the file's current value is treated.
+    /// </para>
+    /// </remarks>
+    private static bool MirrorRequested(ServerSettingsSnapshot snapshot, string key) =>
+        snapshot.Values.TryGetValue(key, out var recorded)
+            ? recorded.MirrorsToDerived(snapshot.MirrorDerivedSurfaces)
+            : snapshot.MirrorDerivedSurfaces;
+
+    /// <summary>
+    /// Whether this preview contains any setting that is both declared mirror-eligible and toggled on — the
+    /// test that decides whether the run-state probe is worth making at all.
+    /// </summary>
+    private static bool HasMirrorCandidate(
+        IReadOnlyDictionary<string, string> desiredValues,
+        IReadOnlyDictionary<string, SettingDescriptor> settings,
+        ServerSettingsSnapshot snapshot) =>
+        desiredValues.Keys.Any(key =>
+            settings.TryGetValue(key, out var setting)
+            && setting.MirroredBindings.Count > 0
+            && MirrorRequested(snapshot, key));
+
+    /// <summary>
+    /// Asks once, for the whole preview, whether the workload a mirrored write would land inside is running.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Fail-closed in all three unhappy cases</strong> — no probe registered, the probe cannot tell,
+    /// and the probe says "not running" — because the failure this exists to prevent is an operator approving
+    /// a two-action diff and watching the second action die on a rename. Each case gets its own reason, since
+    /// they need genuinely different actions from the operator: wire a probe, investigate why the workload
+    /// cannot be inspected, or start the container.
+    /// </para>
+    /// <para>
+    /// A probe that throws is treated as "cannot tell" rather than propagated: preview is the read-only,
+    /// every-page-load operation, and taking a settings page down because a run-state lookup failed would be
+    /// a far worse outcome than blocking one optional action with an honest reason.
+    /// </para>
+    /// </remarks>
+    private async Task<MirrorReadiness> DescribeMirrorReadinessAsync(string serverId, CancellationToken ct)
+    {
+        if (_mirrorRunState is null)
+        {
+            return new MirrorReadiness(
+                false,
+                "Servyx cannot tell whether this server's workload is running, and a mirrored write is "
+                + "finalized by a rename issued inside the container, which only succeeds while it is.",
+                $"Register an {nameof(IMirrorTargetRunStateSource)} in the composition root. Until one is "
+                + "wired up, the authoritative write still applies and takes effect the next time the "
+                + "derived surface is regenerated.");
+        }
+
+        MirrorTargetRunState? state;
+        try
+        {
+            state = await _mirrorRunState.GetAsync(serverId, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger?.LogWarning(
+                ex,
+                "Could not read the run state of server {ServerId} while previewing a change; every mirrored "
+                + "action in this plan is blocked. The authoritative writes are unaffected.",
+                serverId);
+
+            state = null;
+        }
+
+        if (state is null)
+        {
+            return new MirrorReadiness(
+                false,
+                "The run state of this server's workload could not be determined, and a mirrored write is "
+                + "finalized by a rename issued inside the container, which only succeeds while it is "
+                + "running. Servyx will not plan a write it cannot confirm has anywhere to land.",
+                "Check that the server is reachable and inspectable, then preview again. The authoritative "
+                + "write is unaffected and applies either way.");
+        }
+
+        if (!state.Running)
+        {
+            var observed = state.State is { Length: > 0 } text ? $" (reported state: '{text}')" : string.Empty;
+
+            return new MirrorReadiness(
+                false,
+                $"This server's workload is not running{observed}. A mirrored write places a temporary file "
+                + "beside the target and finalizes it with a rename issued inside the container, which needs "
+                + "the container to be running.",
+                "Start the server and preview again — or apply as-is: the authoritative write lands either "
+                + "way, and the derived surface is regenerated from it on the next start, which is the same "
+                + "value the mirror would have written.");
+        }
+
+        return new MirrorReadiness(true, null, null);
+    }
+
+    /// <summary>
+    /// Every reason one mirrored binding may not be planned, in the order an operator can act on them, or
+    /// null when it may.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>Restated here rather than trusted from upstream, on purpose.</strong> The parser refuses a
+    /// mirror flag on a sensitive binding, and <see cref="SettingDescriptor.MirroredBindings"/> returns
+    /// nothing at all for a secret setting, so the first two checks below are — today — unreachable. They
+    /// stay because the surface set reaching this method at plan time is not necessarily the one that was
+    /// parsed: a definition can be swapped underneath a server, and a caller can construct a descriptor
+    /// directly. This is the last gate in front of a real file on a real game server, and the cost of a
+    /// redundant comparison here is nothing measured against a secret reaching a second file because one
+    /// upstream check was refactored away.
+    /// </para>
+    /// <para>
+    /// The transport check is the one that makes an SSH-connected host degrade honestly rather than
+    /// silently: it names what is missing and says the authoritative write still happened, instead of leaving
+    /// the operator to notice an action that never appeared.
+    /// </para>
+    /// </remarks>
+    private static (string Reason, string Hint)? MirrorRefusal(
+        SettingDescriptor setting,
+        SettingBinding binding,
+        BoundSurface surface,
+        MirrorReadiness mirror)
+    {
+        if (setting.IsSecret)
+        {
+            return ($"Setting '{setting.Key}' is sensitive, and a sensitive value is never mirrored onto a "
+                + "derived surface: that would put a second copy of a secret in a file the workload rewrites "
+                + "at will, which the authoritative write already covers without.",
+                "Nothing to do — the authoritative write applies as normal. Remove 'mirrorWrite: true' from "
+                + "this setting's binding in the governing definition if it is declared there.");
+        }
+
+        if (!binding.MirrorWrite)
+        {
+            return ($"Setting '{setting.Key}' declares no mirrored binding to surface '{binding.SurfaceId}', "
+                + "so its write is not copied there however the mirror toggle is set.",
+                $"Declare 'mirrorWrite: true' on this setting's binding to '{binding.SurfaceId}' in the "
+                + "governing definition, if mirroring it is genuinely safe for this member.");
+        }
+
+        if (surface.Surface.Role != SurfaceRole.Derived || !surface.Surface.MirrorWritesDeclared)
+        {
+            return ($"Surface '{binding.SurfaceId}' is {surface.Surface.Role} and does not declare "
+                + "'mirrorWrites: true', so it accepts no mirrored writes. Only a derived surface whose "
+                + "definition explicitly opts in can receive one.",
+                $"Declare 'mirrorWrites: true' on the '{binding.SurfaceId}' surface in the governing "
+                + "definition, if a value written there between regenerations is genuinely harmless.");
+        }
+
+        if (!surface.Surface.MirrorWritable)
+        {
+            return ($"Surface '{binding.SurfaceId}' accepts mirrored writes, but the session it is reachable "
+                + "on cannot write it: its transport does not advertise TransportCapabilities.FileWrite.",
+                "Connect this server through a transport whose file channel can write inside the container "
+                + "(the Docker Engine transport is the only one that can today). The authoritative write is "
+                + "unaffected and still applies.");
+        }
+
+        return mirror.Ready ? null : (mirror.Reason!, mirror.Hint!);
+    }
+
+    /// <summary>Whether a mirrored write can land on this server right now, and why not when it cannot.</summary>
+    /// <param name="Ready">True only when a mirrored write has somewhere to land.</param>
+    /// <param name="Reason">The operator-facing refusal when <paramref name="Ready"/> is false; null otherwise.</param>
+    /// <param name="Hint">The matching remediation; null exactly when <paramref name="Reason"/> is.</param>
+    private sealed record MirrorReadiness(bool Ready, string? Reason, string? Hint);
+
+    /// <summary>Turns one write binding — or one mirrored read binding — into either a pending edit or a named refusal.</summary>
+    /// <param name="mirror">
+    /// Null for an ordinary authoritative write, in which case the Derived/Runtime refusal below applies
+    /// unconditionally. Non-null for a mirrored write the operator has asked for, carrying the once-per-preview
+    /// readiness answer the mirror gate consults. The two paths share everything from the read downwards —
+    /// pointer resolution, addressability, strategy — because those are properties of the format and the
+    /// binding, not of why the write is happening.
+    /// </param>
     private async Task<BindingOutcome> PlanBindingAsync(
         PlanContext context,
         SettingDescriptor setting,
         SettingBinding binding,
         string desiredValue,
+        MirrorReadiness? mirror,
         CancellationToken ct)
     {
         if (!context.Bound.TryGetValue(binding.SurfaceId, out var surface))
@@ -2008,34 +2297,50 @@ public sealed class PlanExecutor : IPlanExecutor
             return BindingOutcome.Refused(setting.Key, binding.SurfaceId, reason, hint);
         }
 
-        // The Derived/Runtime refusal, restated here rather than delegated. ISurfaceResolver already declines
-        // to put FileWrite in such a surface's RequiredCapabilities, but that only means a write would be
-        // unauthorized — this says the write must never be attempted at all, because the workload regenerates
-        // the file and would discard or fight it. The two are different statements and an operator is owed
-        // the second one.
-        if (surface.Surface.Role != SurfaceRole.Authoritative)
+        if (mirror is not null)
         {
-            return BindingOutcome.Refused(
-                setting.Key,
-                binding.SurfaceId,
-                $"Surface '{binding.SurfaceId}' is {surface.Surface.Role}: it is generated by the workload "
-                + "itself, and Servyx never writes a surface the workload regenerates. A write here would be "
-                + "silently discarded the next time it is regenerated.",
-                surface.Declaration.DerivedFrom.Count > 0
-                    ? $"Write the upstream surface(s) it is derived from instead: "
-                        + $"{string.Join(", ", surface.Declaration.DerivedFrom.Select(u => $"'{u}'"))}."
-                    : "Bind this setting's write direction to an authoritative surface in the definition.");
+            if (MirrorRefusal(setting, binding, surface, mirror) is { } mirrorRefusal)
+            {
+                return BindingOutcome.Refused(
+                    setting.Key, binding.SurfaceId, mirrorRefusal.Reason, mirrorRefusal.Hint);
+            }
         }
-
-        if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite))
+        else
         {
-            return BindingOutcome.Refused(
-                setting.Key,
-                binding.SurfaceId,
-                $"Surface '{binding.SurfaceId}' resolved without TransportCapabilities.FileWrite, so the "
-                + "session it is reachable on cannot apply a write to it.",
-                "Connect through a transport with file write access (SFTP for SSH, the Engine API for "
-                + "Docker). An exec-only session cannot write this surface.");
+            // The Derived/Runtime refusal, restated here rather than delegated. ISurfaceResolver already
+            // declines to put FileWrite in such a surface's RequiredCapabilities, but that only means a write
+            // would be unauthorized — this says the write must never be attempted at all, because the workload
+            // regenerates the file and would discard or fight it. The two are different statements and an
+            // operator is owed the second one.
+            //
+            // Unchanged by mirroring, and deliberately: this arm is the ordinary write path, reached from a
+            // 'direction: write' binding, and no amount of mirror declaration makes such a binding legal
+            // against a generated surface. A mirrored write takes the arm above, is reached only from a
+            // 'direction: read' binding the definition individually opted in, and is gated separately.
+            if (surface.Surface.Role != SurfaceRole.Authoritative)
+            {
+                return BindingOutcome.Refused(
+                    setting.Key,
+                    binding.SurfaceId,
+                    $"Surface '{binding.SurfaceId}' is {surface.Surface.Role}: it is generated by the workload "
+                    + "itself, and Servyx never writes a surface the workload regenerates. A write here would be "
+                    + "silently discarded the next time it is regenerated.",
+                    surface.Declaration.DerivedFrom.Count > 0
+                        ? $"Write the upstream surface(s) it is derived from instead: "
+                            + $"{string.Join(", ", surface.Declaration.DerivedFrom.Select(u => $"'{u}'"))}."
+                        : "Bind this setting's write direction to an authoritative surface in the definition.");
+            }
+
+            if (!surface.Surface.RequiredCapabilities.HasFlag(TransportCapabilities.FileWrite))
+            {
+                return BindingOutcome.Refused(
+                    setting.Key,
+                    binding.SurfaceId,
+                    $"Surface '{binding.SurfaceId}' resolved without TransportCapabilities.FileWrite, so the "
+                    + "session it is reachable on cannot apply a write to it.",
+                    "Connect through a transport with file write access (SFTP for SSH, the Engine API for "
+                    + "Docker). An exec-only session cannot write this surface.");
+            }
         }
 
         var read = await ReadAsync(context, surface, ct).ConfigureAwait(false);
@@ -2239,6 +2544,14 @@ public sealed class PlanExecutor : IPlanExecutor
                 + "always resolves to a concrete TargetPath; this is a bug in surface resolution, not a "
                 + "deployment fact.");
 
+        // A mirrored action genuinely needs FileWrite even though the surface's own RequiredCapabilities does
+        // not carry it — see ConfigSurface.MirrorWritable for why FileWrite is deliberately kept out of a
+        // derived surface's requirements (folding it in would make the surface unresolvable, and therefore
+        // unREADABLE, on a read-only session). The action records what the action needs, not what merely
+        // reading the surface needs, so a stored plan states its own requirement honestly.
+        var requiredCapabilities = surface.Surface.RequiredCapabilities
+            | (surface.Surface.MirrorWritable ? TransportCapabilities.FileWrite : TransportCapabilities.None);
+
         var action = new PlannedAction(
             surface.Surface.Locator is SurfaceLocator.ControlChannel
                 ? PlannedActionKind.WriteControlChannel
@@ -2248,7 +2561,7 @@ public sealed class PlanExecutor : IPlanExecutor
             // Reversible because the exact pre-image is recorded below. A revert restores those literal bytes
             // rather than inverting a diff, which is what makes the guarantee unconditional here.
             Reversible: true,
-            surface.Surface.RequiredCapabilities);
+            requiredCapabilities);
 
         actions.Add(action);
         rows.Add(new ChangePlanActionRecord
@@ -2259,7 +2572,7 @@ public sealed class PlanExecutor : IPlanExecutor
             Kind = action.Kind,
             SurfaceId = surfaceId,
             ResolvedPath = resolvedPath,
-            RequiredCapabilities = surface.Surface.RequiredCapabilities,
+            RequiredCapabilities = requiredCapabilities,
             UnifiedDiff = diff,
             Reversible = true,
 

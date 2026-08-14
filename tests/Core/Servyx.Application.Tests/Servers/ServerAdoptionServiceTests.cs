@@ -66,6 +66,25 @@ public class ServerAdoptionServiceTests
             return Task.FromResult<Server?>(existing);
         }
 
+        public Task<Server?> SetMirrorDerivedSurfacesAsync(
+            ServerId id,
+            bool mirrorDerivedSurfaces,
+            string changedBy,
+            DateTimeOffset changedAt,
+            CancellationToken ct = default)
+        {
+            var existing = _servers.FirstOrDefault(s => s.Id == id);
+            if (existing is null)
+            {
+                return Task.FromResult<Server?>(null);
+            }
+
+            existing.MirrorDerivedSurfaces = mirrorDerivedSurfaces;
+            existing.MirrorDerivedSurfacesChangedBy = changedBy;
+            existing.MirrorDerivedSurfacesChangedAt = changedAt;
+            return Task.FromResult<Server?>(existing);
+        }
+
         public Task<bool> RemoveAsync(ServerId id, CancellationToken ct = default)
         {
             var existing = _servers.FirstOrDefault(s => s.Id == id);

@@ -58,6 +58,38 @@ public interface IServerRepository
         CancellationToken ct = default);
 
     /// <summary>
+    /// Records a new default for <see cref="Server.MirrorDerivedSurfaces"/> on <paramref name="id"/>,
+    /// stamping <see cref="Server.MirrorDerivedSurfacesChangedBy"/> and
+    /// <see cref="Server.MirrorDerivedSurfacesChangedAt"/> alongside it. Returns the updated row, or
+    /// <see langword="null"/> when no row exists for <paramref name="id"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Shaped exactly like <see cref="SetWriteModeAsync"/> — one unit of work writing the flag and its
+    /// attribution together, touching only Servyx's own storage — because it is the same kind of fact: an
+    /// operator-recorded posture about how much Servyx may change, carrying who recorded it.
+    /// </para>
+    /// <para>
+    /// <strong>It is not a second write grant and does not act as one.</strong> A server whose
+    /// <see cref="Server.WriteMode"/> is not <see cref="ServerWriteMode.Enabled"/> writes nothing whatever
+    /// this says; a setting the governing definition never declared mirror-eligible is not mirrored whatever
+    /// this says; and a sensitive setting is never mirrored at all. This only decides what an
+    /// already-eligible setting does when its own row expresses no opinion.
+    /// </para>
+    /// </remarks>
+    /// <param name="id">The server whose default changes.</param>
+    /// <param name="mirrorDerivedSurfaces">The default to record.</param>
+    /// <param name="changedBy">Who made the change, as the host understands identity.</param>
+    /// <param name="changedAt">When the change was made.</param>
+    /// <param name="ct">Cancellation token.</param>
+    Task<Server?> SetMirrorDerivedSurfacesAsync(
+        ServerId id,
+        bool mirrorDerivedSurfaces,
+        string changedBy,
+        DateTimeOffset changedAt,
+        CancellationToken ct = default);
+
+    /// <summary>
     /// Removes the tracked row for <paramref name="id"/>, if one exists. Returns <see langword="true"/> when
     /// a row was actually removed, <see langword="false"/> when none existed to remove. This method touches
     /// only Servyx's own storage — it has no way to reach, and must never be asked to reach, the workload

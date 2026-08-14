@@ -93,6 +93,44 @@ public enum BindingDirection
 /// <param name="Sensitive">Whether the value at this binding should be masked in the UI and logs.</param>
 public abstract record SettingBinding(string SurfaceId, BindingDirection Direction, bool Sensitive)
 {
+    /// <summary>
+    /// Whether this <see cref="BindingDirection.Read"/> binding on a <see cref="SurfaceRole.Derived"/>
+    /// surface is additionally eligible to receive a <em>mirrored</em> copy of the authoritative write, so
+    /// that a change reaches the running workload without waiting for the surface to be regenerated.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>This is an opt-in declared per setting, never inferred.</strong> A derived surface is still
+    /// derived: <see cref="Direction"/> stays <see cref="BindingDirection.Read"/>, the surface's
+    /// <see cref="SurfaceRole"/> stays <see cref="SurfaceRole.Derived"/>, and nothing about the general
+    /// "Servyx does not write what the workload regenerates" rule is relaxed. What this flag says is
+    /// narrower and checkable: <em>for this one member, the definition author has established that writing
+    /// the derived copy alongside the authoritative one is safe and is discarded harmlessly at the next
+    /// regeneration</em>. A binding without it can never be mirrored, whatever any per-server or per-row
+    /// toggle says.
+    /// </para>
+    /// <para>
+    /// <strong>It is one half of a two-key gate.</strong> The surface it targets must also declare
+    /// <see cref="DeclaredConfigSurface.MirrorWrites"/>; a binding that opts in against a surface that does
+    /// not is a definition error, not a silent no-op. Both halves are checked by the parser and again at
+    /// plan time.
+    /// </para>
+    /// <para>
+    /// <strong>A sensitive setting is never eligible, whatever this says.</strong> See
+    /// <see cref="SettingDescriptor.MirroredBindings"/>: eligibility is computed there and returns nothing
+    /// at all for a <see cref="SettingDescriptor.IsSecret"/> descriptor, so an admin password cannot be
+    /// mirrored into a second on-disk copy by declaring a flag. The parser rejects the combination outright
+    /// as well, which makes it a definition-authoring error rather than a quietly ignored line.
+    /// </para>
+    /// <para>
+    /// An init-only property with a default rather than a positional parameter, following
+    /// <c>ConfigChangePlan.Blocked</c>'s precedent: every existing construction of a
+    /// <see cref="SettingBinding"/> keeps compiling and keeps meaning exactly what it meant before — a
+    /// binding that is not mirrored.
+    /// </para>
+    /// </remarks>
+    public bool MirrorWrite { get; init; }
+
     /// <summary>Addresses a value by a flat key — dotenv and properties-style surfaces.</summary>
     /// <param name="Key">The key within the surface, e.g. <c>SERVER_NAME</c>.</param>
     public sealed record ByKey(string SurfaceId, BindingDirection Direction, bool Sensitive, string Key)
@@ -163,6 +201,32 @@ public sealed record SettingDescriptor(
         Bindings.FirstOrDefault(b => b.Direction == BindingDirection.Write) is { } write
             ? new SettingWriteTarget(write.SurfaceId, write)
             : null;
+
+    /// <summary>
+    /// Every binding of this setting that is eligible to receive a mirrored copy of the authoritative write
+    /// — empty for a setting that declares none, and <strong>empty for a sensitive setting whatever it
+    /// declares</strong>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <strong>The sensitivity exclusion is enforced here, not left to a caller.</strong> Mirroring writes a
+    /// second copy of a value onto a second file, on a surface the workload rewrites at will — for an admin
+    /// or join password that means the secret exists in one more place, for no benefit that the
+    /// authoritative write does not already provide. Making the exclusion a property of the descriptor
+    /// rather than a check every consumer must remember is what stops a future caller (a UI toggle, an API,
+    /// a second planner) from reintroducing it by forgetting: there is no eligible-binding list anywhere
+    /// that includes a secret.
+    /// </para>
+    /// <para>
+    /// <see cref="IsSecret"/> is deliberately the test, not <c>Type is SettingType.Secret</c>: a setting
+    /// whose value is masked because one of its bindings is marked
+    /// <see cref="SettingBinding.Sensitive"/> — Palworld's <c>admin-password</c> marks exactly that on its
+    /// INI binding — is just as excluded as one typed <see cref="SettingType.Secret"/>.
+    /// </para>
+    /// </remarks>
+    public IReadOnlyList<SettingBinding> MirroredBindings => IsSecret
+        ? []
+        : [.. Bindings.Where(b => b.MirrorWrite)];
 }
 
 /// <summary>One entry of a definition's top-level <c>settings</c> list: a named group of related settings.</summary>
