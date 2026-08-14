@@ -1,7 +1,10 @@
+using AngleSharp.Html.Dom;
 using Bunit;
 using Microsoft.Extensions.DependencyInjection;
 using Servyx.Domain.Configuration;
 using Servyx.Domain.Definitions.Model;
+using Servyx.Domain.Entities;
+using Servyx.Domain.Servers;
 using Servyx.Domain.Transport;
 using Servyx.Web.Components.Pages.Servers;
 using Servyx.Web.Models;
@@ -29,14 +32,24 @@ public class ServerSettingsTabTests : BunitContext
         private readonly Dictionary<string, DesiredSettingValue> _values = new(StringComparer.Ordinal);
         private readonly bool _tracked;
 
-        public FakeServerSettingsService(bool tracked = true) => _tracked = tracked;
+        public FakeServerSettingsService(bool tracked = true, bool mirrorDerivedSurfaces = false)
+        {
+            _tracked = tracked;
+            MirrorDerivedSurfaces = mirrorDerivedSurfaces;
+        }
+
+        /// <summary>Exposed so a matching <see cref="FakeServerRepository"/> can be built against the same id.</summary>
+        public Servyx.Domain.Common.ServerId ServerId => _serverId;
+
+        /// <summary>The server default <see cref="LoadAsync"/> hands back on its snapshot — mutable so a test can simulate a prior change.</summary>
+        public bool MirrorDerivedSurfaces { get; set; }
 
         public int SaveCalls { get; private set; }
 
         public string? LastActor { get; private set; }
 
         public Task<ServerSettingsSnapshot?> LoadAsync(string containerId, CancellationToken ct = default) =>
-            Task.FromResult(_tracked ? new ServerSettingsSnapshot(_serverId, _values) : null);
+            Task.FromResult(_tracked ? new ServerSettingsSnapshot(_serverId, _values, MirrorDerivedSurfaces) : null);
 
         public Task<SaveDesiredValueResult> SaveDesiredValueAsync(
             Servyx.Domain.Common.ServerId serverId, string key, string? value, string actor, CancellationToken ct = default)
@@ -74,6 +87,96 @@ public class ServerSettingsTabTests : BunitContext
             return Task.FromResult(new SaveDesiredValueResult(SaveDesiredValueOutcome.Recorded, recorded));
         }
     }
+
+    /// <summary>
+    /// A hand-written <see cref="IServerRepository"/>, for the same reason <see cref="FakeServerSettingsService"/>
+    /// is hand-written rather than a substitute: these tests assert on the server row the tab's mirror-default
+    /// save gets back. Every member the tab never calls throws, so a test that accidentally exercises one
+    /// fails loudly rather than silently returning a default.
+    /// </summary>
+    private sealed class FakeServerRepository : IServerRepository
+    {
+        private readonly Servyx.Domain.Common.ServerId _serverId;
+
+        public FakeServerRepository(Servyx.Domain.Common.ServerId serverId) => _serverId = serverId;
+
+        public int SetMirrorDerivedSurfacesCalls { get; private set; }
+
+        public string? LastActor { get; private set; }
+
+        public Task<Server?> SetMirrorDerivedSurfacesAsync(
+            Servyx.Domain.Common.ServerId id, bool mirrorDerivedSurfaces, string changedBy, DateTimeOffset changedAt,
+            CancellationToken ct = default)
+        {
+            SetMirrorDerivedSurfacesCalls++;
+            LastActor = changedBy;
+
+            if (id != _serverId)
+            {
+                return Task.FromResult<Server?>(null);
+            }
+
+            return Task.FromResult<Server?>(new Server
+            {
+                Id = _serverId,
+                Name = "Palygondwanaland",
+                ContainerId = "palygondwanaland",
+                GameDefinitionId = "palworld-docker",
+                DefinitionContentHash = "test-hash",
+                AdoptionMode = AdoptionMode.Adopted,
+                WriteMode = ServerWriteMode.Enabled,
+                MirrorDerivedSurfaces = mirrorDerivedSurfaces,
+                MirrorDerivedSurfacesChangedBy = changedBy,
+                MirrorDerivedSurfacesChangedAt = changedAt,
+                CreatedAt = new DateTimeOffset(2026, 8, 9, 12, 0, 0, TimeSpan.Zero),
+            });
+        }
+
+        public Task<IReadOnlyList<Server>> ListAsync(CancellationToken ct = default) =>
+            throw new NotSupportedException("Not exercised by ServerSettingsTab.");
+
+        public Task<Server?> TryGetAsync(Servyx.Domain.Common.ServerId id, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not exercised by ServerSettingsTab.");
+
+        public Task AddAsync(Server server, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not exercised by ServerSettingsTab.");
+
+        public Task<Server?> SetWriteModeAsync(
+            Servyx.Domain.Common.ServerId id, ServerWriteMode mode, string changedBy, DateTimeOffset changedAt,
+            CancellationToken ct = default) =>
+            throw new NotSupportedException("Not exercised by ServerSettingsTab.");
+
+        public Task<bool> RemoveAsync(Servyx.Domain.Common.ServerId id, CancellationToken ct = default) =>
+            throw new NotSupportedException("Not exercised by ServerSettingsTab.");
+    }
+
+    /// <summary>A synthetic descriptor whose one binding declares <c>mirrorWrite: true</c> — the shape <see cref="SettingDescriptor.MirroredBindings"/> reports as eligible.</summary>
+    private static SettingDescriptor MirrorEligibleDescriptor(string key, string label) => new(
+        Key: key,
+        Label: label,
+        Group: "Test",
+        Type: SettingType.String,
+        Required: false,
+        Default: null,
+        RenderFormat: null,
+        RequiresRecreate: false,
+        PublishByDefault: null,
+        Constraints: NoConstraints,
+        Bindings: [new SettingBinding.ByMember("palworldsettings", BindingDirection.Read, false, "Member", true) { MirrorWrite = true }]);
+
+    /// <summary>A synthetic descriptor with no mirror-eligible binding at all — the common case.</summary>
+    private static SettingDescriptor NotMirrorEligibleDescriptor(string key, string label) => new(
+        Key: key,
+        Label: label,
+        Group: "Test",
+        Type: SettingType.String,
+        Required: false,
+        Default: null,
+        RenderFormat: null,
+        RequiresRecreate: false,
+        PublishByDefault: null,
+        Constraints: NoConstraints,
+        Bindings: [new SettingBinding.ByKey("env", BindingDirection.Write, false, key)]);
 
     private static readonly SettingConstraints NoConstraints =
         new(null, null, null, null, null, null, null, null, null);
@@ -421,5 +524,262 @@ public class ServerSettingsTabTests : BunitContext
         panel.UnsavedKeys.Should().BeEquivalentTo(["PLAYERS", "PORT"]);
         panel.DesiredValues.Should().BeEmpty(
             because: "nothing has been recorded yet — an unsaved edit is intent Servyx has not written down");
+    }
+
+    // ── Dual-write mirroring: the per-server default ────────────────────────────────────────────────
+
+    [Fact]
+    public void An_untracked_container_shows_no_mirror_default_card()
+    {
+        var service = new FakeServerSettingsService(tracked: false);
+        Services.AddSingleton<IServerSettingsService>(service);
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        cut.FindAll("[data-testid='mirror-default-card']").Should().BeEmpty(
+            because: "there is no Server row for an untracked container to hold a default on");
+    }
+
+    [Fact]
+    public void The_mirror_default_card_renders_the_recorded_server_default()
+    {
+        var service = new FakeServerSettingsService(mirrorDerivedSurfaces: true);
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        var checkbox = cut.Find("[data-testid='mirror-default-checkbox']");
+        ((IHtmlInputElement)checkbox).IsChecked.Should().BeTrue(
+            because: "the snapshot's ServerSettingsSnapshot.MirrorDerivedSurfaces already recorded true");
+    }
+
+    [Fact]
+    public void ReadOnly_cannot_change_the_mirror_default()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.ReadOnly));
+
+        cut.Find("[data-testid='mirror-default-card'] fieldset.gated-control")
+            .HasAttribute("disabled").Should().BeTrue(
+                because: "the mirror default is Servyx's own database row, and ReadOnly is this product's " +
+                    "promise that Servyx will not record ANY operator intent for a server");
+    }
+
+    [Fact]
+    public void Toggling_the_mirror_default_records_it_and_reports_who_and_when()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+        var repository = new FakeServerRepository(service.ServerId);
+        Services.AddSingleton<IServerRepository>(repository);
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        cut.Find("[data-testid='mirror-default-checkbox']").Change(true);
+
+        repository.SetMirrorDerivedSurfacesCalls.Should().Be(1);
+        ((IHtmlInputElement)cut.Find("[data-testid='mirror-default-checkbox']")).IsChecked.Should().BeTrue();
+
+        var status = cut.Find("[data-testid='mirror-default-status']").TextContent;
+        status.Should().Contain("on");
+        status.Should().Contain(repository.LastActor);
+    }
+
+    // ── Dual-write mirroring: the per-row override ───────────────────────────────────────────────────
+
+    [Fact]
+    public void A_mirror_eligible_row_shows_the_per_row_mirror_select_and_an_ordinary_row_does_not()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["SERVER_NAME"] = MirrorEligibleDescriptor("SERVER_NAME", "Server name"),
+            ["PORT"] = NotMirrorEligibleDescriptor("PORT", "Game port"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        cut.Find("div.settings-row[data-setting-key='SERVER_NAME']")
+            .QuerySelector("[data-testid='setting-mirror-toggle']").Should().NotBeNull(
+                because: "SettingDescriptor.MirroredBindings reports this row as eligible");
+
+        cut.Find("div.settings-row[data-setting-key='PORT']")
+            .QuerySelector("[data-testid='setting-mirror-toggle']").Should().BeNull(
+                because: "a port binding never carries mirrorWrite: true — see PORT's own descriptor here");
+
+        // Every OTHER row falls back to the synthetic descriptor, whose Bindings list is always empty — so
+        // it too must show nothing.
+        cut.Find("div.settings-row[data-setting-key='PLAYERS']")
+            .QuerySelector("[data-testid='setting-mirror-toggle']").Should().BeNull(
+                because: "no descriptor was supplied for PLAYERS, so it renders through SyntheticDescriptor, " +
+                    "which declares no bindings at all");
+    }
+
+    [Fact]
+    public void The_per_row_select_defaults_to_inherit_and_names_the_current_server_default()
+    {
+        var service = new FakeServerSettingsService(mirrorDerivedSurfaces: true);
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["SERVER_NAME"] = MirrorEligibleDescriptor("SERVER_NAME", "Server name"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        var select = (IHtmlSelectElement)cut.Find("[data-testid='setting-mirror-select-SERVER_NAME']");
+        select.Value.Should().Be("inherit");
+        select.TextContent.Should().Contain("on",
+            because: "the server default is currently true, and the inherit option names it rather than " +
+                "leaving the operator to guess what \"inherit\" currently resolves to");
+    }
+
+    [Fact]
+    public void Setting_a_per_row_override_on_a_row_with_a_recorded_value_persists_it()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["SERVER_NAME"] = MirrorEligibleDescriptor("SERVER_NAME", "Server name"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        var row = cut.Find("div.settings-row[data-setting-key='SERVER_NAME']");
+        row.QuerySelector("input[data-testid='setting-editor-control']")!.Change("A new name");
+        row.QuerySelector("[data-testid^='setting-save-']")!.Click();
+
+        cut.Find("[data-testid='setting-mirror-select-SERVER_NAME']").Change("on");
+
+        service.LastActor.Should().NotBeNull();
+        var select = (IHtmlSelectElement)cut.Find("[data-testid='setting-mirror-select-SERVER_NAME']");
+        select.Value.Should().Be("on");
+
+        var status = cut.Find("[data-testid='setting-mirror-status-SERVER_NAME']").TextContent;
+        status.Should().Contain("always mirror");
+    }
+
+    [Fact]
+    public void Setting_a_per_row_override_with_no_recorded_value_reports_it_and_records_nothing()
+    {
+        var service = new FakeServerSettingsService();
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["SERVER_NAME"] = MirrorEligibleDescriptor("SERVER_NAME", "Server name"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        // No desired value has been saved for SERVER_NAME in this test — SetMirrorToDerivedAsync has nothing
+        // to hang the override off (SaveDesiredValueOutcome.NoDesiredValueRecorded).
+        cut.Find("[data-testid='setting-mirror-select-SERVER_NAME']").Change("on");
+
+        var status = cut.Find("[data-testid='setting-mirror-status-SERVER_NAME']").TextContent;
+        status.Should().Contain("save a desired value for this setting first");
+
+        var select = (IHtmlSelectElement)cut.Find("[data-testid='setting-mirror-select-SERVER_NAME']");
+        select.Value.Should().Be("inherit",
+            because: "nothing was actually recorded, so the control must not claim an override took effect");
+    }
+
+    // ── Dual-write mirroring: the ini-drift warning's copy ───────────────────────────────────────────
+
+    [Fact]
+    public void An_eligible_row_that_is_currently_mirrored_gets_the_narrower_ini_drift_warning_copy()
+    {
+        var service = new FakeServerSettingsService(mirrorDerivedSurfaces: true);
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        // PLAYERS is the mock catalogue's one row with PendingRegeneration=true — the exact condition that
+        // shows the warning at all. No per-row override is set, so it inherits the server default above (true).
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["PLAYERS"] = MirrorEligibleDescriptor("PLAYERS", "Max players"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        var warning = cut.Find("div.settings-row[data-setting-key='PLAYERS'] [data-testid='setting-ini-drift-warning']");
+        var title = warning.GetAttribute("title")!;
+
+        title.Should().Contain("not durable",
+            because: "mirroring a FUTURE write does not retroactively protect whatever is on disk right now");
+        title.Should().Contain("mirrors to",
+            because: "this row is both eligible and currently opted into mirroring, so the copy should say so " +
+                "rather than reusing the generic ports/secrets framing verbatim");
+    }
+
+    [Fact]
+    public void A_row_that_is_eligible_but_not_currently_mirrored_keeps_the_original_warning_copy()
+    {
+        var service = new FakeServerSettingsService(mirrorDerivedSurfaces: false);
+        Services.AddSingleton<IServerSettingsService>(service);
+        Services.AddSingleton<IServerRepository>(new FakeServerRepository(service.ServerId));
+
+        var descriptors = new Dictionary<string, SettingDescriptor>(StringComparer.Ordinal)
+        {
+            ["PLAYERS"] = MirrorEligibleDescriptor("PLAYERS", "Max players"),
+        };
+
+        var cut = Render<ServerSettingsTab>(p => p
+            .Add(x => x.Settings, SampleSettings())
+            .Add(x => x.Descriptors, descriptors)
+            .Add(x => x.ServerId, "palygondwanaland")
+            .Add(x => x.WriteMode, WriteMode.Enabled));
+
+        var warning = cut.Find("div.settings-row[data-setting-key='PLAYERS'] [data-testid='setting-ini-drift-warning']");
+        var title = warning.GetAttribute("title")!;
+
+        title.Should().Contain("next restart or recreate",
+            because: "the server default is off and no row override was set, so this row is not currently " +
+                "mirrored and the original silently-discarded-on-restart framing still fully applies");
     }
 }

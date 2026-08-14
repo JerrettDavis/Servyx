@@ -2,6 +2,7 @@
 @using System.Security.Claims
 @using Servyx.Domain.Configuration
 @using Servyx.Domain.Definitions.Model
+@using Servyx.Domain.Servers
 @using Servyx.Domain.Transport
 @using Servyx.Web.Authentication
 @inject IServiceProvider Services
@@ -41,6 +42,40 @@ else
     @if (_loadError is not null)
     {
         <p class="svx-deploy-error" data-testid="settings-load-error">@_loadError</p>
+    }
+
+    @* The per-server default for the dual-write mirroring opt-in (Server.MirrorDerivedSurfaces). Rendered here,
+       above the per-row grid, because every eligible row's "inherit" option below reads this value — an
+       operator needs to see and change the default in the same place the rows that fall back to it live. Only
+       rendered once Servyx actually tracks this container as a server: with nothing tracked there is no Server
+       row to hold a default at all, which _untracked's own notice above already explains. *@
+    @if (!_untracked)
+    {
+        <div class="svx-card mirror-default-card" data-testid="mirror-default-card">
+            <h3>Dual-write mirroring</h3>
+            <p class="svx-page-description">
+                When on, an eligible setting's write is also mirrored onto its derived, in-container config
+                file immediately, rather than waiting for the next restart-triggered regeneration to pick it
+                up. This still requires the container to be running at apply time, and only ever applies to
+                settings the game definition has explicitly declared eligible — most settings show no mirror
+                control at all below and are unaffected either way. A row can override this default in either
+                direction with its own "Mirror to derived" control.
+            </p>
+
+            <GatedControl Enabled="@MirrorDefaultEnabled" Reason="@GatedButton.DefaultReason" Label="Mirror derived surfaces by default">
+                <label class="mirror-default-toggle">
+                    <input type="checkbox" class="svx-checkbox" data-testid="mirror-default-checkbox"
+                           checked="@_mirrorDefault" disabled="@_mirrorDefaultBusy"
+                           @onchange="e => SetMirrorDefaultAsync((bool)(e.Value ?? false))" />
+                    <span>Also write eligible settings to the container's config file immediately</span>
+                </label>
+            </GatedControl>
+
+            @if (_mirrorDefaultStatus is not null)
+            {
+                <p class="setting-save-status" data-testid="mirror-default-status">@_mirrorDefaultStatus</p>
+            }
+        </div>
     }
 
     @foreach (var group in Settings.GroupBy(s => s.Group))
@@ -97,6 +132,42 @@ else
                                 </GatedButton>
                             </div>
 
+                            @* Only rendered for a binding the governing definition itself declared mirror-eligible
+                               (mirrorWrite: true) — most rows (ports, secrets, anything not individually opted
+                               in) show nothing here at all. Three explicit options rather than a plain checkbox:
+                               "inherit" is a real, distinct state from an explicit override in either direction —
+                               see DesiredSettingValue.MirrorToDerived's own remarks — and a two-state control
+                               cannot represent "no opinion" without a separate reset affordance. *@
+                            @if (descriptor.MirroredBindings.Count > 0)
+                            {
+                                <div class="setting-mirror-toggle" data-testid="setting-mirror-toggle">
+                                    <label>
+                                        <span class="setting-mirror-toggle-label">Mirror to derived</span>
+                                        @* @key forces a fresh <select> element whenever a change attempt completes, rather than
+                                           letting Blazor diff against its own last-rendered "value" string. Without it, a
+                                           request that ends up NOT changing MirrorSelectValue (e.g. NoDesiredValueRecorded,
+                                           or a ServerNotFound refusal) leaves the browser's native <select> showing whatever
+                                           the operator just clicked — Blazor sees the same "inherit" value string it rendered
+                                           last time and skips re-asserting it against the DOM, so a refused change would
+                                           otherwise look like it silently took effect. *@
+                                        <select class="svx-select" data-testid="@($"setting-mirror-select-{row.Key}")"
+                                                @key="@($"{row.Key}-{MirrorSelectVersion(row.Key)}")"
+                                                disabled="@_mirrorBusy.GetValueOrDefault(row.Key)"
+                                                value="@MirrorSelectValue(row.Key)"
+                                                @onchange="e => SetMirrorAsync(row.Key, e.Value?.ToString())">
+                                            <option value="inherit">Inherit server default (@(_mirrorDefault ? "on" : "off"))</option>
+                                            <option value="on">Always mirror</option>
+                                            <option value="off">Never mirror</option>
+                                        </select>
+                                    </label>
+                                </div>
+
+                                @if (_mirrorStatus.TryGetValue(row.Key, out var mirrorStatus))
+                                {
+                                    <p class="setting-save-status" data-testid="@($"setting-mirror-status-{row.Key}")">@mirrorStatus</p>
+                                }
+                            }
+
                             @if (descriptor.IsSecret && _desired.TryGetValue(row.Key, out var secretDesired))
                             {
                                 <p class="setting-secret-hint" data-testid="setting-secret-hint">
@@ -119,7 +190,7 @@ else
                         @if (ShowIniDriftWarning(row))
                         {
                             <span class="svx-badge ini-drift-warning" tabindex="0" data-testid="setting-ini-drift-warning"
-                                  title="@IniDriftWarningText">
+                                  title="@IniDriftWarningText(EffectiveMirrors(row.Key, descriptor))">
                                 ⚠ Not durable
                             </span>
                         }
@@ -183,6 +254,20 @@ else
     public Task<AuthenticationState>? AuthenticationState { get; set; }
 
     private IServerSettingsService? _settingsService;
+
+    /// <summary>
+    /// Resolved the same way <see cref="_settingsService"/> is — optionally, through <see cref="IServiceProvider"/>
+    /// — so a host or bUnit render that never composed it still renders, degrading the mirror-default control
+    /// to permanently disabled rather than throwing. <see cref="IServerSettingsService"/> has no member for
+    /// changing <c>Server.MirrorDerivedSurfaces</c> itself (only the per-row override), so this tab talks to
+    /// <see cref="IServerRepository.SetMirrorDerivedSurfacesAsync"/> directly for that one write — the same
+    /// domain-layer interface <c>GrantInvalidatingServerRepository</c> wraps everywhere else in this process,
+    /// and unconditionally registered regardless of the provisioning gate (see
+    /// <c>ServyxCoreCompositionExtensions</c>), matching <see cref="_settingsService"/>'s own "Servyx's own
+    /// database only" write posture.
+    /// </summary>
+    private IServerRepository? _serverRepository;
+
     private Servyx.Domain.Common.ServerId? _resolvedServerId;
     private readonly Dictionary<string, DesiredSettingValue> _desired = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string?> _edits = new(StringComparer.Ordinal);
@@ -190,6 +275,25 @@ else
     private readonly Dictionary<string, bool> _busy = new(StringComparer.Ordinal);
     private string? _loadError;
     private bool _untracked;
+
+    // ── Dual-write mirroring ─────────────────────────────────────────────────────────────────────────
+    //
+    // _mirrorDefault mirrors ServerSettingsSnapshot.MirrorDerivedSurfaces, loaded off the same snapshot
+    // _desired comes from — see ReloadDesiredAsync. _mirrorStatus/_mirrorBusy are per-row, keyed like
+    // _saveStatus/_busy above, because a mirror-override change is independent of a value save and can be
+    // in flight or reported on a different row at the same time.
+    private bool _mirrorDefault;
+    private bool _mirrorDefaultBusy;
+    private string? _mirrorDefaultStatus;
+    private readonly Dictionary<string, string> _mirrorStatus = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, bool> _mirrorBusy = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Bumped every time a per-row mirror change attempt completes, and used as (part of) the mirror
+    /// &lt;select&gt;'s <c>@@key</c> — see the razor markup's own remarks for why a value-string diff alone is
+    /// not enough to guarantee the control reflects <see cref="MirrorSelectValue"/> after a refused change.
+    /// </summary>
+    private readonly Dictionary<string, int> _mirrorSelectVersion = new(StringComparer.Ordinal);
 
     /// <summary>
     /// Resolved through <see cref="IServiceProvider"/> rather than <c>@@inject</c>, matching
@@ -200,6 +304,7 @@ else
     protected override async Task OnInitializedAsync()
     {
         _settingsService = Services.GetService(typeof(IServerSettingsService)) as IServerSettingsService;
+        _serverRepository = Services.GetService(typeof(IServerRepository)) as IServerRepository;
         await ReloadDesiredAsync();
     }
 
@@ -208,6 +313,7 @@ else
         _desired.Clear();
         _untracked = false;
         _resolvedServerId = null;
+        _mirrorDefault = false;
 
         if (_settingsService is null || string.IsNullOrWhiteSpace(ServerId))
         {
@@ -224,6 +330,7 @@ else
             }
 
             _resolvedServerId = snapshot.ServerId;
+            _mirrorDefault = snapshot.MirrorDerivedSurfaces;
             foreach (var (key, value) in snapshot.Values)
             {
                 _desired[key] = value;
@@ -268,6 +375,142 @@ else
 
     private bool IsBusy(string key) => _busy.TryGetValue(key, out var busy) && busy;
 
+    // ── Dual-write mirroring ─────────────────────────────────────────────────────────────────────────
+    //
+    // Gated the same way an ordinary desired-value save is (RowEnabled, above): mirroring preferences are
+    // Servyx's own database rows, never a call to the container, so ReadOnly locks them for the same honesty
+    // reason RowEnabled documents, and there is no RequiresRecreate-style extra lock — a mirror preference is
+    // not itself blocked by "the container would need recreating to see it".
+
+    private bool MirrorDefaultEnabled =>
+        WriteMode != WriteMode.ReadOnly && _resolvedServerId is not null && _serverRepository is not null;
+
+    private async Task SetMirrorDefaultAsync(bool value)
+    {
+        if (_serverRepository is null || _resolvedServerId is null || _mirrorDefaultBusy)
+        {
+            return;
+        }
+
+        _mirrorDefaultBusy = true;
+        _mirrorDefaultStatus = null;
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var updated = await _serverRepository.SetMirrorDerivedSurfacesAsync(
+                _resolvedServerId.Value, value, actor, DateTimeOffset.UtcNow);
+
+            if (updated is not null)
+            {
+                _mirrorDefault = updated.MirrorDerivedSurfaces;
+                _mirrorDefaultStatus =
+                    $"Server default set to {(updated.MirrorDerivedSurfaces ? "on" : "off")}, recorded against " +
+                    $"\"{updated.MirrorDerivedSurfacesChangedBy}\" at {updated.MirrorDerivedSurfacesChangedAt:u}.";
+            }
+            else
+            {
+                _mirrorDefaultStatus =
+                    "Nothing was changed: Servyx no longer tracks this server. It may have been forgotten in " +
+                    "another session.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _mirrorDefaultStatus = $"Could not change the mirror default: {ex.Message}";
+        }
+        finally
+        {
+            _mirrorDefaultBusy = false;
+        }
+    }
+
+    /// <summary>The value the per-row mirror &lt;select&gt; should show — the row's own override when it has one, "inherit" otherwise.</summary>
+    private string MirrorSelectValue(string key) =>
+        _desired.TryGetValue(key, out var desired) && desired.MirrorToDerived.HasValue
+            ? (desired.MirrorToDerived.Value ? "on" : "off")
+            : "inherit";
+
+    private int MirrorSelectVersion(string key) => _mirrorSelectVersion.GetValueOrDefault(key);
+
+    private async Task SetMirrorAsync(string key, string? selection)
+    {
+        if (_settingsService is null || _resolvedServerId is null || _mirrorBusy.GetValueOrDefault(key))
+        {
+            return;
+        }
+
+        bool? mirrorToDerived = selection switch
+        {
+            "on" => true,
+            "off" => false,
+            _ => null,
+        };
+
+        _mirrorBusy[key] = true;
+        _mirrorStatus.Remove(key);
+
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var result = await _settingsService.SetMirrorToDerivedAsync(_resolvedServerId.Value, key, mirrorToDerived, actor);
+
+            if (result.Recorded && result.Value is not null)
+            {
+                _desired[key] = result.Value;
+                _mirrorStatus[key] =
+                    $"Mirror override set to {DescribeMirror(mirrorToDerived)}, recorded against " +
+                    $"\"{result.Value.UpdatedBy}\" at {result.Value.UpdatedAt:u}.";
+            }
+            else if (result.Outcome == SaveDesiredValueOutcome.NoDesiredValueRecorded)
+            {
+                // No row to hang the override off — see SetMirrorToDerivedAsync's own remarks. Named plainly
+                // rather than silently reverting the selector, so the operator knows exactly what to do next.
+                _mirrorStatus[key] =
+                    "Nothing was recorded: save a desired value for this setting first — there is no recorded " +
+                    "row yet for a mirror override to attach to.";
+            }
+            else
+            {
+                _mirrorStatus[key] =
+                    "Nothing was recorded: Servyx no longer tracks this server. It may have been forgotten in " +
+                    "another session.";
+            }
+        }
+        catch (Exception ex)
+        {
+            _mirrorStatus[key] = $"Could not record this preference: {ex.Message}";
+        }
+        finally
+        {
+            _mirrorBusy[key] = false;
+            _mirrorSelectVersion[key] = MirrorSelectVersion(key) + 1;
+        }
+    }
+
+    private static string DescribeMirror(bool? value) => value switch
+    {
+        true => "always mirror",
+        false => "never mirror",
+        _ => "inherit the server default",
+    };
+
+    /// <summary>
+    /// Whether a write to <paramref name="key"/> would actually be mirrored right now, given this row's own
+    /// override (if any) and the server default — used only to pick the ini-drift warning's wording below,
+    /// never to gate anything: eligibility and the transport's actual mirror-writability are re-checked at
+    /// plan/apply time regardless of what this returns.
+    /// </summary>
+    private bool EffectiveMirrors(string key, SettingDescriptor descriptor)
+    {
+        if (descriptor.MirroredBindings.Count == 0)
+        {
+            return false;
+        }
+
+        return _desired.TryGetValue(key, out var desired) ? desired.MirrorsToDerived(_mirrorDefault) : _mirrorDefault;
+    }
+
     // ── INI-sourced-value warning ────────────────────────────────────────────────────────────────────
     //
     // Rendered (INI) is a `derivedFrom: [env]` surface that regenerates from Authoritative on the next
@@ -280,11 +523,25 @@ else
     // trigger (ManualRegenerationRequired's territory in ChangePlanPanel) or a game with no derived surface
     // at all never sets it, so this warning only ever appears where the dual-surface risk genuinely exists.
 
-    private const string IniDriftWarningText =
-        "This value differs from the authoritative .env value shown to the left. If it was edited directly " +
-        "in the container's settings file rather than through Servyx, that edit is not durable: this file " +
-        "regenerates from .env on every restart, so the next restart or recreate will silently discard it in " +
-        "favor of the .env value.";
+    /// <summary>
+    /// The ini-drift warning's tooltip copy. Two variants, chosen by <see cref="EffectiveMirrors"/>: a setting
+    /// this codebase cannot mirror (not eligible, or eligible but not currently opted in) keeps the original
+    /// "silently discarded on next restart" framing verbatim, because that framing is still fully accurate for
+    /// it. A setting that IS currently opted into mirroring gets a straightforward tweak instead of the same
+    /// text: for that row, Servyx itself will write this value directly into this file the next time a change
+    /// is applied, so the risk is narrower — durable from the next apply onward — rather than "will be lost".
+    /// The warning still fires and still says "not durable" for the drift showing right now, since mirroring
+    /// a FUTURE write does not retroactively protect whatever is on disk today.
+    /// </summary>
+    private static string IniDriftWarningText(bool eligibleAndMirrored) => eligibleAndMirrored
+        ? "This value differs from the authoritative .env value shown to the left. This setting mirrors to " +
+          "the derived surface, so Servyx will write this value directly into this file the next time a " +
+          "change is applied here. Until then, what is here now is still not durable: an unrelated restart " +
+          "or recreate would discard it in favor of the .env value first."
+        : "This value differs from the authoritative .env value shown to the left. If it was edited directly " +
+          "in the container's settings file rather than through Servyx, that edit is not durable: this file " +
+          "regenerates from .env on every restart, so the next restart or recreate will silently discard it in " +
+          "favor of the .env value.";
 
     private static bool ShowIniDriftWarning(Servyx.Web.Models.SettingRow row) =>
         row.PendingRegeneration && row.Drift.HasFlag(DriftKind.AuthoritativeVsRendered);

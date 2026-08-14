@@ -20,3 +20,41 @@
 .settings-honesty-notice {
     color: var(--svx-text-muted);
 }
+
+/* Mirrors DeployPage.razor.css's .svx-deploy-error exactly (same tokens, same shape) — CSS isolation scopes
+   each .razor.css to its own component, so the class name has to be redefined here rather than inherited
+   from that other page's scoped sheet. Without this rule, the settings load error rendered as plain
+   unstyled text. */
+.svx-deploy-error {
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--svx-danger-fg);
+}
+
+/* Dual-write mirroring controls (the per-server default card, and the per-row "Mirror to derived" select).
+   New classes owned solely by this component, unlike .svx-deploy-error above — so, unlike that class, they
+   belong here rather than in wwwroot/app.css: nothing else in the app renders a .mirror-default-toggle or a
+   .setting-mirror-toggle, so there is no second component whose scoped sheet would need to redeclare them,
+   and keeping them scoped is what CSS isolation is for. .svx-checkbox/.svx-select themselves are NOT
+   redeclared here — they are genuinely global (see app.css), used unscoped by SettingEditor.razor already. */
+.mirror-default-toggle {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+}
+
+.setting-mirror-toggle {
+    margin-top: 0.5rem;
+}
+
+.setting-mirror-toggle label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.setting-mirror-toggle-label {
+    font-size: 0.78rem;
+    color: var(--svx-text-muted);
+}
