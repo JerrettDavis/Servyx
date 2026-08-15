@@ -40,7 +40,7 @@ public class BindingStatusBadgeTests : BunitContext
     }
 
     [Fact]
-    public void NeedsRebind_renders_a_badge_naming_the_previous_definition_and_admits_no_fix_is_available()
+    public void NeedsRebind_renders_a_badge_naming_the_previous_definition_and_points_to_the_rebind_action()
     {
         var cut = Render<BindingStatusBadge>(p => p
             .Add(x => x.Status, ServerBindingStatus.NeedsRebind)
@@ -52,7 +52,9 @@ public class BindingStatusBadgeTests : BunitContext
 
         var tooltip = span.GetAttribute("title");
         tooltip.Should().Contain("palworld");
-        // The review's explicit requirement: never imply a fix is available when none exists.
-        tooltip.Should().Contain("no action in Servyx to resolve this");
+        // The server detail page now offers an explicit Rebind action for this state (see
+        // ServerBindingStatusRenderingTests) — the tooltip must route there rather than claim none exists.
+        tooltip.Should().Contain("explicitly rebind it");
+        tooltip.Should().NotContain("no action in Servyx to resolve this");
     }
 }

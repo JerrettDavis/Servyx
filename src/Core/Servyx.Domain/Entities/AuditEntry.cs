@@ -112,6 +112,12 @@ public static class AuditActions
     /// <summary>A <c>User</c> account was deactivated.</summary>
     public const string UserDeactivated = "user.deactivated";
 
+    /// <summary>
+    /// A <c>User</c>'s password was administratively reset (see <c>IUserService.ResetPasswordAsync</c>) rather
+    /// than self-service changed — never recorded with the plaintext, only who did it and to which account.
+    /// </summary>
+    public const string UserPasswordReset = "user.password_reset";
+
     /// <summary>A remote SSH <c>Host</c> was registered.</summary>
     public const string HostRegistered = "host.registered";
 
@@ -123,6 +129,12 @@ public static class AuditActions
 
     /// <summary>Servyx stopped tracking an adopted <c>Server</c>.</summary>
     public const string ServerForgotten = "server.forgotten";
+
+    /// <summary>
+    /// A server whose pinned definition content hash no longer resolved was explicitly re-bound, by an
+    /// operator's deliberate action, to the currently loaded definition for the same game id.
+    /// </summary>
+    public const string ServerRebound = "server.rebound";
 
     /// <summary>A <c>ChangePlanRecord</c> was applied.</summary>
     public const string ChangePlanApplied = "changeplan.applied";

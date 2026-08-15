@@ -1,10 +1,15 @@
 @page "/servers/{Id}"
 @implements IDisposable
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Components.Authorization
 @using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus
+@using IServerAdoptionService = Servyx.Application.Servers.IServerAdoptionService
+@using RebindOutcome = Servyx.Application.Servers.RebindOutcome
 @using Servyx.Domain.Definitions.Model
 @using Servyx.Domain.Lifecycle
 @using Servyx.Domain.Rcon
 @using Servyx.Domain.Transport
+@using Servyx.Web.Authentication
 @inject IDashboardDataService Data
 @inject PersistentComponentState ApplicationState
 @inject IServiceProvider Services
@@ -67,16 +72,59 @@ else
                     This server was previously bound to a game definition version (content hash) that no
                     longer resolves in the loaded catalog — most likely because the definition was edited or
                     removed. Servyx will not silently substitute a different version, so settings, lifecycle
-                    controls, and the health signal are unavailable for this server. <strong>There is
-                    currently no action in Servyx's UI to resolve this</strong> — re-binding requires
-                    restoring or reloading a matching definition; automatically clearing or re-persisting
-                    this binding is not implemented yet.
+                    controls, and the health signal are unavailable for this server until an operator
+                    explicitly re-binds it below to whatever is currently loaded for the same game.
                 </p>
                 @if (_detail.Summary.AmbiguousCandidateGameIds is { Count: > 0 } previous)
                 {
                     <p>
                         Previously bound to: <strong data-testid="binding-status-previous-id">@previous[0]</strong>
                     </p>
+                }
+
+                @if (_adoption is null)
+                {
+                    <p data-testid="rebind-unavailable">
+                        This process did not compose a server adoption service, so re-binding cannot be
+                        performed here.
+                    </p>
+                }
+                else if (!_rebindConfirming)
+                {
+                    <button type="button" class="svx-btn svx-btn-primary" data-testid="rebind-button"
+                            @onclick="() => _rebindConfirming = true">
+                        Rebind to loaded definition
+                    </button>
+                }
+                else
+                {
+                    <div class="svx-deploy-confirm" data-testid="rebind-confirm-step">
+                        <p data-testid="rebind-confirm-body">
+                            This will bind <strong>@_detail.Summary.Name</strong> to whatever is currently
+                            loaded for game id
+                            <strong>@(_detail.Summary.AmbiguousCandidateGameIds is { Count: > 0 } ids ? ids[0] : "?")</strong>,
+                            replacing the stale content-hash pin. Servyx will not substitute a different
+                            game's definition — if none is currently loaded for that id, nothing is changed.
+                        </p>
+                        <button type="button" class="svx-btn svx-btn-primary" data-testid="rebind-confirm"
+                                disabled="@_rebindBusy" @onclick="RebindAsync">
+                            @(_rebindBusy ? "Working…" : "Yes, rebind this server")
+                        </button>
+                        <button type="button" class="svx-btn" data-testid="rebind-cancel"
+                                disabled="@_rebindBusy" @onclick="() => _rebindConfirming = false">
+                            Cancel
+                        </button>
+                    </div>
+                }
+
+                @if (_rebindError is not null)
+                {
+                    <p class="svx-deploy-error" data-testid="rebind-error">@_rebindError</p>
+                }
+
+                @if (_rebindSuccess is not null)
+                {
+                    <p class="svx-deploy-applied" data-testid="rebind-success">@_rebindSuccess</p>
                 }
             }
         </div>
@@ -123,6 +171,13 @@ else
 
     [Parameter]
     public string Id { get; set; } = string.Empty;
+
+    /// <summary>
+    /// The signed-in principal, when the host wired <c>CascadingAuthenticationState</c> (see
+    /// <c>Routes.razor</c>). Mirrors <c>WriteModeControl.AuthenticationState</c> exactly — see its remarks.
+    /// </summary>
+    [CascadingParameter]
+    public Task<AuthenticationState>? AuthenticationState { get; set; }
 
     private bool _loading = true;
     private string _activeTab = "Overview";
@@ -199,6 +254,17 @@ else
     private ServyxRconChannels _rconChannels = ServyxRconChannels.None;
 
     /// <summary>
+    /// Resolved the same way — see the field above's remarks — so a host or bUnit render that never composed
+    /// this service still renders, degrading to "re-binding cannot be performed here" instead of throwing.
+    /// </summary>
+    private IServerAdoptionService? _adoption;
+
+    private bool _rebindConfirming;
+    private bool _rebindBusy;
+    private string? _rebindError;
+    private string? _rebindSuccess;
+
+    /// <summary>
     /// See <c>Home.razor</c>'s identical pattern for why this avoids issuing all five Docker-backed calls
     /// twice per page load across the prerender + interactive-circuit passes of
     /// <c>@@rendermode="InteractiveServer"</c>. Keys are namespaced with <see cref="Id"/> so a stale entry
@@ -210,13 +276,11 @@ else
 
         if (ApplicationState.TryTakeFromJson<ServerDetail?>(StateKey("Detail"), out var restoredDetail)
             && ApplicationState.TryTakeFromJson<IReadOnlyList<SettingRow>>(StateKey("Settings"), out var restoredSettings)
-            && ApplicationState.TryTakeFromJson<IReadOnlyList<LogLine>>(StateKey("Logs"), out var restoredLogs)
             && ApplicationState.TryTakeFromJson<SavesResult>(StateKey("Saves"), out var restoredSaves)
             && ApplicationState.TryTakeFromJson<IReadOnlyList<BackupEntry>>(StateKey("Backups"), out var restoredBackups))
         {
             _detail = restoredDetail;
             _settings = restoredSettings ?? [];
-            _logs = restoredLogs ?? [];
             _saves = restoredSaves ?? new(null, SavesAvailability.NotConfigured, null);
             _backups = restoredBackups ?? [];
         }
@@ -224,10 +288,16 @@ else
         {
             _detail = await Data.GetServerDetailAsync(Id);
             _settings = await Data.GetServerSettingsAsync(Id);
-            _logs = await Data.GetServerLogsAsync(Id);
             _saves = await Data.GetServerSavesWithStatusAsync(Id);
             _backups = await Data.GetServerBackupsAsync(Id);
         }
+
+        // Deliberately NOT round-tripped through PersistentComponentState (see PersistData's remarks):
+        // console log text is unbounded per line (e.g. a stack trace), so a persisted tail can exceed
+        // SignalR's 32KB default hub message cap and kill the circuit before it ever becomes interactive.
+        // Always re-fetched fresh instead — costs one extra round trip on the interactive pass, same as
+        // every other tab's data cost before this page started persisting anything.
+        _logs = await Data.GetServerLogsAsync(Id);
 
         // Resolved once, from the discovered summary, before anything on this page reads an identity.
         _containerId = string.IsNullOrWhiteSpace(_detail?.Summary.Id) ? null : _detail.Summary.Id;
@@ -244,7 +314,69 @@ else
 
         _rconChannels = Services.GetService(typeof(ServyxRconChannels)) as ServyxRconChannels ?? ServyxRconChannels.None;
 
+        _adoption = Services.GetService(typeof(IServerAdoptionService)) as IServerAdoptionService;
+
         _loading = false;
+    }
+
+    /// <summary>
+    /// Explicit, operator-initiated re-bind for a server stuck in <see cref="ServerBindingStatus.NeedsRebind"/>
+    /// — see <c>IServerAdoptionService.RebindAsync</c>'s remarks. Never invoked automatically; this is the
+    /// only call site in the product.
+    /// </summary>
+    private async Task RebindAsync()
+    {
+        if (_adoption is null || _containerId is null)
+        {
+            return;
+        }
+
+        _rebindBusy = true;
+        _rebindError = null;
+        _rebindSuccess = null;
+        try
+        {
+            var actor = await ResolveActorAsync();
+            var result = await _adoption.RebindAsync(_containerId, actor);
+
+            if (result.Outcome == RebindOutcome.Rebound)
+            {
+                _rebindSuccess = $"Rebound to \"{result.GameName}\" ({result.GameDefinitionId}).";
+                // Re-read this server's detail so BindingStatus, settings, health signal, etc. reflect the
+                // fresh binding immediately, rather than waiting for the next full page load.
+                _detail = await Data.GetServerDetailAsync(Id);
+                _containerId = string.IsNullOrWhiteSpace(_detail?.Summary.Id) ? null : _detail.Summary.Id;
+                _settings = await Data.GetServerSettingsAsync(Id);
+            }
+            else
+            {
+                _rebindError = result.Detail;
+            }
+        }
+        catch (Exception ex)
+        {
+            // Degrades honestly rather than letting a persistence fault surface as a Blazor error boundary —
+            // matches AdoptionPanel's own try/catch-and-degrade posture for its equivalent Adopt/Forget calls.
+            _rebindError = $"Could not rebind this server: {ex.Message}";
+        }
+        finally
+        {
+            _rebindBusy = false;
+            _rebindConfirming = false;
+        }
+    }
+
+    /// <summary>Mirrors <c>WriteModeControl.ResolveActorAsync</c>/<c>AdoptionPanel.ResolveActorAsync</c> exactly — see their remarks.</summary>
+    private async Task<string> ResolveActorAsync()
+    {
+        if (AuthenticationState is null)
+        {
+            return OperatorAuthentication.OperatorNameClaimValue;
+        }
+
+        var state = await AuthenticationState;
+        var name = state.User.FindFirst(ClaimTypes.Name)?.Value;
+        return string.IsNullOrWhiteSpace(name) ? OperatorAuthentication.OperatorNameClaimValue : name;
     }
 
     /// <summary>
@@ -274,11 +406,19 @@ else
             ? Task.FromResult<IRconSession?>(null)
             : _rconChannels.GetSessionAsync(_containerId, _detail.Summary.Name, ct);
 
+    /// <summary>
+    /// Persists everything this page fetches for the prerender-to-interactive handoff except the Console
+    /// tab's log buffer — see the <c>_logs</c> assignment in <see cref="OnInitializedAsync"/> for why that
+    /// one is deliberately re-fetched instead of round-tripped through <see cref="PersistentComponentState"/>.
+    /// The other four are all bounded (a single <see cref="ServerDetail"/>/<see cref="SavesResult"/>, or
+    /// collections capped upstream — settings by the fixed descriptor count, saves' file lists by
+    /// <c>MaxWorldCandidates</c>/<c>MaxPlayerFilesListed</c>), so none carry the same unbounded-text risk
+    /// that made persisting <c>_logs</c> capable of exceeding SignalR's default 32KB hub message size.
+    /// </summary>
     private Task PersistData()
     {
         ApplicationState.PersistAsJson(StateKey("Detail"), _detail);
         ApplicationState.PersistAsJson(StateKey("Settings"), _settings);
-        ApplicationState.PersistAsJson(StateKey("Logs"), _logs);
         ApplicationState.PersistAsJson(StateKey("Saves"), _saves);
         ApplicationState.PersistAsJson(StateKey("Backups"), _backups);
         return Task.CompletedTask;

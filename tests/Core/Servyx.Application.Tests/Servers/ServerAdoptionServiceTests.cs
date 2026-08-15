@@ -299,6 +299,100 @@ public class ServerAdoptionServiceTests
         fixture.AuditLogger.Entries.Should().ContainSingle();
     }
 
+    // ── RebindAsync ──────────────────────────────────────────────────────────────────────────────────
+
+    [Fact]
+    public async Task RebindAsync_re_pins_to_the_currently_loaded_definition_for_the_same_game_id()
+    {
+        // The exact bug scenario: a server was pinned to a palworld content hash that has since gone stale
+        // (the definition was edited), but a definition with the same id ("palworld") is still loaded —
+        // just under a different content hash. RebindAsync must re-pin to that current hash.
+        var fixture = CreateFixture();
+        var staleRef = new GameDefinitionRef("palworld", "sha256:palworld-stale", "filesystem", "definitions/palworld-docker.yaml");
+        fixture.Bindings.TryGetAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDefinitionBinding?>(
+                new ServerDefinitionBinding("container-1", ServerDefinitionBindingState.Bound, staleRef, [], DateTimeOffset.UnixEpoch)));
+
+        var result = await fixture.Service.RebindAsync("container-1");
+
+        result.Outcome.Should().Be(RebindOutcome.Rebound);
+        result.GameDefinitionId.Should().Be("palworld");
+        result.GameName.Should().Be("Palworld Dedicated Server");
+
+        await fixture.Bindings.Received(1).SaveAsync(
+            Arg.Is<ServerDefinitionBinding>(b =>
+                b != null &&
+                b.ServerId == "container-1" &&
+                b.State == ServerDefinitionBindingState.Bound &&
+                b.Definition == PalworldRef),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RebindAsync_with_no_prior_binding_returns_a_result_not_an_exception_and_writes_nothing()
+    {
+        var fixture = CreateFixture();
+        fixture.Bindings.TryGetAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDefinitionBinding?>(null));
+
+        var result = await fixture.Service.RebindAsync("container-1");
+
+        result.Outcome.Should().Be(RebindOutcome.NoPriorBinding);
+        await fixture.Bindings.DidNotReceive().SaveAsync(Arg.Any<ServerDefinitionBinding>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RebindAsync_with_no_currently_loaded_definition_for_that_game_id_is_rejected_and_writes_nothing()
+    {
+        // Never silently substitutes a different game's definition: if nothing currently loaded answers to
+        // the previously-bound game id at all, rebinding is refused rather than guessing.
+        var fixture = CreateFixture();
+        var staleRef = new GameDefinitionRef("vanished-game", "sha256:stale", "filesystem");
+        fixture.Bindings.TryGetAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDefinitionBinding?>(
+                new ServerDefinitionBinding("container-1", ServerDefinitionBindingState.Bound, staleRef, [], DateTimeOffset.UnixEpoch)));
+        fixture.Catalog.TryGetRefById("vanished-game").Returns((GameDefinitionRef?)null);
+
+        var result = await fixture.Service.RebindAsync("container-1");
+
+        result.Outcome.Should().Be(RebindOutcome.NoMatchingDefinition);
+        result.Detail.Should().Contain("vanished-game");
+        await fixture.Bindings.DidNotReceive().SaveAsync(Arg.Any<ServerDefinitionBinding>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task RebindAsync_WithAnActor_RecordsAServerReboundAuditEntry()
+    {
+        var fixture = CreateFixture();
+        var staleRef = new GameDefinitionRef("palworld", "sha256:palworld-stale", "filesystem");
+        fixture.Bindings.TryGetAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDefinitionBinding?>(
+                new ServerDefinitionBinding("container-1", ServerDefinitionBindingState.Bound, staleRef, [], DateTimeOffset.UnixEpoch)));
+
+        await fixture.Service.RebindAsync("container-1", "alice");
+
+        var entry = fixture.AuditLogger.Entries.Should().ContainSingle().Which;
+        entry.Actor.Should().Be("alice");
+        entry.Action.Should().Be(AuditActions.ServerRebound);
+        entry.TargetType.Should().Be("server");
+        entry.TargetId.Should().Be("container-1");
+    }
+
+    [Fact]
+    public async Task RebindAsync_rejected_for_a_missing_definition_records_no_audit_entry()
+    {
+        var fixture = CreateFixture();
+        var staleRef = new GameDefinitionRef("vanished-game", "sha256:stale", "filesystem");
+        fixture.Bindings.TryGetAsync("container-1", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ServerDefinitionBinding?>(
+                new ServerDefinitionBinding("container-1", ServerDefinitionBindingState.Bound, staleRef, [], DateTimeOffset.UnixEpoch)));
+        fixture.Catalog.TryGetRefById("vanished-game").Returns((GameDefinitionRef?)null);
+
+        await fixture.Service.RebindAsync("container-1", "alice");
+
+        fixture.AuditLogger.Entries.Should().BeEmpty();
+    }
+
     // ── ForgetAsync ──────────────────────────────────────────────────────────────────────────────────
 
     [Fact]

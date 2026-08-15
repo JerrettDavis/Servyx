@@ -125,6 +125,46 @@ public sealed record AdoptionResult(AdoptionOutcome Outcome, ServerId? ServerId,
             $"Container '{containerId}' was not found. It may have stopped or been removed since it was listed.");
 }
 
+/// <summary>Which of the well-known outcomes <see cref="IServerAdoptionService.RebindAsync"/> landed on.</summary>
+public enum RebindOutcome
+{
+    /// <summary>The server's binding was re-pointed at the currently loaded definition for its game id.</summary>
+    Rebound,
+
+    /// <summary>No definition binding is recorded for this server at all — there is nothing to rebind.</summary>
+    NoPriorBinding,
+
+    /// <summary>
+    /// No currently loaded definition answers to the game id this server was previously bound to. Rebinding
+    /// requires restoring or reloading a matching definition first; Servyx will not substitute a different
+    /// game's definition.
+    /// </summary>
+    NoMatchingDefinition,
+}
+
+/// <summary>
+/// The outcome of one <see cref="IServerAdoptionService.RebindAsync"/> call. Every member here is an
+/// expected, non-exceptional outcome.
+/// </summary>
+/// <param name="GameDefinitionId">The game id the server is now bound to, when <see cref="Outcome"/> is <see cref="RebindOutcome.Rebound"/>; otherwise <see langword="null"/>.</param>
+/// <param name="GameName">The display name of that definition, for confirmation UI; otherwise <see langword="null"/>.</param>
+public sealed record RebindResult(RebindOutcome Outcome, string? GameDefinitionId, string? GameName, string? Detail)
+{
+    /// <summary>The server was re-bound to the currently loaded <paramref name="gameDefinitionId"/>/<paramref name="gameName"/> definition.</summary>
+    public static RebindResult Rebound(string gameDefinitionId, string gameName) =>
+        new(RebindOutcome.Rebound, gameDefinitionId, gameName, null);
+
+    /// <summary>No binding was ever recorded for <paramref name="containerId"/>; there is nothing to rebind.</summary>
+    public static RebindResult NoPriorBinding(string containerId) =>
+        new(RebindOutcome.NoPriorBinding, null, null, $"No definition binding is recorded for container '{containerId}'.");
+
+    /// <summary>No loaded definition currently answers to <paramref name="gameDefinitionId"/>.</summary>
+    public static RebindResult NoMatchingDefinition(string gameDefinitionId) =>
+        new(RebindOutcome.NoMatchingDefinition, null, null,
+            $"No currently loaded game definition matches '{gameDefinitionId}'. Restore or reload a matching " +
+            "definition before rebinding.");
+}
+
 /// <summary>Which of the well-known outcomes <see cref="IServerAdoptionService.ForgetAsync"/> landed on.</summary>
 public enum ForgetOutcome
 {

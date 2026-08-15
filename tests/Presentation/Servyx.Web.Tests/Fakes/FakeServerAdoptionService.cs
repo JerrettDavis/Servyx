@@ -32,6 +32,12 @@ public sealed class FakeServerAdoptionService : IServerAdoptionService
     /// <summary>Overrides the result <see cref="ForgetAsync"/> returns; defaults to always succeeding.</summary>
     public Func<ServerId, ForgetResult>? ForgetResultFactory { get; set; }
 
+    /// <summary>Every <c>(containerId, actor)</c> pair <see cref="RebindAsync"/> was called with, in call order.</summary>
+    public List<(string ContainerId, string? Actor)> RebindCalls { get; } = [];
+
+    /// <summary>Overrides the result <see cref="RebindAsync"/> returns; defaults to always succeeding as "palworld".</summary>
+    public Func<string, RebindResult>? RebindResultFactory { get; set; }
+
     /// <summary>
     /// When set, <see cref="ListTrackedAsync"/> returns <see cref="TrackedServersResult.Failed"/> with this
     /// detail instead of reading <see cref="Tracked"/> — for tests proving <c>AdoptionPanel</c> renders an
@@ -87,6 +93,15 @@ public sealed class FakeServerAdoptionService : IServerAdoptionService
             Tracked.RemoveAll(t => t.Id == id);
         }
 
+        return Task.FromResult(result);
+    }
+
+    /// <inheritdoc />
+    public Task<RebindResult> RebindAsync(string containerId, string? actor = null, CancellationToken ct = default)
+    {
+        RebindCalls.Add((containerId, actor));
+
+        var result = RebindResultFactory?.Invoke(containerId) ?? RebindResult.Rebound("palworld", "Palworld Dedicated Server");
         return Task.FromResult(result);
     }
 }

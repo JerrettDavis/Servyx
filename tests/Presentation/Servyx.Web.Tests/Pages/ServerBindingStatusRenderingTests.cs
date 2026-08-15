@@ -7,6 +7,8 @@ using Servyx.Web.Services;
 using Servyx.Composition;
 using Servyx.Web.Tests.Fakes;
 using ServerBindingStatus = Servyx.Application.Servers.ServerBindingStatus;
+using IServerAdoptionService = Servyx.Application.Servers.IServerAdoptionService;
+using RebindResult = Servyx.Application.Servers.RebindResult;
 
 namespace Servyx.Web.Tests.Pages;
 
@@ -166,7 +168,7 @@ public class ServerBindingStatusRenderingTests : BunitContext
     }
 
     [Fact]
-    public void Detail_A_needs_rebind_server_names_the_previous_definition_and_admits_no_fix_is_available()
+    public void Detail_A_needs_rebind_server_names_the_previous_definition()
     {
         Services.AddSingleton<IDashboardDataService>(BuildData());
         AddBunitPersistentComponentState();
@@ -179,9 +181,130 @@ public class ServerBindingStatusRenderingTests : BunitContext
 
         var previous = cut.Find("[data-testid='binding-status-previous-id']");
         previous.TextContent.Trim().Should().Be("palworld");
+    }
 
-        // The review's explicit requirement: this state must never imply a fix exists in the UI today.
+    /// <summary>
+    /// Regression for the gap this suite used to pin deliberately: the notice must no longer claim there is
+    /// no action available in the UI to resolve a stale binding — that claim stopped being true once the
+    /// Rebind control shipped.
+    /// </summary>
+    [Fact]
+    public void Detail_A_needs_rebind_server_no_longer_claims_no_action_is_available()
+    {
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='binding-status-notice']").Should().HaveCount(1));
+
         var body = cut.Find("[data-testid='binding-status-notice-body']");
-        body.TextContent.Should().Contain("no action in Servyx's UI to resolve this");
+        body.TextContent.Should().NotContain("no action in Servyx's UI to resolve this");
+    }
+
+    // ── Detail: the Rebind control itself ────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Detail_A_needs_rebind_server_offers_a_rebind_button()
+    {
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        Services.AddSingleton<IServerAdoptionService>(new FakeServerAdoptionService());
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-button']").Should().HaveCount(1));
+    }
+
+    [Fact]
+    public void Detail_Clicking_rebind_shows_a_confirm_step_before_calling_the_service()
+    {
+        var adoption = new FakeServerAdoptionService();
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        Services.AddSingleton<IServerAdoptionService>(adoption);
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-button']").Should().HaveCount(1));
+
+        cut.Find("[data-testid='rebind-button']").Click();
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-confirm-step']").Should().HaveCount(1));
+        adoption.RebindCalls.Should().BeEmpty(because: "the confirm step must not itself have called the service yet");
+    }
+
+    [Fact]
+    public void Detail_Cancelling_the_rebind_confirm_step_calls_nothing()
+    {
+        var adoption = new FakeServerAdoptionService();
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        Services.AddSingleton<IServerAdoptionService>(adoption);
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-button']").Should().HaveCount(1));
+        cut.Find("[data-testid='rebind-button']").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-confirm-step']").Should().HaveCount(1));
+
+        cut.Find("[data-testid='rebind-cancel']").Click();
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-confirm-step']").Should().BeEmpty());
+        adoption.RebindCalls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Detail_Confirming_rebind_calls_the_service_with_this_server_and_shows_success()
+    {
+        var adoption = new FakeServerAdoptionService();
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        Services.AddSingleton<IServerAdoptionService>(adoption);
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-button']").Should().HaveCount(1));
+        cut.Find("[data-testid='rebind-button']").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-confirm-step']").Should().HaveCount(1));
+
+        cut.Find("[data-testid='rebind-confirm']").Click();
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-success']").Should().HaveCount(1));
+        adoption.RebindCalls.Should().ContainSingle().Which.ContainerId.Should().Be(NeedsRebindId);
+        cut.Find("[data-testid='rebind-success']").TextContent.Should().Contain("palworld");
+    }
+
+    [Fact]
+    public void Detail_A_rebind_with_no_matching_definition_shows_the_service_detail_as_an_error()
+    {
+        var adoption = new FakeServerAdoptionService
+        {
+            RebindResultFactory = _ => RebindResult.NoMatchingDefinition("palworld"),
+        };
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        Services.AddSingleton<IServerAdoptionService>(adoption);
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-button']").Should().HaveCount(1));
+        cut.Find("[data-testid='rebind-button']").Click();
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-confirm-step']").Should().HaveCount(1));
+
+        cut.Find("[data-testid='rebind-confirm']").Click();
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-error']").Should().HaveCount(1));
+        cut.Find("[data-testid='rebind-error']").TextContent.Should().Contain("No currently loaded game definition matches");
+        cut.FindAll("[data-testid='rebind-success']").Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Detail_With_no_adoption_service_composed_the_rebind_control_degrades_instead_of_throwing()
+    {
+        // No IServerAdoptionService registered at all — the same "optional collaborator" pattern
+        // AdoptionPanelTests already exercises for its own service dependency.
+        Services.AddSingleton<IDashboardDataService>(BuildData());
+        AddBunitPersistentComponentState();
+
+        var cut = Render<ServerDetailPage>(p => p.Add(x => x.Id, NeedsRebindId));
+
+        cut.WaitForAssertion(() => cut.FindAll("[data-testid='rebind-unavailable']").Should().HaveCount(1));
+        cut.FindAll("[data-testid='rebind-button']").Should().BeEmpty();
     }
 }

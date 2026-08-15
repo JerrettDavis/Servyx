@@ -66,6 +66,26 @@ public interface IServerAdoptionService
         string containerId, string gameDefinitionId, string? actor = null, CancellationToken ct = default);
 
     /// <summary>
+    /// Explicitly re-binds <paramref name="containerId"/>'s definition binding to whatever is currently
+    /// loaded for the same game id — the deliberate, operator-initiated action for a server stuck in
+    /// <see cref="Servyx.Domain.Definitions.ServerDefinitionBindingState.NeedsRebind"/> because its pinned
+    /// content hash no longer resolves (the definition was edited or removed since it was pinned).
+    /// </summary>
+    /// <param name="containerId">The discovery-native id of the container whose binding should be refreshed.</param>
+    /// <param name="actor">The authenticated operator's identity, for the audit trail. See <see cref="AdoptAsync"/>'s remarks on why this is optional.</param>
+    /// <param name="ct">Cancels the operation.</param>
+    /// <remarks>
+    /// Never silently substitutes a different game's definition: this only ever re-pins to a definition
+    /// sharing the exact game id the server was previously bound to. If no definition with that id is
+    /// currently loaded, <see cref="RebindOutcome.NoMatchingDefinition"/> is returned and nothing is
+    /// written — restoring or reloading a matching definition remains a precondition, never bypassed. Also
+    /// never invoked automatically: this is reachable only through an explicit operator action (the server
+    /// detail page's Rebind control), consistent with Servyx's "never silently substitute a version" policy
+    /// for definition bindings.
+    /// </remarks>
+    Task<RebindResult> RebindAsync(string containerId, string? actor = null, CancellationToken ct = default);
+
+    /// <summary>
     /// Removes Servyx's own tracking record for <paramref name="id"/> — the <c>Server</c> row — and nothing
     /// else. This method issues NO command to the container: the workload keeps running exactly as it was,
     /// untouched. "Forget" only ever means "Servyx stops tracking it."

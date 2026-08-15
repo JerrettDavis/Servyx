@@ -350,6 +350,57 @@ public sealed class ServerAdoptionService : IServerAdoptionService
 
     /// <inheritdoc />
     /// <remarks>
+    /// Reads the existing pin from <see cref="_bindingStore"/> purely to learn which game id it was
+    /// previously bound to — the stale content hash itself is never reused. <see cref="_definitions"/>'s
+    /// <see cref="IAdoptionDefinitionCatalog.TryGetRefById"/> is then asked for whatever that same id
+    /// currently resolves to, exactly the lookup <see cref="AdoptAsync"/> itself uses to pin a fresh
+    /// adoption — so a rebind can never point at stale content the way the orphaned pin did.
+    /// </remarks>
+    public async Task<RebindResult> RebindAsync(string containerId, string? actor = null, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(containerId);
+
+        var persisted = await _bindingStore.TryGetAsync(containerId, ct).ConfigureAwait(false);
+        if (persisted?.Definition is null)
+        {
+            return RebindResult.NoPriorBinding(containerId);
+        }
+
+        var gameId = persisted.Definition.Id;
+        var currentRef = _definitions.TryGetRefById(gameId);
+        if (currentRef is null)
+        {
+            // Nothing currently loaded answers to this game id at all — never substitute a different game's
+            // definition, and never write anything. The stale pin is left exactly as it was, still visible
+            // to the operator as "previously bound to" for diagnosis.
+            return RebindResult.NoMatchingDefinition(gameId);
+        }
+
+        var now = _timeProvider.GetUtcNow();
+        await _bindingStore.SaveAsync(
+                new ServerDefinitionBinding(containerId, ServerDefinitionBindingState.Bound, currentRef, [], now), ct)
+            .ConfigureAwait(false);
+
+        if (_auditLogger is not null)
+        {
+            await _auditLogger.RecordAsync(
+                string.IsNullOrWhiteSpace(actor) ? AuditActors.System : actor,
+                AuditActions.ServerRebound,
+                targetType: "server",
+                targetId: containerId,
+                details: $"definition {currentRef.Id} ({currentRef.ContentHash})",
+                ct: ct).ConfigureAwait(false);
+        }
+
+        var gameName = _definitions.AllCriteria()
+            .FirstOrDefault(c => string.Equals(c.DefinitionRef.Id, gameId, StringComparison.Ordinal))
+            ?.Criteria.GameName ?? gameId;
+
+        return RebindResult.Rebound(currentRef.Id, gameName);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// Removes ONLY the <c>Server</c> row. It issues no command to the container at all — no stop, no
     /// delete, nothing — matching the product invariant that Servyx never owns the workloads it adopts.
     /// There is deliberately no ITransport/IServerDiscovery call anywhere in this method (this type does not

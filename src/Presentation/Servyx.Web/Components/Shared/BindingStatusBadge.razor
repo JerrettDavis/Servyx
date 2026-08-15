@@ -40,8 +40,8 @@
             ? $"Matched more than one loaded game definition with equal specificity ({string.Join(", ", CandidateGameIds)}). Servyx deliberately did not guess which one governs this server."
             : "Matched more than one loaded game definition with equal specificity. Servyx deliberately did not guess which one governs this server.",
         ServerBindingStatus.NeedsRebind => CandidateGameIds is { Count: > 0 }
-            ? $"Previously bound to '{CandidateGameIds[0]}', which no longer resolves in the loaded catalog (the definition was edited or removed). Servyx will not silently substitute a different version. There is currently no action in Servyx to resolve this."
-            : "Previously bound to a definition that no longer resolves in the loaded catalog. Servyx will not silently substitute a different version. There is currently no action in Servyx to resolve this.",
+            ? $"Previously bound to '{CandidateGameIds[0]}', which no longer resolves in the loaded catalog (the definition was edited or removed). Servyx will not silently substitute a different version — open this server to explicitly rebind it to the currently loaded definition."
+            : "Previously bound to a definition that no longer resolves in the loaded catalog. Servyx will not silently substitute a different version — open this server to explicitly rebind it to the currently loaded definition.",
         _ => string.Empty,
     };
 }
