@@ -1,5 +1,5 @@
 .unified-diff {
-    border: 1px solid var(--svx-border, #333);
+    border: 1px solid var(--svx-border-default);
     border-radius: 0.375rem;
     overflow: hidden;
     margin-bottom: 0.75rem;
@@ -9,7 +9,7 @@
     padding: 0.35rem 0.6rem;
     font-weight: 600;
     font-size: 0.85rem;
-    border-bottom: 1px solid var(--svx-border, #333);
+    border-bottom: 1px solid var(--svx-border-default);
 }
 
 .diff-body {
@@ -26,26 +26,25 @@
 
 .diff-header {
     font-weight: 600;
-    opacity: 0.8;
+    color: var(--svx-text-muted);
 }
 
 .diff-hunk {
-    color: var(--svx-accent, #6ea8fe);
-    opacity: 0.85;
+    color: var(--svx-accent);
 }
 
 .diff-add {
-    background: rgba(46, 160, 67, 0.15);
-    color: #2ea043;
+    background: var(--svx-success-bg);
+    color: var(--svx-success-fg);
 }
 
 .diff-remove {
-    background: rgba(248, 81, 73, 0.15);
-    color: #f85149;
+    background: var(--svx-danger-bg);
+    color: var(--svx-danger-fg);
 }
 
 .diff-context {
-    opacity: 0.75;
+    color: var(--svx-text-muted);
 }
 
 .diff-expand {
@@ -53,7 +52,7 @@
     width: 100%;
     padding: 0.35rem 0.6rem;
     border: none;
-    border-top: 1px solid var(--svx-border, #333);
+    border-top: 1px solid var(--svx-border-default);
     background: transparent;
     cursor: pointer;
     font-size: 0.8rem;
@@ -62,5 +61,5 @@
 
 .diff-empty {
     font-style: italic;
-    opacity: 0.75;
+    color: var(--svx-text-muted);
 }

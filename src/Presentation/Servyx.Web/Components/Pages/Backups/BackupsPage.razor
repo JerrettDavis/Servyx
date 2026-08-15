@@ -177,7 +177,7 @@ else
 
                 <label>
                     Server
-                    <select @onchange="OnServerChangedAsync" data-testid="server-select">
+                    <select class="svx-select" @onchange="OnServerChangedAsync" data-testid="server-select">
                         @foreach (var server in _catalog.Servers)
                         {
                             <option value="@server.Id" selected="@(server.Id == _selectedServerId)"

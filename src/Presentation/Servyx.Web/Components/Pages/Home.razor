@@ -25,6 +25,13 @@ else if (_summary is null)
 }
 else
 {
+    @if (_summary.IsStale)
+    {
+        <div class="svx-stale-banner" data-testid="dashboard-stale-banner">
+            Showing cached data — refreshing in the background.
+        </div>
+    }
+
     <div class="svx-stat-grid">
         <StatCard Title="Servers online" Value="@($"{_summary.ServersOnline} / {_summary.ServersTotal}")" Icon="servers" />
         <StatCard Title="Total players" Value="@FormatPlayers(_summary.TotalPlayers, _summary.TotalPlayerCapacity)" Icon="users" />

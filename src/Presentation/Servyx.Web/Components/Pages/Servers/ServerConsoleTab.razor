@@ -46,7 +46,7 @@
             <div style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end;">
                 <label>
                     Command
-                    <select data-testid="console-command-select" @onchange="OnCommandChanged">
+                    <select class="svx-select" data-testid="console-command-select" @onchange="OnCommandChanged">
                         @foreach (var command in Commands)
                         {
                             <option value="@command.Id" selected="@(command.Id == _selectedCommandId)">
@@ -62,7 +62,7 @@
                     {
                         <label data-testid="console-arg-field" data-arg-name="@name">
                             @name
-                            <input type="text" data-testid="@($"console-arg-{name}")"
+                            <input type="text" class="svx-input" data-testid="@($"console-arg-{name}")"
                                    value="@ArgValue(name)"
                                    @oninput="e => SetArgValue(name, e.Value?.ToString() ?? string.Empty)" />
                         </label>

@@ -1,0 +1,21 @@
+/* Mirrors DeployPage.razor.css's .svx-deploy-facts exactly (same tokens, same shape) — CSS isolation scopes
+   each .razor.css to its own component, so the class name has to be redefined here rather than inherited
+   from that other page's scoped sheet. Without this file, the registered/enabled host counts rendered as
+   plain unstyled text. */
+
+.svx-deploy-facts {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 1rem;
+    margin: 1rem 0;
+    font-size: 0.85rem;
+}
+
+.svx-deploy-facts dt {
+    color: var(--svx-text-muted);
+    font-weight: 500;
+}
+
+.svx-deploy-facts dd {
+    margin: 0;
+}

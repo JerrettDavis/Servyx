@@ -17,73 +17,84 @@
 {
     <Skeleton Rows="6" Label="Loading servers" />
 }
-else if (_servers.Count == 0)
-{
-    <div class="svx-empty-state @(_discoveryFailed ? "svx-empty-state-degraded" : "")" data-testid="servers-empty-state">
-        <h3>No servers adopted yet</h3>
-        @if (_discoveryFailed)
-        {
-            <p class="svx-discovery-failed-banner" data-testid="servers-discovery-failed">
-                <strong>This may not be accurate.</strong> Servyx could not read the server list from the
-                Docker host@(string.IsNullOrWhiteSpace(_discoveryFailureDetail) ? "." : $": {_discoveryFailureDetail}")
-                There may be adopted servers Servyx cannot currently see.
-            </p>
-        }
-        else
-        {
-            <p>Adopting an existing container is the first step in Milestone 1.</p>
-        }
-    </div>
-}
 else
 {
-    <div class="svx-row-grid" role="list" aria-label="Servers">
-        <div class="svx-row-grid-header" style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;" aria-hidden="true">
-            <span>Name</span>
-            <span>Game</span>
-            <span>State</span>
-            <span>Health</span>
-            <span>Players</span>
-            <span>Uptime</span>
-            <span>Host</span>
-            <span>Ports</span>
+    @if (_isStale)
+    {
+        <div class="svx-stale-banner" data-testid="servers-stale-banner">
+            Showing cached data — refreshing in the background.
         </div>
+    }
 
-        @foreach (var server in _servers)
-        {
-            <a class="svx-row-link" role="listitem" href="@($"servers/{server.Id}")"
-               style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;">
-                <span data-col-label="Name"><strong>@server.Name</strong></span>
-                <span data-col-label="Game">
-                    @if (server.BindingStatus == ServerBindingStatus.Bound)
-                    {
-                        @server.Game
-                    }
-                    else
-                    {
-                        <BindingStatusBadge Status="@server.BindingStatus" CandidateGameIds="@server.AmbiguousCandidateGameIds" />
-                    }
-                </span>
-                <span data-col-label="State"><StateBadge State="@server.State" /></span>
-                <span data-col-label="Health"><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
-                <span data-col-label="Players">@FormatPlayers(server.PlayersOnline, server.PlayersMax)</span>
-                <span data-col-label="Uptime">@FormatUptime(server.Uptime)</span>
-                <span data-col-label="Host">@server.Host</span>
-                <span data-col-label="Ports" class="svx-ports-cell">
-                    @foreach (var port in server.Ports)
-                    {
-                        <span class="port-chip @(port.Published ? "port-published" : "")" title="@port.Purpose">@port.Label</span>
-                    }
-                </span>
-            </a>
-        }
-    </div>
+    if (_servers.Count == 0)
+    {
+        <div class="svx-empty-state @(_discoveryFailed ? "svx-empty-state-degraded" : "")" data-testid="servers-empty-state">
+            <h3>No servers adopted yet</h3>
+            @if (_discoveryFailed)
+            {
+                <p class="svx-discovery-failed-banner" data-testid="servers-discovery-failed">
+                    <strong>This may not be accurate.</strong> Servyx could not read the server list from the
+                    Docker host@(string.IsNullOrWhiteSpace(_discoveryFailureDetail) ? "." : $": {_discoveryFailureDetail}")
+                    There may be adopted servers Servyx cannot currently see.
+                </p>
+            }
+            else
+            {
+                <p>Adopting an existing container is the first step in Milestone 1.</p>
+            }
+        </div>
+    }
+    else
+    {
+        <div class="svx-row-grid" role="list" aria-label="Servers">
+            <div class="svx-row-grid-header" style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;" aria-hidden="true">
+                <span>Name</span>
+                <span>Game</span>
+                <span>State</span>
+                <span>Health</span>
+                <span>Players</span>
+                <span>Uptime</span>
+                <span>Host</span>
+                <span>Ports</span>
+            </div>
+
+            @foreach (var server in _servers)
+            {
+                <a class="svx-row-link" role="listitem" href="@($"servers/{server.Id}")"
+                   style="grid-template-columns: 1.3fr 0.8fr 0.8fr 0.8fr 0.8fr 0.8fr 1.1fr 1.6fr;">
+                    <span data-col-label="Name"><strong>@server.Name</strong></span>
+                    <span data-col-label="Game">
+                        @if (server.BindingStatus == ServerBindingStatus.Bound)
+                        {
+                            @server.Game
+                        }
+                        else
+                        {
+                            <BindingStatusBadge Status="@server.BindingStatus" CandidateGameIds="@server.AmbiguousCandidateGameIds" />
+                        }
+                    </span>
+                    <span data-col-label="State"><StateBadge State="@server.State" /></span>
+                    <span data-col-label="Health"><HealthBadge Health="@server.Health" Tooltip="@server.HealthTooltip" /></span>
+                    <span data-col-label="Players">@FormatPlayers(server.PlayersOnline, server.PlayersMax)</span>
+                    <span data-col-label="Uptime">@FormatUptime(server.Uptime)</span>
+                    <span data-col-label="Host">@server.Host</span>
+                    <span data-col-label="Ports" class="svx-ports-cell">
+                        @foreach (var port in server.Ports)
+                        {
+                            <span class="port-chip @(port.Published ? "port-published" : "")" title="@port.Purpose">@port.Label</span>
+                        }
+                    </span>
+                </a>
+            }
+        </div>
+    }
 }
 
 @code {
     private const string ServersStateKey = "ServersList.Servers";
     private const string DiscoveryFailedStateKey = "ServersList.DiscoveryFailed";
     private const string DiscoveryFailureDetailStateKey = "ServersList.DiscoveryFailureDetail";
+    private const string IsStaleStateKey = "ServersList.IsStale";
 
     private bool _loading = true;
     private IReadOnlyList<ServerSummary> _servers = [];
@@ -92,6 +103,9 @@ else
     /// cannot honestly answer "were there really zero servers, or did discovery fail".</summary>
     private bool _discoveryFailed;
     private string? _discoveryFailureDetail;
+
+    /// <summary>See <c>Home.razor</c>'s identical field — <see cref="Servyx.Web.Models.ServerListResult.IsStale"/>, carried through unchanged.</summary>
+    private bool _isStale;
     private PersistingComponentStateSubscription _persistingSubscription;
 
     /// <summary>See <c>Home.razor</c>'s identical pattern for why this avoids a duplicate Docker query
@@ -105,6 +119,7 @@ else
             _servers = restoredServers ?? [];
             ApplicationState.TryTakeFromJson<bool>(DiscoveryFailedStateKey, out _discoveryFailed);
             ApplicationState.TryTakeFromJson<string?>(DiscoveryFailureDetailStateKey, out _discoveryFailureDetail);
+            ApplicationState.TryTakeFromJson<bool>(IsStaleStateKey, out _isStale);
         }
         else
         {
@@ -112,6 +127,7 @@ else
             _servers = serverList.Servers;
             _discoveryFailed = serverList.DiscoveryFailed;
             _discoveryFailureDetail = serverList.FailureDetail;
+            _isStale = serverList.IsStale;
         }
 
         _loading = false;
@@ -122,6 +138,7 @@ else
         ApplicationState.PersistAsJson(ServersStateKey, _servers);
         ApplicationState.PersistAsJson(DiscoveryFailedStateKey, _discoveryFailed);
         ApplicationState.PersistAsJson(DiscoveryFailureDetailStateKey, _discoveryFailureDetail);
+        ApplicationState.PersistAsJson(IsStaleStateKey, _isStale);
         return Task.CompletedTask;
     }
 

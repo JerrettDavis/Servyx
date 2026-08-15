@@ -6,7 +6,7 @@
 
 .plan-history-entry {
     padding: 0.6rem 0.75rem;
-    border: 1px solid var(--svx-border, #333);
+    border: 1px solid var(--svx-border-default);
     border-radius: 0.375rem;
     margin-bottom: 0.6rem;
 }
@@ -28,55 +28,61 @@
 /* The four apply outcomes are coloured apart deliberately: a partially applied plan and a plan whose bytes
    were mangled in transit must never read as the same event as a clean, verified apply. */
 .plan-history-badge-applied {
-    background: rgba(46, 160, 67, 0.15);
+    background: var(--svx-success-bg);
+    color: var(--svx-success-fg);
 }
 
 .plan-history-badge-appliedunverified {
-    background: rgba(110, 168, 254, 0.15);
+    background: var(--svx-info-bg);
+    color: var(--svx-info-fg);
 }
 
 .plan-history-badge-partiallyapplied,
 .plan-history-badge-partiallyreverted {
-    background: rgba(210, 153, 34, 0.18);
+    background: var(--svx-warning-bg);
+    color: var(--svx-warning-fg);
 }
 
 .plan-history-badge-notapplied,
 .plan-history-badge-previewed,
 .plan-history-badge-stale,
 .plan-history-badge-superseded {
-    background: rgba(139, 148, 158, 0.18);
+    background: var(--svx-neutral-bg);
+    color: var(--svx-neutral-fg);
 }
 
 .plan-history-badge-reverted,
 .plan-history-badge-reverting,
 .plan-history-badge-applying {
-    background: rgba(110, 168, 254, 0.15);
+    background: var(--svx-info-bg);
+    color: var(--svx-info-fg);
 }
 
 .plan-history-badge-revertfailed {
-    background: rgba(248, 81, 73, 0.18);
+    background: var(--svx-danger-bg);
+    color: var(--svx-danger-fg);
 }
 
 .plan-history-plan-id {
-    font-family: var(--svx-font-mono, monospace);
+    font-family: var(--svx-font-mono);
     font-size: 0.8rem;
-    opacity: 0.8;
+    color: var(--svx-text-muted);
 }
 
 .plan-history-timeline {
     font-size: 0.85rem;
-    opacity: 0.85;
+    color: var(--svx-text-muted);
 }
 
 .plan-history-action {
     padding: 0.4rem 0.6rem;
-    border-left: 2px solid var(--svx-border, #333);
+    border-left: 2px solid var(--svx-border-default);
     margin: 0.4rem 0 0 0.4rem;
     font-size: 0.9rem;
 }
 
 .plan-history-action-mismatch {
-    border-left-color: rgba(248, 81, 73, 0.9);
+    border-left-color: var(--svx-danger-strong);
 }
 
 .plan-history-action-heading {
@@ -89,23 +95,24 @@
 .plan-history-path,
 .plan-history-action-status {
     font-size: 0.8rem;
-    opacity: 0.75;
+    color: var(--svx-text-muted);
 }
 
 .plan-history-reached.not-reached {
-    opacity: 0.75;
+    color: var(--svx-text-muted);
 }
 
 .plan-history-digests {
     display: flex;
     flex-wrap: wrap;
     gap: 1rem;
-    font-family: var(--svx-font-mono, monospace);
+    font-family: var(--svx-font-mono);
     font-size: 0.8rem;
 }
 
 .plan-history-mismatch {
-    background: rgba(248, 81, 73, 0.12);
+    background: var(--svx-danger-bg);
+    color: var(--svx-danger-fg);
     padding: 0.4rem 0.6rem;
     border-radius: 0.3rem;
     margin-top: 0.35rem;

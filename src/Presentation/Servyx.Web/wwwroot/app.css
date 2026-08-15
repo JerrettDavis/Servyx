@@ -423,6 +423,23 @@
     font-weight: var(--svx-weight-medium);
 }
 
+/* Cache-backed pages (Home, ServersList) read from a background-refreshed snapshot instead of a live call;
+   an aging one still renders normally, with this small, non-alarming banner rather than the danger-toned
+   .svx-empty-state-degraded pattern above — a stale cache is expected, ordinary behaviour, not a fault. Uses
+   the --svx-info-* tokens deliberately, never --svx-danger-*. See LiveDashboardDataService's IsStale remarks. */
+.svx-stale-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--svx-space-2);
+    padding: var(--svx-space-3) var(--svx-space-4);
+    margin-bottom: var(--svx-space-4);
+    background: var(--svx-info-bg);
+    border: 1px solid var(--svx-info-border);
+    border-radius: var(--svx-radius-md);
+    color: var(--svx-info-fg);
+    font-size: var(--svx-text-sm);
+}
+
 /* -- Tabs ----------------------------------------------------------------------- */
 
 .svx-tablist {
