@@ -891,20 +891,37 @@ public static class ServyxCoreCompositionExtensions
                         secrets,
                         sp.GetRequiredService<WritableServers>(),
                         // RconReachabilityChainFactory.Build composes the definition's declared strategy order —
-                        // direct-tcp, docker-exec-tool, docker-exec-network — omitting docker-exec-tool when no
-                        // ssh+docker host is configured, since there is then no IExecutionTarget to run `docker exec`
-                        // through. sshDockerWiring is the same bootstrap-phase value AddServyxSshDocker() was already
-                        // given above; reused here rather than re-read from configuration. This closure only ever
-                        // runs for a STATICALLY configured channel (RconChannel.HostKey null) — ServyxRconChannels
-                        // itself builds the chain for a channel it derived for an adopted server, over that
-                        // server's own host, regardless of sshDockerWiring.Any; see ServyxRconChannels.BuildAsync.
+                        // direct-tcp, docker-exec-tool, docker-exec-network. sshDockerWiring is the same
+                        // bootstrap-phase value AddServyxSshDocker() was already given above; reused here rather
+                        // than re-read from configuration. This closure only ever runs for a STATICALLY configured
+                        // channel (RconChannel.HostKey null) — ServyxRconChannels itself builds the chain for a
+                        // channel it derived for an adopted server, over that server's own host, regardless of
+                        // sshDockerWiring.Any; see ServyxRconChannels.BuildAsync.
+                        //
+                        // With an ssh+docker host statically declared, docker-exec-tool runs over that host's own
+                        // IExecutionTarget/ContainerName, exactly as before. Without one, a statically configured
+                        // channel used to get no docker-exec-tool strategy at all — leaving direct-tcp (refused;
+                        // the adopted image never publishes RCON) and the permanent docker-exec-network stub as
+                        // its only options, so a purely local, non-SSH Docker-adopted server's channel could never
+                        // actually be reached. Falling back to IServerExecutionTargetResolver's local (null
+                        // hostKey) branch closes that gap: it resolves the same local Docker ITransport
+                        // ServyxServerLifecycles/ServyxBackupContextSource already connect per-container, keyed on
+                        // channel.ServerKey (the container name a static Rcon entry is declared under).
+                        // LazyConnectingExecutionTarget defers that connect to first real use — a chainFactory
+                        // delegate is synchronous, so nothing here can await ResolveAsync directly — the same
+                        // deferred-connect shape AddServyxSshDocker/HostConnectionRegistry already use for every
+                        // other IExecutionTarget this composition root hands out.
                         chainFactory: channel => RconReachabilityChainFactory.Build(
                             channel,
                             sp.GetRequiredService<IRconClient>(),
                             rconCatalog,
                             secrets,
-                            sshDockerWiring.Any ? sshDockerWiring.Hosts[0].ContainerName : null,
-                            sshDockerWiring.Any ? sp.GetRequiredService<IExecutionTarget>() : null,
+                            sshDockerWiring.Any ? sshDockerWiring.Hosts[0].ContainerName : channel.ServerKey,
+                            sshDockerWiring.Any
+                                ? sp.GetRequiredService<IExecutionTarget>()
+                                : new LazyConnectingExecutionTarget(ct => sp
+                                    .GetRequiredService<IServerExecutionTargetResolver>()
+                                    .ResolveAsync(channel.ServerKey, hostKey: null, ct)),
                             rconPlayers),
                         audit: null,
                         // Unconditional, same reasoning as HostAwareLogStream/HostAwareMetricsSource just above:
