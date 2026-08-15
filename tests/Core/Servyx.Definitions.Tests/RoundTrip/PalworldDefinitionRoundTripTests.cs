@@ -33,22 +33,19 @@ public class PalworldDefinitionRoundTripTests
         var result = Parse();
 
         // Every Warning the real, unmodified definition produces, and why — no Errors, per
-        // RealDefinition_ParsesWithNoErrors above, but these five Warnings are real and expected:
+        // RealDefinition_ParsesWithNoErrors above.
+        //
+        // Historically this also carried two Warnings for capabilities.network's 'var: QUERY_PORT' and
+        // 'var: REST_API_PORT' (and the 'query'/'rest' channels' matching 'port: "${...}"' references),
+        // because neither had a matching settings-catalogue entry. The settings-coverage expansion that
+        // added the full Palworld dedicated-server settings catalogue (QUERY_PORT under Networking,
+        // REST_API_PORT under Networking) gave both a catalogue entry, so those two Warnings are gone;
+        // only the one below — which no settings addition can resolve — remains:
         //  - backup.adopt[].adapter can never be checked against DI-registered IBackupAdopter instances
         //    from this layer (see GameDefinitionYamlParser.Backup.cs).
-        //  - capabilities.network declares 'var: QUERY_PORT' and 'var: REST_API_PORT', and the 'query' and
-        //    'rest' channels declare 'port: "${QUERY_PORT}"'/'port: "${REST_API_PORT}"' respectively — none
-        //    of the four has a matching settings-catalogue entry (only PORT and RCON_PORT are exposed as
-        //    user-configurable settings). See GameDefinitionYamlParser.Semantics.cs for why this is a
-        //    Warning rather than the brief's default Error, and this phase's final report for the flagged
-        //    conflict between that default and this real data.
-        result.Report.Issues.Where(i => i.Severity == ValidationSeverity.Warning).Should().HaveCount(5);
+        result.Report.Issues.Where(i => i.Severity == ValidationSeverity.Warning).Should().HaveCount(1);
         result.Report.Issues.Should().ContainSingle(i =>
             i.Severity == ValidationSeverity.Warning && i.Message.Contains("palworld-docker-cron", StringComparison.Ordinal));
-        result.Report.Issues.Should().Contain(i =>
-            i.Severity == ValidationSeverity.Warning && i.Message.Contains("'${QUERY_PORT}'", StringComparison.Ordinal));
-        result.Report.Issues.Should().Contain(i =>
-            i.Severity == ValidationSeverity.Warning && i.Message.Contains("'${REST_API_PORT}'", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -313,8 +310,12 @@ public class PalworldDefinitionRoundTripTests
     {
         var settings = Parse().Definition!.Settings;
 
-        settings.Should().HaveCount(4);
-        settings.SelectMany(g => g.Items).Should().HaveCount(10);
+        // Expanded from the original 4 groups / 10 items to cover the full public Palworld dedicated-server
+        // settings surface (PalWorldSettings.ini's [/Script/Pal.PalGameWorldSettings] OptionSettings), adding
+        // three new groups ("Pal & Combat Rates", "World & Items", "Guilds & Base Camps") alongside the
+        // original four.
+        settings.Should().HaveCount(7);
+        settings.SelectMany(g => g.Items).Should().HaveCount(64);
 
         var serverName = settings.SelectMany(g => g.Items).Single(i => i.Key == "SERVER_NAME");
         serverName.Type.Should().Be(SettingType.String);

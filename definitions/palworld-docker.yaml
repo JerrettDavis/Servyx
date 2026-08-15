@@ -248,6 +248,31 @@ settings:
           - { surface: env, direction: write, key: RCON_PORT }
           - { surface: palworldsettings, direction: read, member: RCONPort }
 
+      - key: QUERY_PORT
+        label: Query port (server browser / A2S)
+        type: port
+        default: 27015
+        requiresRecreate: true       # published like PORT; the host port mapping is baked in at container create
+        bindings:
+          - { surface: env, direction: write, key: QUERY_PORT }
+
+      - key: REST_API_PORT
+        label: REST API port
+        type: port
+        default: 8212
+        publishByDefault: false      # matches RCON_PORT: not exposed to the host network by default
+        bindings:
+          - { surface: env, direction: write, key: REST_API_PORT }
+          - { surface: palworldsettings, direction: read, member: RESTAPIPort }
+
+      - key: PUBLIC_IP
+        label: Public IP override
+        type: string
+        default: ""
+        bindings:
+          - { surface: env, direction: write, key: PUBLIC_IP }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PublicIP, unquote: true }
+
   - group: Gameplay
     items:
       - key: PLAYERS
@@ -288,6 +313,182 @@ settings:
           - { surface: palworldsettings, direction: read, mirrorWrite: true,
               member: bEnablePlayerToPlayerDamage }
 
+      - key: NIGHTTIME_SPEEDRATE
+        label: Night time speed
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: NIGHTTIME_SPEEDRATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: NightTimeSpeedRate }
+
+      - key: EXP_RATE
+        label: Experience rate
+        type: float
+        min: 0.1
+        max: 20.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: EXP_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: ExpRate }
+
+      - key: WORK_SPEED_RATE
+        label: Work speed rate
+        type: float
+        min: 0.1
+        max: 3.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: WORK_SPEED_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: WorkSpeedRate }
+
+      - key: DEATH_PENALTY
+        label: Death penalty
+        type: enum
+        values: [None, Item, ItemAndEquipment, All]
+        default: None
+        bindings:
+          - { surface: env, direction: write, key: DEATH_PENALTY }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: DeathPenalty }
+
+      - key: ENABLE_INVADER_ENEMY
+        label: Enable invader enemies
+        type: bool
+        default: "True"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_INVADER_ENEMY }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableInvaderEnemy }
+
+      - key: ACTIVE_UNKO
+        label: Enable UNKO (poop) items
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ACTIVE_UNKO }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bActiveUNKO }
+
+      - key: ENABLE_AIM_ASSIST_PAD
+        label: Enable aim assist (gamepad)
+        type: bool
+        default: "True"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_AIM_ASSIST_PAD }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableAimAssistPad }
+
+      - key: ENABLE_AIM_ASSIST_KEYBOARD
+        label: Enable aim assist (keyboard)
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_AIM_ASSIST_KEYBOARD }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableAimAssistKeyboard }
+
+      - key: IS_MULTIPLAY
+        label: Multiplayer mode
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: IS_MULTIPLAY }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bIsMultiplay }
+
+      - key: IS_PVP
+        label: PvP mode
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: IS_PVP }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bIsPvP }
+
+      - key: CAN_PICKUP_OTHER_GUILD_DEATH_PENALTY_DROP
+        label: Allow pickup of other guilds' death-penalty drops
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: CAN_PICKUP_OTHER_GUILD_DEATH_PENALTY_DROP }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true,
+              member: bCanPickupOtherGuildDeathPenaltyDrop }
+
+      - key: ENABLE_NON_LOGIN_PENALTY
+        label: Enable non-login penalty
+        type: bool
+        default: "True"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_NON_LOGIN_PENALTY }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableNonLoginPenalty }
+
+      - key: ENABLE_FAST_TRAVEL
+        label: Enable fast travel
+        type: bool
+        default: "True"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_FAST_TRAVEL }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableFastTravel }
+
+      - key: IS_START_LOCATION_SELECT_BY_MAP
+        label: Allow start-location selection by map
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: IS_START_LOCATION_SELECT_BY_MAP }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bIsStartLocationSelectByMap }
+
+      - key: EXIST_PLAYER_AFTER_LOGOUT
+        label: Keep player character after logout
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: EXIST_PLAYER_AFTER_LOGOUT }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bExistPlayerAfterLogout }
+
+      - key: ENABLE_DEFENSE_OTHER_GUILD_PLAYER
+        label: Allow defending against other guild players
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: ENABLE_DEFENSE_OTHER_GUILD_PLAYER }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bEnableDefenseOtherGuildPlayer }
+
+      - key: COOP_PLAYER_MAX_NUM
+        label: Max players per co-op party
+        type: int
+        min: 1
+        max: 8
+        default: 4
+        bindings:
+          - { surface: env, direction: write, key: COOP_PLAYER_MAX_NUM }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: CoopPlayerMaxNum }
+
   - group: Security
     items:
       - key: admin-password
@@ -303,6 +504,393 @@ settings:
         bindings:
           - { surface: env, direction: write, key: SERVER_PASSWORD }
           - { surface: palworldsettings, direction: read, member: ServerPassword, sensitive: true }
+
+      - key: RCON_ENABLED
+        label: Enable RCON
+        type: bool
+        default: "false"
+        trueValue: "true"          # this image renders this one member lowercase in both .env and the ini,
+        falseValue: "false"        # unlike every other bool in this file - see control.channels[rcon].enabledWhen
+        bindings:
+          - { surface: env, direction: write, key: RCON_ENABLED }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: RCONEnabled }
+
+      - key: REST_API_ENABLED
+        label: Enable REST API
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: REST_API_ENABLED }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: RESTAPIEnabled }
+
+      - key: USEAUTH
+        label: Require Palworld account sign-in
+        type: bool
+        default: "True"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: USEAUTH }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bUseAuth }
+
+      - key: BAN_LIST_URL
+        label: Ban list URL
+        type: string
+        default: "https://b.palworldgame.com/api/banlist.txt"
+        bindings:
+          - { surface: env, direction: write, key: BAN_LIST_URL }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: BanListURL, unquote: true }
+
+      - key: REGION
+        label: Region tag
+        type: string
+        default: ""
+        bindings:
+          - { surface: env, direction: write, key: REGION }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: Region, unquote: true }
+
+      - key: SHOW_PLAYER_LIST
+        label: Show player list publicly
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: SHOW_PLAYER_LIST }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bShowPlayerList }
+
+      - key: CHAT_POST_LIMIT_PER_MINUTE
+        label: Chat messages per minute limit
+        type: int
+        min: 0
+        max: 100
+        default: 30
+        bindings:
+          - { surface: env, direction: write, key: CHAT_POST_LIMIT_PER_MINUTE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: ChatPostLimitPerMinute }
+
+  - group: "Pal & Combat Rates"
+    items:
+      - key: PAL_CAPTURE_RATE
+        label: Pal capture rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_CAPTURE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalCaptureRate }
+
+      - key: PAL_SPAWN_NUM_RATE
+        label: Pal spawn number rate
+        type: float
+        min: 0.1
+        max: 3.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_SPAWN_NUM_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalSpawnNumRate }
+
+      - key: PAL_DAMAGE_RATE_ATTACK
+        label: Pal attack damage rate
+        type: float
+        min: 0.1
+        max: 10.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_DAMAGE_RATE_ATTACK }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalDamageRateAttack }
+
+      - key: PAL_DAMAGE_RATE_DEFENSE
+        label: Pal defense damage rate
+        type: float
+        min: 0.1
+        max: 10.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_DAMAGE_RATE_DEFENSE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalDamageRateDefense }
+
+      - key: PLAYER_DAMAGE_RATE_ATTACK
+        label: Player attack damage rate
+        type: float
+        min: 0.1
+        max: 10.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PLAYER_DAMAGE_RATE_ATTACK }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PlayerDamageRateAttack }
+
+      - key: PLAYER_DAMAGE_RATE_DEFENSE
+        label: Player defense damage rate
+        type: float
+        min: 0.1
+        max: 10.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PLAYER_DAMAGE_RATE_DEFENSE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PlayerDamageRateDefense }
+
+      - key: PLAYER_STOMACH_DECREASE_RATE
+        label: Player stomach (hunger) decrease rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PLAYER_STOMACH_DECREASE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PlayerStomachDecreaceRate }
+
+      - key: PLAYER_STAMINA_DECREASE_RATE
+        label: Player stamina decrease rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PLAYER_STAMINA_DECREASE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PlayerStaminaDecreaceRate }
+
+      - key: PLAYER_AUTO_HP_REGEN_RATE
+        label: Player auto HP regen rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PLAYER_AUTO_HP_REGEN_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PlayerAutoHPRegeneRate }
+
+      - key: PAL_STOMACH_DECREASE_RATE
+        label: Pal stomach (hunger) decrease rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_STOMACH_DECREASE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalStomachDecreaceRate }
+
+      - key: PAL_STAMINA_DECREASE_RATE
+        label: Pal stamina decrease rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_STAMINA_DECREASE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalStaminaDecreaceRate }
+
+      - key: PAL_AUTO_HP_REGEN_RATE
+        label: Pal auto HP regen rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_AUTO_HP_REGEN_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalAutoHPRegeneRate }
+
+  - group: "World & Items"
+    items:
+      - key: BUILD_OBJECT_DAMAGE_RATE
+        label: Build object damage rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: BUILD_OBJECT_DAMAGE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: BuildObjectDamageRate }
+
+      - key: BUILD_OBJECT_DETERIORATION_DAMAGE_RATE
+        label: Build object deterioration rate
+        type: float
+        min: 0.0
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: BUILD_OBJECT_DETERIORATION_DAMAGE_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true,
+              member: BuildObjectDeteriorationDamageRate }
+
+      - key: COLLECTION_DROP_RATE
+        label: Collection drop rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: COLLECTION_DROP_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: CollectionDropRate }
+
+      - key: COLLECTION_OBJECT_HP_RATE
+        label: Collection object HP rate
+        type: float
+        min: 0.1
+        max: 3.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: COLLECTION_OBJECT_HP_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: CollectionObjectHpRate }
+
+      - key: COLLECTION_OBJECT_RESPAWN_SPEED_RATE
+        label: Collection object respawn speed rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: COLLECTION_OBJECT_RESPAWN_SPEED_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true,
+              member: CollectionObjectRespawnSpeedRate }
+
+      - key: ENEMY_DROP_ITEM_RATE
+        label: Enemy drop item rate
+        type: float
+        min: 0.1
+        max: 5.0
+        step: 0.1
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: ENEMY_DROP_ITEM_RATE }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: EnemyDropItemRate }
+
+      - key: DROP_ITEM_MAX_NUM
+        label: Max dropped items
+        type: int
+        min: 0
+        max: 30000
+        default: 3000
+        bindings:
+          - { surface: env, direction: write, key: DROP_ITEM_MAX_NUM }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: DropItemMaxNum }
+
+      - key: DROP_ITEM_MAX_NUM_UNKO
+        label: Max dropped UNKO (poop) items
+        type: int
+        min: 0
+        max: 3000
+        default: 100
+        bindings:
+          - { surface: env, direction: write, key: DROP_ITEM_MAX_NUM_UNKO }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: DropItemMaxNum_UNKO }
+
+      - key: DROP_ITEM_ALIVE_MAX_HOURS
+        label: Dropped item lifetime (hours)
+        type: float
+        min: 0.0
+        max: 72.0
+        step: 0.5
+        default: "1.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: DROP_ITEM_ALIVE_MAX_HOURS }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: DropItemAliveMaxHours }
+
+      - key: PAL_EGG_DEFAULT_HATCHING_TIME
+        label: Pal egg hatching time (hours)
+        type: float
+        min: 0.0
+        max: 72.0
+        step: 0.1
+        default: "0.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: PAL_EGG_DEFAULT_HATCHING_TIME }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: PalEggDefaultHatchingTime }
+
+  - group: "Guilds & Base Camps"
+    items:
+      - key: BASE_CAMP_MAX_NUM
+        label: Max base camps
+        type: int
+        min: 1
+        max: 255
+        default: 128
+        bindings:
+          - { surface: env, direction: write, key: BASE_CAMP_MAX_NUM }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: BaseCampMaxNum }
+
+      - key: BASE_CAMP_WORKER_MAX_NUM
+        label: Max base camp workers
+        type: int
+        min: 1
+        max: 100
+        default: 50
+        bindings:
+          - { surface: env, direction: write, key: BASE_CAMP_WORKER_MAX_NUM }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: BaseCampWorkerMaxNum }
+
+      - key: GUILD_PLAYER_MAX_NUM
+        label: Max players per guild
+        type: int
+        min: 1
+        max: 100
+        default: 20
+        bindings:
+          - { surface: env, direction: write, key: GUILD_PLAYER_MAX_NUM }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: GuildPlayerMaxNum }
+
+      - key: AUTO_RESET_GUILD_NO_ONLINE_PLAYERS
+        label: Auto-disband guilds with no online players
+        type: bool
+        default: "False"
+        trueValue: "True"
+        falseValue: "False"
+        bindings:
+          - { surface: env, direction: write, key: AUTO_RESET_GUILD_NO_ONLINE_PLAYERS }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true, member: bAutoResetGuildNoOnlinePlayers }
+
+      - key: AUTO_RESET_GUILD_TIME_NO_ONLINE_PLAYERS
+        label: Guild auto-disband threshold (hours)
+        type: float
+        min: 1.0
+        max: 720.0
+        step: 1.0
+        default: "72.000000"
+        renderFormat: "F6"
+        bindings:
+          - { surface: env, direction: write, key: AUTO_RESET_GUILD_TIME_NO_ONLINE_PLAYERS }
+          - { surface: palworldsettings, direction: read, mirrorWrite: true,
+              member: AutoResetGuildTimeNoOnlinePlayers }
 
 backup:
   include:
