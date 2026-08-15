@@ -69,6 +69,18 @@ mistyped password cannot be distinguished, by how long the check took, from one 
 There is no recovery flow beyond that one password and no second credential — see
 [Secrets](secrets.md) for where Servyx's own state, including this verifier, is stored on disk.
 
+Sign-in has since moved to a `Users` table (one PBKDF2-HMAC-SHA256 verifier per account, same algorithm and
+parameters as above), but the same "no recovery flow" rule holds for a *lost* password: there is still no
+self-service reset for an account that cannot produce its current password, and nothing writes the
+`PasswordHash` column except through the app itself. The one supported, explicit way to set or reset an
+account's password out of band — e.g. bootstrapping a throwaway copy of the database for local verification,
+without ever touching the real password — is the break-glass CLI verb
+`dotnet run --project src/Presentation/Servyx.Web -- reset-admin-password <username> [--password <new-password>]`
+(reads the password from `--password`, redirected stdin, or a masked prompt; never logs it). It only runs when
+that verb is literally the first command-line argument, resolves the same `Servyx:Persistence:ConnectionString`
+the running app would, and creates the account as `Admin` if it does not exist yet or resets its password if it
+does. See `Servyx.Web.Authentication.AdminPasswordResetCli`'s own remarks for the full rationale.
+
 The sign-in page itself (`/login`) is deliberately **not** a routable Blazor component: it is served as a
 plain, static HTML document with no `@page` directive and no interactive circuit, entirely outside the
 Router. An anonymous visitor never gets a SignalR circuit — the login form posts back to a plain endpoint

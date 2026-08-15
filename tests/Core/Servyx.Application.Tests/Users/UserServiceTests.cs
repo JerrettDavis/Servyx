@@ -450,4 +450,94 @@ public class UserServiceTests
         (await service.VerifyPasswordAsync("alice", "correct-horse-battery-staple")).Should().BeTrue(
             "a refused rotation must not touch the stored credential");
     }
+
+    // ── ResetPasswordAsync (administrative / break-glass) ───────────────────────────────────────────
+
+    [Fact]
+    public async Task ResetPasswordAsync_ReplacesTheVerifier_WithoutKnowingTheCurrentPassword_AndLoginAcceptsIt()
+    {
+        // "Verify via the same verifier the login path uses": VerifyPasswordAsync is exactly what
+        // AuthenticationEndpoints' /login handler calls (users.VerifyPasswordAsync(username, candidate, ...)),
+        // so a true result here is proof this reset actually restores sign-in, not merely that a row changed.
+        var (service, repository, _) = Build();
+        await service.CreateAsync("jd", "the-original-password-1", UserRole.Admin, Actor);
+
+        var result = await service.ResetPasswordAsync("jd", "a-brand-new-password-1", Actor);
+
+        result.Outcome.Should().Be(ResetPasswordOutcome.Reset);
+        (await service.VerifyPasswordAsync("jd", "a-brand-new-password-1")).Should().BeTrue(
+            "the new password must be exactly what the login path accepts afterward");
+        (await service.VerifyPasswordAsync("jd", "the-original-password-1")).Should().BeFalse(
+            "the old password must stop working the moment the reset is stored");
+
+        repository.Rows.Single().PasswordHash.Should().NotContain("a-brand-new-password-1");
+    }
+
+    [Fact]
+    public async Task ResetPasswordAsync_ForAnUnknownUsername_ReportsUserNotFound_AndChangesNothing()
+    {
+        var (service, repository, _) = Build();
+
+        var result = await service.ResetPasswordAsync("nobody", "a-brand-new-password-1", Actor);
+
+        result.Outcome.Should().Be(ResetPasswordOutcome.UserNotFound);
+        repository.Rows.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task ResetPasswordAsync_WorksEvenForADeactivatedAccount()
+    {
+        // Deliberately different from ChangePasswordAsync's posture: a deactivated account is exactly the
+        // kind of account a break-glass reset exists to recover access to.
+        var (service, _, _) = Build();
+        var created = await service.CreateAsync("jd", "the-original-password-1", UserRole.Admin, Actor);
+        await service.SetActiveAsync(created.UserId!.Value, false, Actor);
+
+        var result = await service.ResetPasswordAsync("jd", "a-brand-new-password-1", Actor);
+
+        result.Outcome.Should().Be(ResetPasswordOutcome.Reset);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("short")]
+    [InlineData("elevenchars")]
+    public async Task ResetPasswordAsync_WithAWeakNewPassword_IsRefused(string newPassword)
+    {
+        var (service, _, _) = Build();
+        await service.CreateAsync("jd", "the-original-password-1", UserRole.Admin, Actor);
+
+        var result = await service.ResetPasswordAsync("jd", newPassword, Actor);
+
+        result.Outcome.Should().Be(ResetPasswordOutcome.WeakPassword);
+        (await service.VerifyPasswordAsync("jd", "the-original-password-1")).Should().BeTrue(
+            "a refused reset must not touch the stored credential");
+    }
+
+    [Fact]
+    public async Task ResetPasswordAsync_RecordsAUserPasswordResetAuditEntry_NeverTheNewPlaintext()
+    {
+        var (service, _, auditLogger) = Build();
+        await service.CreateAsync("jd", "the-original-password-1", UserRole.Admin, Actor);
+
+        await service.ResetPasswordAsync("jd", "a-brand-new-password-1", Actor);
+
+        var entry = auditLogger.Entries.Should().ContainSingle(e => e.Action == AuditActions.UserPasswordReset).Which;
+        entry.Actor.Should().Be(Actor);
+        entry.TargetType.Should().Be("user");
+        entry.TargetId.Should().Be("jd");
+        entry.Details.Should().NotContain("a-brand-new-password-1");
+        (entry.Action + entry.Details).Should().NotContain("a-brand-new-password-1");
+    }
+
+    [Fact]
+    public async Task ResetPasswordAsync_RefusedForAWeakPassword_RecordsNoAuditEntry()
+    {
+        var (service, _, auditLogger) = Build();
+        await service.CreateAsync("jd", "the-original-password-1", UserRole.Admin, Actor);
+
+        await service.ResetPasswordAsync("jd", "short", Actor);
+
+        auditLogger.Entries.Should().NotContain(e => e.Action == AuditActions.UserPasswordReset);
+    }
 }

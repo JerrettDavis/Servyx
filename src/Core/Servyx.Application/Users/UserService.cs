@@ -190,4 +190,38 @@ public sealed class UserService : IUserService
         _logger.LogInformation("Changed the password for user '{Username}'.", user.Username);
         return ChangePasswordResult.Changed;
     }
+
+    /// <inheritdoc />
+    public async Task<ResetPasswordResult> ResetPasswordAsync(
+        string username, string newPassword, string actor, CancellationToken ct = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(username);
+        ArgumentException.ThrowIfNullOrWhiteSpace(actor);
+
+        var trimmedUsername = username.Trim();
+
+        var user = await _repository.TryGetByUsernameAsync(trimmedUsername, ct).ConfigureAwait(false);
+        if (user is null)
+        {
+            return ResetPasswordResult.UserNotFound(trimmedUsername);
+        }
+
+        if (string.IsNullOrWhiteSpace(newPassword) || newPassword.Length < CreateUserResult.MinimumPasswordLength)
+        {
+            return ResetPasswordResult.WeakPassword();
+        }
+
+        await _repository.SetPasswordHashAsync(user.Id, PasswordHash.Create(newPassword), ct).ConfigureAwait(false);
+
+        // Never interpolate newPassword into a log message — this line, and every other line in this method,
+        // must remain true after any future edit.
+        _logger.LogInformation(
+            "Administratively reset the password for user '{Username}', by '{Actor}'.", user.Username, actor);
+
+        await _auditLogger.RecordAsync(
+            actor, AuditActions.UserPasswordReset, targetType: "user", targetId: user.Username, ct: ct)
+            .ConfigureAwait(false);
+
+        return ResetPasswordResult.Reset;
+    }
 }

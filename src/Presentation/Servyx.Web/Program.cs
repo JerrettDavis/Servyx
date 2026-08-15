@@ -10,6 +10,19 @@ using Servyx.Web.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// ── Break-glass admin password reset ─────────────────────────────────────────────────────────────
+//
+// `dotnet run -- reset-admin-password <username> [--password <new-password>]` — an explicit, intentional CLI
+// verb, checked before ANY normal web-host composition (service defaults, the authentication gate, Razor
+// components, Kestrel) even starts. It is never reachable except by literally passing this as the first
+// command-line argument, so it can never fire on an ordinary launch or be triggered remotely. See
+// AdminPasswordResetCli's own remarks for why this exists and what it does and does not log.
+if (AdminPasswordResetCli.IsInvoked(args))
+{
+    var exitCode = await AdminPasswordResetCli.RunAsync(args, builder);
+    Environment.Exit(exitCode);
+}
+
 builder.AddServiceDefaults();
 
 // Add services to the container.

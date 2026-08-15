@@ -86,4 +86,21 @@ public interface IUserService
     /// <param name="ct">Cancels the change.</param>
     Task<ChangePasswordResult> ChangePasswordAsync(
         string username, string currentPassword, string newPassword, CancellationToken ct = default);
+
+    /// <summary>
+    /// Administrative, break-glass password reset: replaces <paramref name="username"/>'s stored verifier
+    /// WITHOUT the caller producing the current password — unlike <see cref="ChangePasswordAsync"/>, this is
+    /// not self-service. Returns <see cref="ResetPasswordOutcome.UserNotFound"/> — writing nothing — when no
+    /// account exists under <paramref name="username"/>; callers that want "create the account if it does not
+    /// exist yet" should follow that outcome with their own call to <see cref="CreateAsync"/>, exactly as
+    /// <c>Servyx.Web.Authentication.AdminPasswordResetCli</c> does. Deliberately not gated on
+    /// <see cref="Servyx.Domain.Entities.User.IsActive"/>: a deactivated account is exactly the kind of account
+    /// a break-glass reset exists to recover.
+    /// </summary>
+    /// <param name="username">The account whose password is being reset.</param>
+    /// <param name="newPassword">The replacement. Hashed before anything is written; never persisted, logged, or returned.</param>
+    /// <param name="actor">The authenticated (or otherwise attributable) caller's identity, for the audit trail.</param>
+    /// <param name="ct">Cancels the reset.</param>
+    Task<ResetPasswordResult> ResetPasswordAsync(
+        string username, string newPassword, string actor, CancellationToken ct = default);
 }

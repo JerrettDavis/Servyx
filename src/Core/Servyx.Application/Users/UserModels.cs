@@ -100,3 +100,38 @@ public sealed record ChangePasswordResult(ChangePasswordOutcome Outcome, string?
         new(ChangePasswordOutcome.WeakPassword,
             $"The password must be at least {CreateUserResult.MinimumPasswordLength} characters.");
 }
+
+/// <summary>Which of the well-known outcomes <see cref="IUserService.ResetPasswordAsync"/> landed on.</summary>
+public enum ResetPasswordOutcome
+{
+    /// <summary>The stored verifier was replaced without the caller having to produce the current password.</summary>
+    Reset,
+
+    /// <summary>No account exists under the requested username; nothing was written.</summary>
+    UserNotFound,
+
+    /// <summary>The proposed new password was refused before anything was written — too short, or blank.</summary>
+    WeakPassword,
+}
+
+/// <summary>
+/// The outcome of one <see cref="IUserService.ResetPasswordAsync"/> call. Every member of
+/// <see cref="ResetPasswordOutcome"/> is an expected, non-exceptional outcome, matching
+/// <see cref="CreateUserResult"/>'s own "results, not exceptions" convention.
+/// </summary>
+/// <param name="Outcome">Which of the well-known outcomes this call landed on.</param>
+/// <param name="Detail">A human-readable explanation for the non-success outcomes; otherwise null.</param>
+public sealed record ResetPasswordResult(ResetPasswordOutcome Outcome, string? Detail)
+{
+    /// <summary>The verifier was replaced.</summary>
+    public static readonly ResetPasswordResult Reset = new(ResetPasswordOutcome.Reset, null);
+
+    /// <summary>No account exists under the requested username.</summary>
+    public static ResetPasswordResult UserNotFound(string username) =>
+        new(ResetPasswordOutcome.UserNotFound, $"No account exists under the username '{username}'.");
+
+    /// <summary>The proposed new password is shorter than <see cref="CreateUserResult.MinimumPasswordLength"/>.</summary>
+    public static ResetPasswordResult WeakPassword() =>
+        new(ResetPasswordOutcome.WeakPassword,
+            $"The password must be at least {CreateUserResult.MinimumPasswordLength} characters.");
+}
