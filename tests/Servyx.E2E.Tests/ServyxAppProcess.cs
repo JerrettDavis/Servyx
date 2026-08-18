@@ -124,6 +124,15 @@ public sealed class ServyxAppProcess : IAsyncDisposable
                     return;
                 }
             }
+            catch (OperationCanceledException ex) when (!timeoutCts.IsCancellationRequested)
+            {
+                // HttpClient enforces its own 2s per-request Timeout via an internal CTS linked to
+                // timeoutCts.Token; when that internal timer (not our token) fires, it throws
+                // TaskCanceledException, which IS an OperationCanceledException. timeoutCts itself
+                // stays uncancelled in that case, so this is a per-request timeout to retry, not the
+                // outer 30s deadline (or a caller-supplied ct) actually elapsing.
+                lastFailure = ex;
+            }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
                 lastFailure = ex;
