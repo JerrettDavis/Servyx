@@ -1,16 +1,17 @@
 # Operator administration
 
 "Administration" in Servyx today means one thing: the single operator password that gates every page. There
-is no user table, no roles, and — despite three separate items in the sidebar — no dedicated management UI
-yet for any of it. This page documents what is real (the authentication gate and the audit *log*, both of
-which are enforced and exercised on every request right now) and is honest about what is not (the Users,
-Audit, and Settings *pages* themselves, which are placeholders).
+is no roles system beyond the one `Admin`/`Viewer` split, and — despite several separate items in the
+sidebar — no dedicated management UI yet for most of it. This page documents what is real (the authentication
+gate, the Audit page's accountability trail, and the audit *log* underneath it, all of which are enforced and
+exercised on every request right now) and is honest about what is not (the Users and Settings *pages*, and the
+Mods and Plugins placeholders, some of which still show only static, unstyled text).
 
-## Users, Settings, Mods, Plugins, and Audit are placeholders today
+## Users, Settings, Mods, and Plugins are placeholders today
 
-All five sidebar pages this section covers — `/users`, `/settings`, `/mods`, `/plugins`, `/audit` — render the
+All four sidebar pages this section covers — `/users`, `/settings`, `/mods`, `/plugins` — render the
 same pattern: a heading and a short paragraph naming the milestone the real feature ships in, and nothing
-interactive. They are combined into this one guide rather than five separate pages for exactly that reason:
+interactive. They are combined into this one guide rather than four separate pages for exactly that reason:
 individually, each is a handful of lines of static markup with no code-behind, no data, and no behavior to
 document beyond the sentence it already shows on screen.
 
@@ -23,8 +24,6 @@ document beyond the sentence it already shows on screen.
   definitions opt in.
 - **Plugins** (`/plugins`) — *"No plugins installed."* The plugin SDK and installation surface are introduced
   in Milestone 9.
-- **Audit** (`/audit`) — *"Milestone 1 is strictly read-only, so there is nothing to audit. The audit log
-  activates once writes are enabled in Milestone 4, and gains a dedicated UI in Milestone 7."*
 
 ![The Users placeholder page, naming Milestone 7](../images/users.png)
 
@@ -34,15 +33,21 @@ document beyond the sentence it already shows on screen.
 
 ![The Plugins placeholder page, naming Milestone 9](../images/plugins.png)
 
-![The Audit page today: an empty state stating that Milestone 1 has nothing to audit, and that a dedicated audit UI arrives in Milestone 7](../images/audit-page-placeholder.png)
-
-All five of these placeholders, like every other page in Servyx, render in either light or dark theme — see
+All four of these placeholders, like every other page in Servyx, render in either light or dark theme — see
 [Themes](themes.md) for the toggle that controls it, and dark-theme captures of each placeholder above.
 
-The Audit page's own copy is slightly stale in one respect, covered below: writes (Milestone 4) have in fact
-shipped, and audit *events* already exist and are already being emitted for every sign-in decision — there
-is just no UI on this page yet that reads them. "No audit UI" is not the same claim as "no audit trail",
-and the rest of this page is about the trail that already exists.
+## The Audit page lists the accountability trail
+
+Unlike the four pages above, `/audit` is no longer a placeholder. It carries the same
+`RoleAuthorization.Admin` policy as `/users` — unconditionally, not only when `Servyx:Authentication:Enabled`
+is on — so reaching it needs a real, signed-in Admin account. Once open, it lists the accountability trail:
+the same authentication events documented in the table further down this page, newest first, each row naming
+the event, the account or remote address involved, and when it happened.
+
+![The Audit page listing the accountability trail](../images/audit-page.png)
+
+Like every other page in Servyx, it also renders in dark theme — see [Themes](themes.md) for the toggle that
+controls it, and a dark-theme capture of this page.
 
 ## Authentication is real, and it is fail-closed by default
 

@@ -77,7 +77,7 @@ what to expect either way you run Servyx.
 
 ![The Games page listing a bundled definition and its deployment profiles, in dark theme](../images/games-catalogue-dark.png)
 
-![The Audit page's placeholder empty state, in dark theme](../images/audit-page-placeholder-dark.png)
+![The Audit page's accountability trail, in dark theme](../images/audit-page-dark.png)
 
 ### Deploying and write access
 
