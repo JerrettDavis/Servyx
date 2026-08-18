@@ -183,7 +183,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
     await testRunner.AndAsync("the \"Foreign backups\" tile shows \"5\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 15
-    await testRunner.AndAsync("all 9 sidebar entries are reachable", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("all 10 sidebar entries are reachable", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
 #line 16
     await testRunner.AndAsync("I capture the screen as \"dashboard-overview\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");

@@ -64,14 +64,17 @@ public sealed class DashboardE2ETests(PlaywrightFixture fixture, ITestOutputHelp
         Assert.Fail($"The '{tabName}' tab never became selected after repeated clicks — interactivity is not working.");
 
     [SkippableFact]
-    public async Task Dashboard_SidebarShowsAllNineNavigationEntries()
+    public async Task Dashboard_SidebarShowsAllTenNavigationEntries()
     {
         SkipIfBrowsersUnavailable();
 
         await Page.GotoAsync("/");
 
+        // NavCatalog.Entries now holds 10 entries (Hosts joined the catalog since this count was last
+        // 9). Deploy is deliberately excluded here: NavCatalog.EntriesFor always appends it, but on this
+        // provisioning-closed demo host it renders as a disabled <button>, not an <a>, per NavMenu.razor.
         var navLinks = Page.Locator("a.svx-nav-link");
-        await Expect(navLinks).ToHaveCountAsync(9);
+        await Expect(navLinks).ToHaveCountAsync(10);
     }
 
     [SkippableFact]

@@ -6,19 +6,17 @@ using static Microsoft.Playwright.Assertions;
 namespace Servyx.E2E.Bdd.Tests.Steps;
 
 /// <summary>
-/// Assertions for the <c>/audit</c> page (see <c>AuditPage.razor</c>) — currently an empty-state
-/// placeholder, so this checks the placeholder copy itself rather than any real audit data. There is no
-/// audit UI to exercise yet; see <c>Servyx.Web.Authentication.AuthenticationAudit</c> for the actual,
-/// structured-log-only audit trail that exists today.
+/// Assertions for the <c>/audit</c> page (see <c>AuditPage.razor</c>) — a real, server-side-filtered reader
+/// over Servyx's cross-cutting accountability trail.
 /// </summary>
 [Binding]
 public sealed class OperatorAdministrationSteps(IPage page, AssertionLedger ledger)
 {
-    [Then(@"^the audit page explains it has no dedicated UI yet$")]
-    public async Task ThenTheAuditPageExplainsItHasNoDedicatedUiYetAsync()
+    [Then(@"^the audit page lists the accountability trail$")]
+    public async Task ThenTheAuditPageListsTheAccountabilityTrailAsync()
     {
-        await Expect(page.Locator(".svx-empty-state h3")).ToHaveTextAsync("No audit events recorded yet");
-        await Expect(page.Locator(".svx-empty-state")).ToContainTextAsync("Milestone 7");
+        await Expect(page.Locator("[data-testid='audit-filter-section']")).ToBeVisibleAsync();
+        await Expect(page.Locator("[data-testid='audit-list-section']")).ToBeVisibleAsync();
         ledger.Record();
     }
 }

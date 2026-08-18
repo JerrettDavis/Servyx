@@ -26,9 +26,9 @@ namespace Servyx.E2E.Bdd.Tests.Features
         private static string[] featureTags = new string[] {
                 "e2e"};
         
-        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Operator administration", "  As an operator reading the docs before Milestone 7 ships\r\n  I want to see exact" +
-                "ly what the Users, Audit, and Settings pages show today\r\n  So the user guide can" +
-                " be honest about what is a real feature and what is a placeholder", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
+        private static global::Reqnroll.FeatureInfo featureInfo = new global::Reqnroll.FeatureInfo(new global::System.Globalization.CultureInfo("en-US"), "Features", "Operator administration", "  As an operator reading the docs\r\n  I want to see exactly what the Users and Aud" +
+                "it pages show today\r\n  So the user guide can be honest about what each page actu" +
+                "ally does", global::Reqnroll.ProgrammingLanguage.CSharp, featureTags, InitializeCucumberMessages());
         
         private global::Xunit.Abstractions.ITestOutputHelper _testOutputHelper;
         
@@ -146,18 +146,21 @@ namespace Servyx.E2E.Bdd.Tests.Features
             await this.TestTearDownAsync();
         }
         
-        [global::Xunit.SkippableFactAttribute(DisplayName="The Audit page is a placeholder until Milestone 7")]
+        [global::Xunit.SkippableFactAttribute(DisplayName="The Audit page requires an authenticated Admin and lists the accountability trail" +
+            "")]
         [global::Xunit.TraitAttribute("FeatureTitle", "Operator administration")]
-        [global::Xunit.TraitAttribute("Description", "The Audit page is a placeholder until Milestone 7")]
-        public async global::System.Threading.Tasks.Task TheAuditPageIsAPlaceholderUntilMilestone7()
+        [global::Xunit.TraitAttribute("Description", "The Audit page requires an authenticated Admin and lists the accountability trail" +
+            "")]
+        public async global::System.Threading.Tasks.Task TheAuditPageRequiresAnAuthenticatedAdminAndListsTheAccountabilityTrail()
         {
             string[] tagsOfScenario = ((string[])(null));
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "0";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Audit page is a placeholder until Milestone 7", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Audit page requires an authenticated Admin and lists the accountability trail" +
+                    "", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 15
+#line 14
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -170,14 +173,17 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 7
   await this.FeatureBackgroundAsync();
 #line hidden
+#line 15
+    await testRunner.GivenAsync("I am signed in as an administrator", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+#line hidden
 #line 16
     await testRunner.WhenAsync("I open the audit page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
 #line 17
-    await testRunner.ThenAsync("the audit page explains it has no dedicated UI yet", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.ThenAsync("the audit page lists the accountability trail", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
 #line 18
-    await testRunner.AndAsync("I capture the screen as \"audit-page-placeholder\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.AndAsync("I capture the screen as \"audit-page\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
             await this.ScenarioCleanupAsync();

@@ -7,11 +7,11 @@ Feature: Coverage
   Background:
     Given Servyx is running against the demonstration host
 
-  # Mods, Plugins, Users, and application-level Settings render the same empty-state pattern as Audit (see
-  # OperatorAdministration.feature's own note on that) — a heading and a short paragraph naming the milestone
-  # the real feature ships in. Each still gets its own capture here: they are genuinely different pages the
-  # sidebar links to, and OperatorAdministration.feature already covers why one capture per near-identical
-  # layout is still worth it once, rather than none.
+  # Mods and Plugins still render the empty-state placeholder pattern described below — a heading and a short
+  # paragraph naming the milestone the real feature ships in. Users and application-level Settings graduated
+  # out of that pattern (see their own scenarios below, and OperatorAdministration.feature's identical note for
+  # Audit) once real functionality shipped for each. Each still gets its own capture here: they are genuinely
+  # different pages the sidebar links to.
 
   Scenario: The Mods placeholder explains mod management is not available yet
     When I open the mods page
@@ -25,15 +25,16 @@ Feature: Coverage
     And the page is in "light" theme
     And I capture the screen as "plugins"
 
-  Scenario: The Users placeholder explains identity and RBAC ship later
+  Scenario: The Users page requires an authenticated Admin and lists accounts
+    Given I am signed in as an administrator
     When I open the users page
-    Then the page heading reads "No additional users"
+    Then the page's h2 heading reads "Users"
     And the page is in "light" theme
     And I capture the screen as "users"
 
-  Scenario: The application Settings placeholder explains there is nothing to configure yet
+  Scenario: The application Settings page shows retention, host connection, and password sections
     When I open the app settings page
-    Then the page heading reads "Nothing to configure yet"
+    Then the page's h2 heading reads "Settings"
     And the page is in "light" theme
     And I capture the screen as "settings"
 

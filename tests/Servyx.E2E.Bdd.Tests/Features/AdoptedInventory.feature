@@ -12,7 +12,7 @@ Feature: Adopted inventory
     Then the "Servers online" tile shows "2 / 2"
     And the "Total players" tile shows "10 / 64"
     And the "Foreign backups" tile shows "5"
-    And all 9 sidebar entries are reachable
+    And all 10 sidebar entries are reachable
     And I capture the screen as "dashboard-overview"
 
   Scenario: The server list shows where each server lives and how to reach it

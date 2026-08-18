@@ -123,11 +123,13 @@ Feature: Theming
     Then the page is in "dark" theme
     And I capture the screen as "games-catalogue-dark"
 
-  # Light: OperatorAdministration.feature — "The Audit page is a placeholder until Milestone 7"
-  Scenario: The Audit page is a placeholder until Milestone 7, in dark theme
+  # Light: OperatorAdministration.feature — "The Audit page requires an authenticated Admin and lists the
+  # accountability trail"
+  Scenario: The Audit page requires an authenticated Admin and lists the accountability trail, in dark theme
+    Given I am signed in as an administrator
     When I open the audit page
     Then the page is in "dark" theme
-    And I capture the screen as "audit-page-placeholder-dark"
+    And I capture the screen as "audit-page-dark"
 
   # Light: WriteModeTiers.feature — "The provisioning gate names its own configuration key and warns when authentication is off"
   Scenario: The provisioning gate names its own configuration key and warns when authentication is off, in dark theme
@@ -164,7 +166,8 @@ Feature: Theming
     Then the page is in "dark" theme
     And I capture the screen as "plugins-dark"
 
-  Scenario: The Users placeholder explains identity and RBAC ship later, in dark theme
+  Scenario: The Users page requires an authenticated Admin and lists accounts, in dark theme
+    Given I am signed in as an administrator
     When I open the users page
     Then the page is in "dark" theme
     And I capture the screen as "users-dark"

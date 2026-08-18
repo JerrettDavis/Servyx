@@ -45,14 +45,29 @@ public sealed class CoverageSteps(IPage page, AssertionLedger ledger)
     public async Task WhenINavigateDirectlyToTheErrorPageAsync() => await page.GotoAsync("Error");
 
     /// <summary>
-    /// Each of the five pages this class navigates to renders exactly one &lt;h3&gt; — either
-    /// <c>.svx-empty-state h3</c> (Mods/Plugins/Users/Settings) or a bare one (NotFound.razor's "Not Found")
-    /// — so one locator works for all of them without needing a per-page step.
+    /// Each of the three still-placeholder pages this class navigates to renders exactly one &lt;h3&gt; —
+    /// either <c>.svx-empty-state h3</c> (Mods/Plugins) or a bare one (NotFound.razor's "Not Found") — so one
+    /// locator works for all of them without needing a per-page step. Users and application-level Settings
+    /// used to share this step too, before both gained real content of their own — see
+    /// <see cref="ThenThePageH2HeadingReadsAsync"/>, which replaced it for those two.
     /// </summary>
     [Then(@"^the page heading reads ""(.*)""$")]
     public async Task ThenThePageHeadingReadsAsync(string heading)
     {
         await Expect(page.Locator("h3")).ToHaveTextAsync(heading);
+        ledger.Record();
+    }
+
+    /// <summary>
+    /// Every real (non-placeholder) page shares the same <c>.svx-page-header</c> shape — an &lt;h2&gt; naming
+    /// the page, unique on the page even where the page's own content renders further &lt;h3&gt;s of its own
+    /// (see UsersPage's "Add a user"/"Accounts" cards and AppSettingsPage's per-section headings) — so this
+    /// checks that outer heading rather than the generic, placeholder-only <c>h3</c> locator above.
+    /// </summary>
+    [Then(@"^the page's h2 heading reads ""(.*)""$")]
+    public async Task ThenThePageH2HeadingReadsAsync(string heading)
+    {
+        await Expect(page.Locator(".svx-page-header h2")).ToHaveTextAsync(heading);
         ledger.Record();
     }
 

@@ -26,12 +26,28 @@ public sealed class PlaywrightFixture : IAsyncLifetime
     /// <summary>Human-readable explanation, populated only when <see cref="BrowsersAvailable"/> is false.</summary>
     public string? SkipReason { get; private set; }
 
+    private string? _dbDirectory;
+
     public async Task InitializeAsync()
     {
+        // Every ServyxAppProcess this suite launches shares the SAME Servyx.Web.dll and therefore the SAME
+        // AppContext.BaseDirectory (see ServyxAppProcess.LocateServyxWebDll) — so without an explicit
+        // override here, this fixture's app, WriteEnabledAppFixture's, and AuthenticationEnabledAppFixture's
+        // all default to the identical on-disk SQLite file (see ServyxCoreCompositionExtensions' own
+        // fallback: "{AppContext.BaseDirectory}/servyx-data/servyx.db"), and a user account created against
+        // one is silently visible to the others. Isolating this fixture's database is what makes it safe for
+        // BDD scenarios to create a real operator account (see AdminSessionSteps) without leaking it into
+        // FirstRun.feature's own, separately-configured "no account exists yet" fixture.
+        _dbDirectory = Directory.CreateDirectory(
+            Path.Combine(Path.GetTempPath(), "servyx-e2e-db", Guid.NewGuid().ToString("N"))).FullName;
+
         // Starting the real app is not the optional/best-effort part — if this throws, it's a genuine
         // failure (e.g. Servyx.Web isn't built), so it's allowed to fail the whole run rather than being
         // caught and turned into a skip.
-        await App.StartAsync();
+        await App.StartAsync(environmentOverrides: new Dictionary<string, string>
+        {
+            ["Servyx__Persistence__ConnectionString"] = $"Data Source={Path.Combine(_dbDirectory, "servyx.db")}",
+        });
 
         try
         {
@@ -55,6 +71,19 @@ public sealed class PlaywrightFixture : IAsyncLifetime
 
         Playwright?.Dispose();
         await App.DisposeAsync();
+
+        if (_dbDirectory is not null)
+        {
+            try
+            {
+                Directory.Delete(_dbDirectory, recursive: true);
+            }
+            catch (IOException)
+            {
+                // Best-effort cleanup of a per-run temp directory; a stray temp folder left behind is not
+                // worth failing teardown over — matches WriteEnabledAppFixture's identical handling.
+            }
+        }
     }
 }
 

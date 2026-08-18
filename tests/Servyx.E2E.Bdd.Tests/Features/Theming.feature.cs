@@ -793,18 +793,21 @@ namespace Servyx.E2E.Bdd.Tests.Features
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Xunit.SkippableFactAttribute(DisplayName="The Audit page is a placeholder until Milestone 7, in dark theme")]
+        [global::Xunit.SkippableFactAttribute(DisplayName="The Audit page requires an authenticated Admin and lists the accountability trail" +
+            ", in dark theme")]
         [global::Xunit.TraitAttribute("FeatureTitle", "Theming")]
-        [global::Xunit.TraitAttribute("Description", "The Audit page is a placeholder until Milestone 7, in dark theme")]
-        public async global::System.Threading.Tasks.Task TheAuditPageIsAPlaceholderUntilMilestone7InDarkTheme()
+        [global::Xunit.TraitAttribute("Description", "The Audit page requires an authenticated Admin and lists the accountability trail" +
+            ", in dark theme")]
+        public async global::System.Threading.Tasks.Task TheAuditPageRequiresAnAuthenticatedAdminAndListsTheAccountabilityTrailInDarkTheme()
         {
             string[] tagsOfScenario = ((string[])(null));
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "16";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Audit page is a placeholder until Milestone 7, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Audit page requires an authenticated Admin and lists the accountability trail" +
+                    ", in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 127
+#line 128
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -817,14 +820,17 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 128
-    await testRunner.WhenAsync("I open the audit page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
-#line hidden
 #line 129
-    await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+    await testRunner.GivenAsync("I am signed in as an administrator", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
 #line 130
-    await testRunner.AndAsync("I capture the screen as \"audit-page-placeholder-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
+    await testRunner.WhenAsync("I open the audit page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
+#line hidden
+#line 131
+    await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
+#line hidden
+#line 132
+    await testRunner.AndAsync("I capture the screen as \"audit-page-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
             await this.ScenarioCleanupAsync();
@@ -844,7 +850,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
                     "on is off, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 133
+#line 135
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -857,13 +863,13 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 134
+#line 136
     await testRunner.WhenAsync("I open the deploy page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 135
+#line 137
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 136
+#line 138
     await testRunner.AndAsync("I capture the screen as \"provisioning-gate-closed-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -886,7 +892,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
                     "ark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 140
+#line 142
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -899,16 +905,16 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 141
+#line 143
     await testRunner.GivenAsync("Servyx is running with provisioning enabled and per-server write grants", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 142
+#line 144
     await testRunner.WhenAsync("I open the server detail page for \"Palygondwanaland\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 143
+#line 145
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 144
+#line 146
     await testRunner.AndAsync("I capture the screen as \"preview-only-stop-plan-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -933,7 +939,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
                     "ols, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 148
+#line 150
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -946,16 +952,16 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 149
+#line 151
     await testRunner.GivenAsync("Servyx is running with provisioning enabled and per-server write grants", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
 #line hidden
-#line 150
+#line 152
     await testRunner.WhenAsync("I open the server detail page for \"Example Remote Palworld\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 151
+#line 153
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 152
+#line 154
     await testRunner.AndAsync("I capture the screen as \"lifecycle-controls-enabled-dark\", focused on the power c" +
                         "ontrols", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
@@ -977,7 +983,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
                     "k theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 157
+#line 159
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -990,13 +996,13 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 158
+#line 160
     await testRunner.WhenAsync("I open the mods page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 159
+#line 161
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 160
+#line 162
     await testRunner.AndAsync("I capture the screen as \"mods-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -1014,7 +1020,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Plugins placeholder explains the plugin SDK ships later, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 162
+#line 164
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -1027,31 +1033,31 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 163
+#line 165
     await testRunner.WhenAsync("I open the plugins page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 164
+#line 166
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 165
+#line 167
     await testRunner.AndAsync("I capture the screen as \"plugins-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
             await this.ScenarioCleanupAsync();
         }
         
-        [global::Xunit.SkippableFactAttribute(DisplayName="The Users placeholder explains identity and RBAC ship later, in dark theme")]
+        [global::Xunit.SkippableFactAttribute(DisplayName="The Users page requires an authenticated Admin and lists accounts, in dark theme")]
         [global::Xunit.TraitAttribute("FeatureTitle", "Theming")]
-        [global::Xunit.TraitAttribute("Description", "The Users placeholder explains identity and RBAC ship later, in dark theme")]
-        public async global::System.Threading.Tasks.Task TheUsersPlaceholderExplainsIdentityAndRBACShipLaterInDarkTheme()
+        [global::Xunit.TraitAttribute("Description", "The Users page requires an authenticated Admin and lists accounts, in dark theme")]
+        public async global::System.Threading.Tasks.Task TheUsersPageRequiresAnAuthenticatedAdminAndListsAccountsInDarkTheme()
         {
             string[] tagsOfScenario = ((string[])(null));
             global::System.Collections.Specialized.OrderedDictionary argumentsOfScenario = new global::System.Collections.Specialized.OrderedDictionary();
             string pickleIndex = "22";
-            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Users placeholder explains identity and RBAC ship later, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
+            global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Users page requires an authenticated Admin and lists accounts, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 167
+#line 169
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -1064,13 +1070,16 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 168
+#line 170
+    await testRunner.GivenAsync("I am signed in as an administrator", ((string)(null)), ((global::Reqnroll.Table)(null)), "Given ");
+#line hidden
+#line 171
     await testRunner.WhenAsync("I open the users page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 169
+#line 172
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 170
+#line 173
     await testRunner.AndAsync("I capture the screen as \"users-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -1091,7 +1100,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
                     "in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 172
+#line 175
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -1104,13 +1113,13 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 173
+#line 176
     await testRunner.WhenAsync("I open the app settings page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 174
+#line 177
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 175
+#line 178
     await testRunner.AndAsync("I capture the screen as \"settings-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -1128,7 +1137,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("An unknown route renders the Not Found page, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 177
+#line 180
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -1141,13 +1150,13 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 178
+#line 181
     await testRunner.WhenAsync("I open a page that does not exist", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 179
+#line 182
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 180
+#line 183
     await testRunner.AndAsync("I capture the screen as \"not-found-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
@@ -1165,7 +1174,7 @@ namespace Servyx.E2E.Bdd.Tests.Features
             global::Reqnroll.ScenarioInfo scenarioInfo = new global::Reqnroll.ScenarioInfo("The Error page is directly routable and reports a request id, in dark theme", null, tagsOfScenario, argumentsOfScenario, featureTags, pickleIndex);
             string[] tagsOfRule = ((string[])(null));
             global::Reqnroll.RuleInfo ruleInfo = null;
-#line 183
+#line 186
   this.ScenarioInitialize(scenarioInfo, ruleInfo);
 #line hidden
             if ((global::Reqnroll.TagHelper.ContainsIgnoreTag(scenarioInfo.CombinedTags) || global::Reqnroll.TagHelper.ContainsIgnoreTag(featureTags)))
@@ -1178,13 +1187,13 @@ namespace Servyx.E2E.Bdd.Tests.Features
 #line 21
   await this.FeatureBackgroundAsync();
 #line hidden
-#line 184
+#line 187
     await testRunner.WhenAsync("I navigate directly to the error page", ((string)(null)), ((global::Reqnroll.Table)(null)), "When ");
 #line hidden
-#line 185
+#line 188
     await testRunner.ThenAsync("the page is in \"dark\" theme", ((string)(null)), ((global::Reqnroll.Table)(null)), "Then ");
 #line hidden
-#line 186
+#line 189
     await testRunner.AndAsync("I capture the screen as \"error-page-dark\"", ((string)(null)), ((global::Reqnroll.Table)(null)), "And ");
 #line hidden
             }
