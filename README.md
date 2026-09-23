@@ -25,6 +25,26 @@ dotnet run --project src/Hosting/Servyx.AppHost
 
 This launches the Aspire app host, which orchestrates the Servyx.Web dashboard and its dependencies.
 
+## Installing / Running
+
+### From Release Binaries
+
+Download platform-specific binaries from [GitHub Releases](https://github.com/jerrettdavis/Servyx/releases). Archives are provided for Linux (x64, ARM64), Windows (x64), and macOS (ARM64).
+
+See [Release Notes](docs/releasing.md) for details on checksums, platform support, and the unsigned macOS caveat.
+
+### Docker
+
+Quick start with Docker:
+
+```bash
+docker run -d -p 8080:8080 -v servyx-data:/app/servyx-data ghcr.io/jerrettdavis/servyx:latest
+```
+
+Then open http://localhost:8080.
+
+For production setups with volume management and optional Docker socket access, see [`docker-compose.yml`](docker-compose.yml) and the [full release documentation](docs/releasing.md#docker-image).
+
 ## Documentation
 
 ### For operators

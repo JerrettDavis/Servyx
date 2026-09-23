@@ -1,0 +1,18 @@
+services:
+  servyx:
+    image: ghcr.io/jerrettdavis/servyx:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - servyx-data:/app/servyx-data
+    restart: unless-stopped
+    # Uncomment to allow Servyx to manage Docker-based game servers on the host.
+    # The container runs as a non-root user, so it needs the host's docker
+    # group GID to use the socket — set DOCKER_GID to `getent group docker | cut -d: -f3`.
+    # volumes:
+    #   - /var/run/docker.sock:/var/run/docker.sock
+    # group_add:
+    #   - "${DOCKER_GID}"
+
+volumes:
+  servyx-data:

@@ -66,6 +66,15 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
 
 jobs:
   build-and-test:
@@ -176,3 +185,235 @@ jobs:
             dotnet test "$project" --no-build --configuration Release
             echo "::endgroup::"
           done
+
+  # Computes the SemVer for this commit via GitVersion (GitHubFlow/ContinuousDeployment
+  # mode per GitVersion.yml) and checks whether a release for it already exists. Only
+  # runs on pushes to main or manual dispatch - never on pull requests - so opening a PR
+  # never computes or reserves a release version.
+  version:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    if: (github.event_name == 'push' && github.ref == 'refs/heads/main') || github.event_name == 'workflow_dispatch'
+    outputs:
+      semver: ${{ steps.gitversion.outputs.semVer }}
+      assembly_semver: ${{ steps.gitversion.outputs.assemblySemVer }}
+      file_semver: ${{ steps.gitversion.outputs.assemblySemFileVer }}
+      informational: ${{ steps.gitversion.outputs.informationalVersion }}
+      major_minor: ${{ steps.gitversion.outputs.major }}.${{ steps.gitversion.outputs.minor }}
+      exists: ${{ steps.tagcheck.outputs.exists }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Fetch tags
+        run: git fetch --prune --tags
+
+      - name: Setup GitVersion
+        uses: gittools/actions/gitversion/setup@v4
+        with:
+          versionSpec: '6.x'
+
+      - name: Execute GitVersion
+        id: gitversion
+        uses: gittools/actions/gitversion/execute@v4
+
+      - name: Check if release tag already exists
+        id: tagcheck
+        run: |
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ steps.gitversion.outputs.semVer }}" >/dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Publishes self-contained binaries for Servyx.Web and Servyx.Mcp.Stdio across the
+  # supported RIDs. Skipped entirely when the computed version's tag already exists,
+  # so re-running the workflow on the same commit doesn't republish an existing release.
+  binaries:
+    needs: version
+    if: needs.version.outputs.exists != 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            os: ubuntu-latest
+            ext: tar.gz
+          - rid: linux-arm64
+            os: ubuntu-latest
+            ext: tar.gz
+          - rid: win-x64
+            os: windows-latest
+            ext: zip
+          - rid: osx-arm64
+            os: macos-latest
+            ext: tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup .NET (honors global.json pin)
+        uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+
+      - name: Publish Servyx.Web
+        shell: bash
+        run: |
+          dotnet publish src/Presentation/Servyx.Web/Servyx.Web.csproj -c Release -r ${{ matrix.rid }} --self-contained true \
+            -p:PublishSingleFile=false -p:PublishTrimmed=false -p:ContinuousIntegrationBuild=true \
+            -p:Version=${{ needs.version.outputs.semver }} \
+            -p:AssemblyVersion=${{ needs.version.outputs.assembly_semver }} \
+            -p:FileVersion=${{ needs.version.outputs.file_semver }} \
+            -p:InformationalVersion=${{ needs.version.outputs.informational }} \
+            -o out/servyx-web-${{ needs.version.outputs.semver }}-${{ matrix.rid }}
+
+      - name: Verify Servyx.Web definitions were published
+        shell: bash
+        run: |
+          test -n "$(find out/servyx-web-*/definitions -name '*.yaml' 2>/dev/null)" || { echo "definitions missing from Servyx.Web publish output"; exit 1; }
+
+      - name: Publish Servyx.Mcp.Stdio
+        shell: bash
+        run: |
+          dotnet publish src/Hosting/Servyx.Mcp.Stdio/Servyx.Mcp.Stdio.csproj -c Release -r ${{ matrix.rid }} --self-contained true \
+            -p:PublishSingleFile=false -p:PublishTrimmed=false -p:ContinuousIntegrationBuild=true \
+            -p:Version=${{ needs.version.outputs.semver }} \
+            -p:AssemblyVersion=${{ needs.version.outputs.assembly_semver }} \
+            -p:FileVersion=${{ needs.version.outputs.file_semver }} \
+            -p:InformationalVersion=${{ needs.version.outputs.informational }} \
+            -o out/servyx-mcp-${{ needs.version.outputs.semver }}-${{ matrix.rid }}
+
+      - name: Verify Servyx.Mcp.Stdio definitions were published
+        shell: bash
+        run: |
+          test -n "$(find out/servyx-mcp-*/definitions -name '*.yaml' 2>/dev/null)" || { echo "definitions missing from Servyx.Mcp.Stdio publish output"; exit 1; }
+
+      - name: Package (tar.gz)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          tar -C out -czf dist/servyx-web-${{ needs.version.outputs.semver }}-${{ matrix.rid }}.tar.gz servyx-web-${{ needs.version.outputs.semver }}-${{ matrix.rid }}
+          tar -C out -czf dist/servyx-mcp-${{ needs.version.outputs.semver }}-${{ matrix.rid }}.tar.gz servyx-mcp-${{ needs.version.outputs.semver }}-${{ matrix.rid }}
+
+      - name: Package (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Compress-Archive -Path out/servyx-web-${{ needs.version.outputs.semver }}-${{ matrix.rid }} -DestinationPath dist/servyx-web-${{ needs.version.outputs.semver }}-${{ matrix.rid }}.zip
+          Compress-Archive -Path out/servyx-mcp-${{ needs.version.outputs.semver }}-${{ matrix.rid }} -DestinationPath dist/servyx-mcp-${{ needs.version.outputs.semver }}-${{ matrix.rid }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bin-${{ matrix.rid }}
+          path: dist/*
+
+  # Builds and pushes the multi-arch Servyx.Web container image to GHCR. Skipped when
+  # the computed version's tag already exists, mirroring the binaries job.
+  docker:
+    needs: version
+    if: needs.version.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute image name
+        id: image
+        run: echo "name=ghcr.io/$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')/servyx" >> "$GITHUB_OUTPUT"
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=raw,value=${{ needs.version.outputs.semver }}
+            type=raw,value=${{ needs.version.outputs.major_minor }}
+            type=raw,value=latest
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: src/Presentation/Servyx.Web/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ needs.version.outputs.semver }}
+            ASSEMBLY_VERSION=${{ needs.version.outputs.assembly_semver }}
+            FILE_VERSION=${{ needs.version.outputs.file_semver }}
+            INFORMATIONAL_VERSION=${{ needs.version.outputs.informational }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # Tags the release commit, uploads all published binaries with checksums, and creates
+  # the GitHub release. Skipped when the computed version's tag already exists.
+  release:
+    needs: [version, binaries, docker]
+    if: needs.version.outputs.exists != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          pattern: bin-*
+          merge-multiple: true
+          path: dist
+
+      - name: Generate checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+
+      - name: Tag release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/v${{ needs.version.outputs.semver }}" >/dev/null; then
+            echo "Tag v${{ needs.version.outputs.semver }} already exists, skipping tag/push to avoid a race"
+          else
+            git tag v${{ needs.version.outputs.semver }}
+            git push origin v${{ needs.version.outputs.semver }}
+          fi
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.version.outputs.semver }}
+          name: Servyx v${{ needs.version.outputs.semver }}
+          files: dist/*
+          generate_release_notes: true
+          body: "docker pull ghcr.io/jerrettdavis/servyx:${{ needs.version.outputs.semver }}"
