@@ -3,6 +3,7 @@ using Servyx.Application.Hosts;
 using Servyx.Composition;
 using Servyx.Domain.Hosts;
 using Servyx.Domain.Transport;
+using Servyx.Web;
 using Servyx.Web.Authentication;
 using Servyx.Web.Components;
 using Servyx.Web.Hosts;
@@ -24,6 +25,16 @@ if (AdminPasswordResetCli.IsInvoked(args))
 }
 
 builder.AddServiceDefaults();
+
+// ── Data Protection key ring ─────────────────────────────────────────────────────────────────────
+//
+// Web-only: this is the framework's own Data Protection provider — the one antiforgery tokens and the
+// operator auth cookie (below) actually go through — not to be confused with DataProtectionSecretStore's
+// private, standalone Data Protection container for encrypted secrets. Left unconfigured, ASP.NET Core
+// falls back to an ephemeral, non-persisted key ring on Linux; every container recreation (a deploy, or
+// now an automatic Watchtower update) then silently invalidates every outstanding antiforgery token and
+// session cookie until the operator reloads the page. See AddServyxWebHostDataProtection's own remarks.
+builder.Services.AddServyxWebHostDataProtection();
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
