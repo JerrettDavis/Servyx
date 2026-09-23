@@ -38,9 +38,11 @@ public static class AuthenticationServiceCollectionExtensions
     /// <para>
     /// <strong>Cookie hardening.</strong> <c>HttpOnly</c> so script cannot read it, <c>SameSite=Strict</c> so
     /// no cross-site request ever carries it (which is also what makes sign-out safe without its own
-    /// antiforgery token), and <c>Secure</c> — unconditionally outside Development, and
-    /// <see cref="CookieSecurePolicy.SameAsRequest"/> inside it, because the development loopback host is
-    /// routinely plain HTTP and an always-Secure cookie there would make it impossible to log in at all.
+    /// antiforgery token), and <see cref="CookieSecurePolicy.SameAsRequest"/> for <c>Secure</c> — it marks the
+    /// cookie <c>Secure</c> when the incoming request is HTTPS and omits it when the request is plain HTTP, so
+    /// it works correctly both in Development and for self-hosted deployments that never terminate TLS (no
+    /// reverse proxy, no <c>UseForwardedHeaders</c>), without forcing an always-Secure cookie that a plain-HTTP
+    /// browser would silently refuse to store.
     /// </para>
     /// </remarks>
     /// <param name="services">The container to register into.</param>
@@ -79,9 +81,7 @@ public static class AuthenticationServiceCollectionExtensions
                 options.Cookie.Name = OperatorAuthentication.CookieName;
                 options.Cookie.HttpOnly = true;
                 options.Cookie.SameSite = SameSiteMode.Strict;
-                options.Cookie.SecurePolicy = isDevelopment
-                    ? CookieSecurePolicy.SameAsRequest
-                    : CookieSecurePolicy.Always;
+                options.Cookie.SecurePolicy = CookieSecurePolicy.SameAsRequest;
                 options.Cookie.IsEssential = true;
 
                 options.LoginPath = OperatorAuthentication.LoginPath;

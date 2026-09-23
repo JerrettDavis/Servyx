@@ -182,20 +182,15 @@ public class AuthenticationCompositionTests
         options.LoginPath.Value.Should().Be(OperatorAuthentication.LoginPath);
     }
 
-    [Fact]
-    public void OutsideDevelopment_TheCookieIsAlwaysSecure()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void TheCookieFollowsTheRequestScheme_RegardlessOfEnvironment(bool isDevelopment)
     {
-        using var provider = Compose(authenticationEnabled: true, isDevelopment: false);
-
-        CookieOptionsFrom(provider).Cookie.SecurePolicy.Should().Be(CookieSecurePolicy.Always);
-    }
-
-    [Fact]
-    public void InDevelopment_TheCookieFollowsTheRequestScheme_SoPlainHttpLoopbackStillWorks()
-    {
-        // The single concession, and it is scoped to Development only: an always-Secure cookie over the
-        // plain-HTTP loopback address the dev launch profile uses would make it impossible to log in at all.
-        using var provider = Compose(authenticationEnabled: true, isDevelopment: true);
+        // SameAsRequest unconditionally: an always-Secure cookie would never be stored by a browser talking
+        // plain HTTP — true for the Development loopback, and just as true for a self-hosted deployment with
+        // no reverse proxy or TLS termination in front of it (e.g. a Tailscale-only host).
+        using var provider = Compose(authenticationEnabled: true, isDevelopment: isDevelopment);
 
         CookieOptionsFrom(provider).Cookie.SecurePolicy.Should().Be(CookieSecurePolicy.SameAsRequest);
     }
