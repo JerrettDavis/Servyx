@@ -9,28 +9,28 @@
     <PackageVersion Include="FluentValidation" Version="12.1.1" />
 
     <!-- Infrastructure -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
     <!-- Design-time tooling only (referenced with PrivateAssets="all" by Servyx.Infrastructure.Persistence):
          `dotnet ef migrations add` / `dotnet ef database update` will not run without it. Pinned to the same
-         10.0.10 as the runtime EF packages above so the design-time model matches what actually executes. -->
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.10" />
+         10.0.15 as the runtime EF packages above so the design-time model matches what actually executes. -->
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.15" />
     <!-- Servyx.Composition's own bootstrap-phase loggers (definition load, ssh+docker wiring, RCON wiring)
          run before builder.Build(), so they stand up a short-lived LoggerFactory with a console provider
          rather than resolving one from the not-yet-built DI container — same as before this project was
          extracted out of Servyx.Web, which got AddConsole() for free via the ASP.NET Core shared framework. -->
-    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.10" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Logging.Console" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Abstractions" Version="10.0.15" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="10.0.15" />
     <!-- FileSystemGameDefinitionProvider's DI registration and DefinitionCatalogRefreshService's
          BackgroundService base (Servyx.Definitions). -->
-    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.15" />
     <PackageVersion Include="YamlDotNet" Version="18.1.0" />
     <PackageVersion Include="Docker.DotNet" Version="3.125.15" />
-    <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.AspNetCore.DataProtection" Version="10.0.15" />
     <PackageVersion Include="SSH.NET" Version="2026.0.0" />
 
     <!-- Transitive pins for SSH.NET: bump the floor it declares to whatever is actually current, since
@@ -52,8 +52,8 @@
     <!-- Aspire ServiceDefaults -->
     <PackageVersion Include="Microsoft.Extensions.Http.Resilience" Version="10.6.0" />
     <PackageVersion Include="Microsoft.Extensions.ServiceDiscovery" Version="10.6.0" />
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.15.3" />
+    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+    <PackageVersion Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.15.2" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
     <PackageVersion Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
@@ -64,7 +64,7 @@
     <PackageVersion Include="ModelContextProtocol" Version="2.1.0" />
     <!-- Host.CreateApplicationBuilder for the stdio host. Only Hosting.Abstractions was pinned
          before, which is registration-only and has no builder. -->
-    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.15" />
 
     <!-- Testing -->
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
